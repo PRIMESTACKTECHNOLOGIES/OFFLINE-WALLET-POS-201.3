@@ -32,7 +32,7 @@ object GatewayConfig {
      * After deploying to Render, copy your URL here
      * Example: "https://pos-offline-abc123.onrender.com/"
      */
-    private const val RENDER_URL = "https://pos-201-3-offline-6-digit-2.onrender.com/"
+    private const val RENDER_URL = "https://pos-offline-sftwr.onrender.com/"
     
     /**
      * Local development URL (for testing only)
