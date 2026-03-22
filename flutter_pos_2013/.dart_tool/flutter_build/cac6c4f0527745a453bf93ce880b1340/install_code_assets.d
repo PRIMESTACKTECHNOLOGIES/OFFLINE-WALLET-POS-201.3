@@ -1,0 +1,1 @@
+ C:\\Users\\user\\Desktop\\POS\ OFFLINE\ SFTWR\\flutter_pos_2013\\.dart_tool\\flutter_build\\cac6c4f0527745a453bf93ce880b1340\\native_assets.json: 
