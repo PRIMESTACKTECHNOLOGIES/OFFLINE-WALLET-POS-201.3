@@ -165,6 +165,15 @@ export const initTables = async () => {
       console.log("Default settings created for MRC-1001");
     }
 
+    const terminalRes = await db.query("SELECT * FROM terminals WHERE merchant_id = ? AND terminal_id = ?", ["MRC-1001", "T2013-001"]);
+    if (terminalRes.rowCount === 0) {
+      await db.query(
+        `INSERT INTO terminals (id, merchant_id, terminal_id, name, terminal_secret, offline_enabled) VALUES (?, ?, ?, ?, ?, ?)`,
+        [uuidv4(), "MRC-1001", "T2013-001", "Main Terminal", "secret_term_001", 1]
+      );
+      console.log("Default terminal created: MRC-1001 / T2013-001");
+    }
+
     console.log("Tables initialized successfully (SQLite)");
   } catch (error) {
     console.error("Error initializing tables:", error);

@@ -13,8 +13,8 @@ export class AuthService {
     // Check if it's the default admin FIRST to allow access during setup
     if (username === "admin" && password === defaultPassword) {
       console.log("[AuthService] Default admin login successful");
-      const token = jwt.sign({ id: "admin-id", username: "admin", merchant_id: "MRC-1001" }, SECRET_KEY, { expiresIn: "24h" });
-      return { token, user: { id: "admin-id", username: "admin", merchant_id: "MRC-1001" } };
+      const token = jwt.sign({ id: "admin-id", username: "admin" }, SECRET_KEY, { expiresIn: "24h" });
+      return { token, user: { id: "admin-id", username: "admin" } };
     }
 
     try {
@@ -33,8 +33,8 @@ export class AuthService {
       // Create Session (optional, log it)
       // await db.query("INSERT INTO user_sessions ...")
 
-      const token = jwt.sign({ id: user.id, username: user.username, merchant_id: "MRC-1001" }, SECRET_KEY, { expiresIn: "24h" });
-      return { token, user: { id: user.id, username: user.username, merchant_id: "MRC-1001" } };
+      const token = jwt.sign({ id: user.id, username: user.username }, SECRET_KEY, { expiresIn: "24h" });
+      return { token, user: { id: user.id, username: user.username } };
     } catch (e: any) {
       throw e;
     }
@@ -73,18 +73,8 @@ export class AuthService {
 
   async updateProfile(userId: string, data: any) {
     if (userId === "admin-id") {
-      // For the default admin, we allow "updating" it in memory/response 
-      // so the frontend doesn't show an error, but it won't persist to DB 
-      // until a real user is created.
-      return { 
-        id: "admin-id",
-        username: "admin",
-        full_name: data.full_name || "System Administrator",
-        email: data.email || "admin@pos2013.com",
-        role: "admin",
-        merchant_id: "MRC-1001",
-        ...data
-      }; 
+      // Cannot update the hardcoded fallback admin
+      return { ...data, id: "admin-id" }; 
     }
     
     const { full_name, email } = data;

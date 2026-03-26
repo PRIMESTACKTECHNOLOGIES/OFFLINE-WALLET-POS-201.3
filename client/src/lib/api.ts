@@ -1,6 +1,6 @@
 import { generateHmacSignature } from './crypto';
 
-const BASE_URL = ""; // use relative path for proxy
+const BASE_URL = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
 
 export interface Terminal {
   id: string;

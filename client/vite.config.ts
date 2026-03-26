@@ -2,8 +2,9 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 // https://vite.dev/config/
-export default defineConfig(({ mode }) => {
+export default defineConfig(() => {
   const port = parseInt(process.env.VITE_PORT || '5174');
+  const apiUrl = process.env.VITE_API_URL || 'http://localhost:3002';
   
   return {
     plugins: [react()],
@@ -13,15 +14,15 @@ export default defineConfig(({ mode }) => {
       host: true,
       proxy: {
         '/merchant': {
-          target: 'http://localhost:3000',
+          target: apiUrl,
           changeOrigin: true,
         },
         '/auth': {
-          target: 'http://localhost:3000',
+          target: apiUrl,
           changeOrigin: true,
         },
         '/api': {
-          target: 'http://localhost:3000',
+          target: apiUrl,
           changeOrigin: true,
         },
       },

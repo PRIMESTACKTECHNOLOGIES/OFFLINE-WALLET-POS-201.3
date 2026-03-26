@@ -1,0 +1,108 @@
+POS KEYS
+
+
+  📋 UPDATED COMPLETE STEPS
+
+   Step   Action            Command/File
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   1      Start Backend     npm run dev in main folder
+   2      Start Dashboard   npm run dev in client folder
+   3      Open Dashboard    http://localhost:5173
+   4      Configure App     Use IP 192.168.1.160
+
+
+
+  ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  🎯 WHAT YOU NEED TO RUN (3 Windows)
+
+  Window 1 - Backend:
+
+  cd "C:\Users\user\Desktop\POS OFFLINE SFTWR"
+  npm run dev
+
+  Window 2 - Dashboard:
+
+  cd "C:\Users\user\Desktop\POS OFFLINE SFTWR/client"
+  npm run dev
+
+  Window 3 - Database Init (run once):
+
+  cd "C:\Users\user\Desktop\POS OFFLINE SFTWR/backend"
+  npx ts-node init_2013_db.ts
+
+  ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ✅ THEN
+
+  1. Open browser → http://localhost:5173
+  2. Login: admin / admin123
+  3. Configure phone app with http://192.168.1.160:3000/
+  4. Test transaction!
+
+
+
+Printer
+
+ Step 3: Pair Printer
+
+  1. Turn on printer
+  2. Phone Settings → Bluetooth → Pair "XP-58"
+  3. Password: 0000 or 1234
+
+keystore
+
+  📁 YOUR CURRENT SETUP
+
+  File: android_pos_app/keystore.properties
+
+  storeFile=pos-release-key.keystore
+  storePassword=android
+  keyAlias=pos_key
+  keyPassword=android
+
+You are deploying from a Blueprint for Darkweb191/pos-offline-system
+Blueprint Name
+A unique name for your Blueprint.
+Branch
+The repository branch with the render.yaml file.
+Branch
+Blueprint Path
+The path to the Blueprint file in your repo (e.g., infra/render.yaml). Defaults to render.yaml at the root of your repository.
+
+ADMIN_PASSWORD   :    9207910152
+DATABASE_URL     : /var/lib/data/pos_offline.sqlite
+MYFATOORAH_TEST_MODE :  false
+MYFATOORAH_TOKEN : SK_ARE_47QKGW820GVTQQjUdQchshftPdYOg20uND5OWvpMPhas2JcLVDF498ozLbz60TSU
+PORT    : 3000
+
+
+
+
+backend run port 3000     cd "C:\Users\user\Desktop\POS OFFLINE SFTWR"
+  npm run dev
+
+port1574 password admin123
+
+SECRET_KEY :   a04j57zbZdUc9uSJK2XNvoplkY1MLQnxmq6HtDCyfRE3iWsAwh
+  🛠️ How to Generate a SECRET_KEY
+
+  Option 1: Use PowerShell (Recommended)
+
+  Open PowerShell and run this command:
+
+  -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 50 | ForEach-Object {[char]$_})
+
+  This will output something like:
+
+  k9LmP2xQz8RvT5wYbN4jU7iA1eF6gH3cD0vB9nM5pL8oK2iJ4uH7yG5fD3sA9qW6rE8tY2uI4oP6lK9jH7gF5dS3aQ8wE4rT6yU1iO3pL5kJ8hG6fD4sA2
+
+
+APP CREDENTIAL
+merchant
+920791
+
+
+
+propertieskeyAlias=pos_key
+keyPassword=pos123456
+storeFile=pos-release-key.keystore
+storePassword=pos123456

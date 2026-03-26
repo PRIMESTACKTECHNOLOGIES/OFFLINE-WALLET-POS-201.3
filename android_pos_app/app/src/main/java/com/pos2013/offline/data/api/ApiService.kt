@@ -33,6 +33,12 @@ interface ApiService {
         @Body request: VerifyRequest
     ): Response<VerifyResponse>
     
+    @POST("api/myfatoorah/settle")
+    suspend fun settleTransaction(
+        @Header("Authorization") token: String,
+        @Body request: Map<String, Any?>
+    ): Response<SettleResponse>
+
     @POST("merchant/v1/pos/201.3/offline-batch")
     suspend fun uploadBatch(
         @Header("X-Signature") signature: String,

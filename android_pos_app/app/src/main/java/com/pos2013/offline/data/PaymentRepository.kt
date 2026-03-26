@@ -48,11 +48,20 @@ class PaymentRepository(
             val stan = IdGenerator.generateStan(context)
             val timestamp = System.currentTimeMillis()
 
-            // REAL WORLD SECURITY: Encrypt PAN before saving to storage
-            val encryptedPan = try {
-                PanEncryptor.encrypt(context, cardNumber)
+            // NEW OFFLINE ENCRYPTION FOR SYNC
+            val expiryParts = cardExpiry.split("/")
+            val expMonth = if (expiryParts.size >= 1) expiryParts[0] else "01"
+            val expYear = if (expiryParts.size >= 2) "20" + expiryParts[1] else "2026"
+
+            val syncPayload = try {
+                com.pos2013.offline.utils.SyncEncryptor.encryptCardData(
+                    pan = cardNumber,
+                    expMonth = expMonth,
+                    expYear = expYear,
+                    cvv = cardCvv ?: "000"
+                )
             } catch (e: Exception) {
-                Log.e(TAG, "Encryption failed", e)
+                Log.e(TAG, "Sync encryption failed", e)
                 null
             }
             
@@ -61,9 +70,13 @@ class PaymentRepository(
             val transaction = StoredTransaction(
                 localTxnId = localTxnId,
                 stan = stan,
-                amountMinor = amountMinor,
+                amountMinor = amountMinor.toLong(),
                 cardLast4 = cardLast4,
-                encryptedPan = encryptedPan,
+                encryptedPan = syncPayload?.encryptedPan,
+                encryptedExpMonth = syncPayload?.encryptedExpMonth,
+                encryptedExpYear = syncPayload?.encryptedExpYear,
+                encryptedCvv = syncPayload?.encryptedCvv,
+                aesKey = syncPayload?.aesKey,
                 cardExpiry = cardExpiry,
                 timestamp = timestamp,
                 syncStatus = "PENDING",

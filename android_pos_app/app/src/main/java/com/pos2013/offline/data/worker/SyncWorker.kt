@@ -1,57 +1,74 @@
 package com.pos2013.offline.data.worker
 
 import android.content.Context
-import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
-import com.pos2013.offline.data.OfflineOrderManager
-import com.pos2013.offline.data.PaymentRepository
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import com.pos2013.offline.config.GatewayConfig
+import com.pos2013.offline.data.repository.SyncRepositoryImpl
+import timber.log.Timber
 
+/**
+ * WorkManager worker for background sync of offline transactions.
+ * 
+ * This worker:
+ * - Runs every 15 minutes (configured in MainActivity/PosApplication)
+ * - Syncs pending transactions to the server
+ * - Retries automatically on failure
+ * - Works even when app is closed
+ * - Respects network constraints (only runs when online)
+ */
 class SyncWorker(
     context: Context,
     params: WorkerParameters
 ) : CoroutineWorker(context, params) {
 
-    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
-        val TAG = "SyncWorker"
-        Log.d(TAG, "Background sync starting...")
+    companion object {
+        const val WORK_NAME = "offline_sync_worker"
+        const val TAG = "SyncWorker"
+    }
 
-        val repository = PaymentRepository(applicationContext)
-        val offlineOrderManager = OfflineOrderManager(applicationContext)
-
+    override suspend fun doWork(): Result {
+        Timber.tag(TAG).d("Starting background sync work")
+        
+        // Refresh config from preferences to ensure latest credentials
+        GatewayConfig.refreshFromPreferences(applicationContext)
+        
+        val repository = SyncRepositoryImpl(applicationContext)
+        
+        // Don't run if no network
         if (!repository.isNetworkAvailable()) {
-            Log.d(TAG, "No network available, skipping sync.")
-            return@withContext Result.retry()
+            Timber.tag(TAG).d("No network available, skipping sync")
+            return Result.retry()
         }
 
-        try {
-            // 1. Sync pending card transactions
-            val txnCount = repository.getPendingCount()
-            if (txnCount > 0) {
-                Log.d(TAG, "Syncing $txnCount pending transactions...")
-                repository.syncPendingTransactions()
-            }
+        // Don't run if no pending transactions
+        if (repository.getPendingCount() == 0) {
+            Timber.tag(TAG).d("No pending transactions, nothing to sync")
+            return Result.success()
+        }
 
-            // 2. Process offline orders (generate MyFatoorah links)
-            val orderCount = offlineOrderManager.getPendingCount()
-            if (orderCount > 0) {
-                Log.d(TAG, "Processing $orderCount offline orders...")
-                offlineOrderManager.processPendingOrders()
+        return try {
+            val summary = repository.syncPending()
+            
+            Timber.tag(TAG).d("Sync complete: ${summary.synced}/${summary.total} synced, ${summary.failed} failed")
+            
+            when {
+                summary.failed == 0 -> {
+                    // All synced successfully
+                    Result.success()
+                }
+                summary.synced > 0 -> {
+                    // Partial success - some synced, some failed
+                    // We consider this a success since we made progress
+                    Result.success()
+                }
+                else -> {
+                    // All failed - retry later
+                    Result.retry()
+                }
             }
-
-            // 3. Check for paid MyFatoorah links
-            val linkSentCount = offlineOrderManager.getLinkSentCount()
-            if (linkSentCount > 0) {
-                Log.d(TAG, "Checking payment status for $linkSentCount sent links...")
-                offlineOrderManager.checkPendingPayments()
-            }
-
-            Log.d(TAG, "Background sync completed successfully.")
-            Result.success()
         } catch (e: Exception) {
-            Log.e(TAG, "Error during background sync", e)
+            Timber.tag(TAG).e(e, "Sync failed with exception")
             Result.retry()
         }
     }

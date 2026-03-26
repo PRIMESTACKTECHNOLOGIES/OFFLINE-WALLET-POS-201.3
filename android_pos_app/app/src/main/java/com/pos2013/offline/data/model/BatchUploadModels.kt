@@ -33,6 +33,38 @@ data class BatchUploadRequest(
 )
 
 /**
+ * Response from direct settlement
+ */
+data class SettleResponse(
+    @SerializedName("success")
+    val success: Boolean,
+
+    @SerializedName("localTxnId")
+    val localTxnId: String,
+
+    @SerializedName("status")
+    val status: String,
+
+    @SerializedName("invoiceId")
+    val invoiceId: String?,
+
+    @SerializedName("paymentId")
+    val paymentId: String?,
+
+    @SerializedName("authCode")
+    val authCode: String?,
+
+    @SerializedName("cardBrand")
+    val cardBrand: String?,
+
+    @SerializedName("amount")
+    val amount: Double?,
+
+    @SerializedName("error")
+    val error: String?
+)
+
+/**
  * Individual transaction in a batch
  */
 data class TransactionRequest(

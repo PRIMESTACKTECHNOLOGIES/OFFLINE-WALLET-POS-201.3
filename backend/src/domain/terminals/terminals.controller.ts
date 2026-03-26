@@ -17,6 +17,33 @@ export class TerminalsController {
     }
   }
 
+  async regenerateSecret(req: Request, res: Response) {
+    const { merchantId, terminalId } = req.body;
+
+    if (!merchantId || !terminalId) {
+      return res.status(400).json({
+        error: "merchantId and terminalId are required"
+      });
+    }
+
+    try {
+      const result = await terminalsService.regenerateTerminalSecret(merchantId, terminalId);
+      if (!result) {
+        return res.status(404).json({ error: "Terminal not found" });
+      }
+      return res.json({
+        merchantId: result.merchantId,
+        terminalId: result.terminalId,
+        terminalSecret: result.terminalSecret,
+        terminal_secret: result.terminalSecret,
+        secretKey: result.terminalSecret
+      });
+    } catch (error) {
+      console.error("[Terminal Regenerate Secret] Error:", error);
+      return res.status(500).json({ error: "Internal Server Error" });
+    }
+  }
+
   async verify(req: Request, res: Response) {
     const { merchantId, terminalId, secretKey } = req.body;
     

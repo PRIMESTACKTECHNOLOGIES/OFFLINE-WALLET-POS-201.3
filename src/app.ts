@@ -5,6 +5,7 @@ import { authRouter } from "./domain/auth/auth.router";
 import { settingsRouter } from "./domain/settings/settings.router";
 import { batchesRouter } from "./domain/batches/batches.router";
 import myfatoorah2013Router from "./domain/myfatoorah/myfatoorah2013.router";
+import directPaymentRouter from "./domain/myfatoorah/directPayment.router";
 import { initDatabase } from "./init_db";
 import path from "path";
 import fs from "fs";
@@ -32,6 +33,7 @@ app.use("/merchant", pos2013OfflineRouter);
 app.use("/merchant", settingsRouter);
 app.use("/merchant", batchesRouter);
 app.use("/merchant/v1/myfatoorah", myfatoorah2013Router);
+app.use("/api/myfatoorah", directPaymentRouter);
 
 // Health check endpoint
 app.get("/api/health", (req, res) => {

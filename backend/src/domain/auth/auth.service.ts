@@ -172,8 +172,8 @@ export class AuthService {
       }
     }
 
-    const fields = [];
-    const values = [];
+    const fields: string[] = [];
+    const values: unknown[] = [];
     let idx = 1;
 
     // Helper to add field if present
@@ -219,7 +219,7 @@ export class AuthService {
       ];
     }
     const res = await db.query("SELECT id, device_info, ip_address, last_active FROM user_sessions WHERE user_id = $1 ORDER BY last_active DESC", [userId]);
-    return res.rows.map(row => ({
+    return res.rows.map((row: any) => ({
       ...row,
       current: false // We can't really tell with stateless JWT unless we track token IDs, so just defaulting to false or handling in UI
     }));

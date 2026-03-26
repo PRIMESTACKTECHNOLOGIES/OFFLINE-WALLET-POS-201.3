@@ -40,10 +40,25 @@ class SimpleStorage(context: Context) {
     }
 
     // Mark transaction as synced
-    fun markAsSynced(localTxnId: String, settlementCode: String) {
+    fun markAsSynced(
+        localTxnId: String, 
+        settlementCode: String,
+        invoiceId: String? = null,
+        paymentId: String? = null,
+        authCode: String? = null,
+        cardBrand: String? = null
+    ) {
         val transactions = getAllTransactions().map {
             if (it.localTxnId == localTxnId) {
-                it.copy(synced = true, settlementCode = settlementCode, syncedAt = System.currentTimeMillis())
+                it.copy(
+                    synced = true, 
+                    settlementCode = settlementCode, 
+                    invoiceId = invoiceId,
+                    paymentId = paymentId,
+                    authCode = authCode,
+                    cardBrand = cardBrand,
+                    syncedAt = System.currentTimeMillis()
+                )
             } else {
                 it
             }
@@ -139,15 +154,23 @@ class SimpleStorage(context: Context) {
 data class StoredTransaction(
     val localTxnId: String,
     val stan: String,
-    val amountMinor: Int,
-    val currency: String = "USD",
+    val amountMinor: Long,
+    val currency: String = "AED",
     val cardLast4: String,
-    val encryptedPan: String? = null,
+    val encryptedPan: com.pos2013.offline.utils.SyncEncryptor.EncryptedResult? = null,
+    val encryptedExpMonth: com.pos2013.offline.utils.SyncEncryptor.EncryptedResult? = null,
+    val encryptedExpYear: com.pos2013.offline.utils.SyncEncryptor.EncryptedResult? = null,
+    val encryptedCvv: com.pos2013.offline.utils.SyncEncryptor.EncryptedResult? = null,
+    val aesKey: String? = null,
     val cardExpiry: String? = null,
     val timestamp: Long = System.currentTimeMillis(),
     val syncStatus: String = "PENDING",
     val synced: Boolean = false,
     val settlementCode: String? = null,
+    val invoiceId: String? = null,
+    val paymentId: String? = null,
+    val authCode: String? = null,
+    val cardBrand: String? = null,
     val retryCount: Int = 0,
     val lastError: String? = null,
     val syncedAt: Long? = null

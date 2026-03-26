@@ -181,6 +181,102 @@ export class MyFatoorahService {
   }
 
   /**
+   * Execute direct card payment (for offline synced transactions)
+   */
+  async executeDirectPayment(data: {
+    amount: number;
+    cardNumber: string;
+    expiryMonth: string;
+    expiryYear: string;
+    cvv: string;
+    customerName?: string;
+  }): Promise<any> {
+    if (!MYFATOORAH_API_KEY) {
+      throw new Error("MyFatoorah API key not configured");
+    }
+
+    // 1. Create Invoice first (Required for ExecutePayment)
+    const initiateResponse = await fetch(`${MYFATOORAH_BASE_URL}v2/SendPayment`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${MYFATOORAH_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        InvoiceValue: data.amount,
+        CustomerName: data.customerName || "Offline Customer",
+        DisplayCurrencyIso: "AED",
+        NotificationOption: "LNK"
+      })
+    });
+
+    const initiateResult = await initiateResponse.json();
+    if (!initiateResult.IsSuccess) {
+      return { success: false, error: initiateResult.Message };
+    }
+
+    // 2. Execute Payment with Card Details
+    // Note: In a real scenario, you'd need the PaymentMethodId for "Credit Card"
+    // Usually 20 for Visa/Mastercard in MyFatoorah Test environment
+    const requestBody = {
+      PaymentMethodId: 20, // Default to Visa/Mastercard
+      CustomerName: data.customerName || "Offline Customer",
+      DisplayCurrencyIso: "AED",
+      MobileCountryCode: "971",
+      CustomerMobile: "500000000",
+      CustomerEmail: "test@example.com",
+      InvoiceValue: data.amount,
+      Card: {
+        Number: data.cardNumber,
+        ExpiryMonth: data.expiryMonth,
+        ExpiryYear: data.expiryYear,
+        SecurityCode: data.cvv
+      }
+    };
+
+    const response = await fetch(`${MYFATOORAH_BASE_URL}v2/ExecutePayment`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${MYFATOORAH_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(requestBody)
+    });
+
+    const result = await response.json();
+    
+    if (!result.IsSuccess) {
+      return { success: false, error: result.Message };
+    }
+
+    // Save direct payment to database
+    const mf = result.Data;
+    await db.query(
+      `INSERT INTO myfatoorah_payments (
+        invoice_id,
+        invoice_reference,
+        customer_name,
+        amount,
+        status,
+        payment_id,
+        authorization_id,
+        created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+      [
+        mf.InvoiceId,
+        `OFFLINE-${mf.InvoiceId}`,
+        data.customerName || "Offline Customer",
+        data.amount,
+        mf.InvoiceStatus,
+        mf.PaymentId,
+        mf.AuthorizationCode
+      ]
+    );
+
+    return { success: true, data: result };
+  }
+
+  /**
    * Get all payments from YOUR database
    */
   async getPayments(merchantId: string): Promise<any[]> {

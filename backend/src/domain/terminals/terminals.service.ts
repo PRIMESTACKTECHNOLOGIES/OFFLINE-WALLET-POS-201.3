@@ -26,6 +26,33 @@ export class TerminalsService {
     };
   }
 
+  async regenerateTerminalSecret(merchantId: string, terminalId: string) {
+    const terminalSecret = uuid().replace(/-/g, "");
+    const res = await db.query(
+      `
+      UPDATE terminals
+      SET terminal_secret = $1
+      WHERE merchant_id = $2 AND terminal_id = $3
+      RETURNING id, merchant_id, terminal_id, name, terminal_secret, offline_enabled
+      `,
+      [terminalSecret, merchantId, terminalId]
+    );
+
+    if (res.rows.length === 0) {
+      return null;
+    }
+
+    const row = res.rows[0];
+    return {
+      id: row.id,
+      merchantId: row.merchant_id,
+      terminalId: row.terminal_id,
+      name: row.name,
+      terminalSecret: row.terminal_secret,
+      offlineEnabled: row.offline_enabled
+    };
+  }
+
   async verifyTerminal(merchantId: string, terminalId: string, secretKey: string) {
     try {
       const result = await db.query(
@@ -78,7 +105,7 @@ export class TerminalsService {
         FROM terminals
         ORDER BY created_at DESC
       `);
-      return res.rows.map(row => ({
+      return res.rows.map((row: any) => ({
         id: row.id,
         merchantId: row.merchant_id,
         terminalId: row.terminal_id,

@@ -38,14 +38,14 @@ object GatewayConfig {
      * Local development URL (for testing only)
      * Uses your PC's IP address for local network testing
      */
-    private const val LOCAL_URL = "http://192.168.1.160:3000/"
+    private const val LOCAL_URL = "http://192.168.1.160:3002/"
     
     /**
      * SWITCH BETWEEN LOCAL AND PRODUCTION
      * true = Use local server (testing)
      * false = Use Render production server
      */
-    private const val USE_LOCAL = false
+    private const val USE_LOCAL = true
     
     // ═════════════════════════════════════════════════════════════════════════
     // DEFAULT VALUES - DO NOT CHANGE

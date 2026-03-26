@@ -19,7 +19,7 @@
     <application
         android:label="POS-201.3"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@android:mipmap/sym_def_app_icon"
         android:allowBackup="false"
         android:fullBackupContent="false">
         

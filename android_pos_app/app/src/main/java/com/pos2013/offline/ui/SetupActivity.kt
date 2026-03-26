@@ -5,93 +5,155 @@ import android.os.Bundle
 import android.provider.Settings
 import android.view.View
 import android.widget.Toast
+import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.pos2013.offline.config.GatewayConfig
-
-import com.pos2013.offline.data.PaymentRepository
 import com.pos2013.offline.databinding.ActivitySetupBinding
+import com.pos2013.offline.domain.usecase.VerifyTerminalUseCase
+import com.pos2013.offline.presentation.viewmodel.TerminalVerificationState
+import com.pos2013.offline.presentation.viewmodel.TerminalViewModel
+import com.pos2013.offline.presentation.viewmodel.TerminalViewModelFactory
 import kotlinx.coroutines.launch
 
+/**
+ * Terminal Verification Activity.
+ *
+ * This is the **mandatory first step** for any 201.3-compliant POS terminal.
+ * The terminal must be verified before it can:
+ * - Process payments
+ * - Store offline transactions
+ * - Sync batches to the server
+ * - Generate HMAC signatures
+ *
+ * Flow:
+ * 1. User enters merchantId, terminalId, secretKey, serverUrl
+ * 2. User taps "Verify Terminal"
+ * 3. App sends /merchant/v1/terminal/verify request
+ * 4. If valid → credentials saved → navigate to LoginActivity
+ * 5. If invalid → show error → stay on screen
+ */
 class SetupActivity : AppCompatActivity() {
-    
+
     private lateinit var binding: ActivitySetupBinding
-    private lateinit var repository: PaymentRepository
-    
+
+    private val viewModel: TerminalViewModel by viewModels {
+        TerminalViewModelFactory(this)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
+
         // Check if already registered
         if (GatewayConfig.isDeviceRegistered(this)) {
-            startActivity(Intent(this, LoginActivity::class.java))
-            finish()
+            navigateToLogin()
             return
         }
-        
+
         binding = ActivitySetupBinding.inflate(layoutInflater)
         setContentView(binding.root)
-        
-        repository = PaymentRepository(this)
-        
+
         setupUI()
         loadDeviceInfo()
+        observeViewModel()
     }
-    
+
     private fun setupUI() {
+        // Pre-fill with defaults for easier testing
         binding.etServerUrl.setText(GatewayConfig.SERVER_URL)
-        
+
+        // Verify button
         binding.btnRegister.setOnClickListener {
-            registerDevice()
+            verifyTerminal()
         }
-        
+
+        // Test connection button
         binding.btnTestConnection.setOnClickListener {
             testConnection()
         }
     }
-    
-    private fun loadDeviceInfo() {
-        val deviceInfo = buildString {
-            appendLine("📱 Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
-            appendLine("🤖 Android: ${android.os.Build.VERSION.RELEASE}")
-            appendLine("🔢 Serial: ${Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID).takeLast(8)}")
+
+    private fun observeViewModel() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.state.collect { state ->
+                    when (state) {
+                        is TerminalVerificationState.Idle -> {
+                            showLoading(false)
+                        }
+                        is TerminalVerificationState.Loading -> {
+                            showLoading(true)
+                        }
+                        is TerminalVerificationState.Success -> {
+                            showLoading(false)
+                            showSuccess("✅ ${state.message}")
+                            navigateToLogin()
+                        }
+                        is TerminalVerificationState.Error -> {
+                            showLoading(false)
+                            val errorIcon = when (state.code) {
+                                VerifyTerminalUseCase.ErrorCode.NETWORK_ERROR -> "📡"
+                                VerifyTerminalUseCase.ErrorCode.INVALID_CREDENTIALS -> "🔐"
+                                VerifyTerminalUseCase.ErrorCode.SERVER_ERROR -> "🔧"
+                                else -> "❌"
+                            }
+                            showError("$errorIcon ${state.message}")
+                            viewModel.resetState()
+                        }
+                    }
+                }
+            }
         }
-        binding.tvDeviceInfo.text = deviceInfo
     }
-    
+
+    private fun verifyTerminal() {
+        val merchantId = binding.etMerchantId.text.toString()
+        val terminalId = binding.etTerminalId.text.toString()
+        val secretKey = binding.etSecretKey.text.toString()
+        val serverUrl = binding.etServerUrl.text.toString()
+
+        viewModel.verifyTerminal(
+            merchantId = merchantId,
+            terminalId = terminalId,
+            secretKey = secretKey,
+            serverUrl = serverUrl.takeIf { it.isNotBlank() }
+        )
+    }
+
     private fun testConnection() {
         val serverUrl = binding.etServerUrl.text.toString().trim()
-        
+
         if (serverUrl.isEmpty()) {
             binding.etServerUrl.error = "Enter server URL"
             return
         }
-        
-        binding.progressBar.visibility = View.VISIBLE
-        binding.btnTestConnection.isEnabled = false
-        
+
+        showLoading(true)
+
         lifecycleScope.launch {
             try {
                 // Temporarily set URL for testing
                 val prefs = getSharedPreferences("pos_prefs", MODE_PRIVATE)
                 prefs.edit().putString("server_url", serverUrl).apply()
                 GatewayConfig.refreshFromPreferences(this@SetupActivity)
-                
+
                 val isReachable = testServerReachable(serverUrl)
-                
+
                 if (isReachable) {
-                    Toast.makeText(this@SetupActivity, "✅ Server reachable!", Toast.LENGTH_SHORT).show()
+                    showSuccess("✅ Server reachable!")
                 } else {
-                    Toast.makeText(this@SetupActivity, "❌ Cannot reach server", Toast.LENGTH_SHORT).show()
+                    showError("❌ Cannot reach server")
                 }
             } catch (e: Exception) {
-                Toast.makeText(this@SetupActivity, "❌ Error: ${e.message}", Toast.LENGTH_SHORT).show()
+                showError("❌ Error: ${e.message}")
             }
-            
-            binding.progressBar.visibility = View.GONE
-            binding.btnTestConnection.isEnabled = true
+
+            showLoading(false)
         }
     }
-    
+
     private fun testServerReachable(serverUrl: String): Boolean {
         return try {
             val base = if (serverUrl.endsWith("/")) serverUrl else "$serverUrl/"
@@ -109,81 +171,32 @@ class SetupActivity : AppCompatActivity() {
             false
         }
     }
-    
-    private fun registerDevice() {
-        val merchantId = binding.etMerchantId.text.toString().trim()
-        val terminalId = binding.etTerminalId.text.toString().trim()
-        val serverUrl = binding.etServerUrl.text.toString().trim()
-        val secretKey = binding.etSecretKey.text.toString().trim()
-        
-        // Validation
-        when {
-            merchantId.isEmpty() -> {
-                binding.etMerchantId.error = "Required"
-                return
-            }
-            terminalId.isEmpty() -> {
-                binding.etTerminalId.error = "Required"
-                return
-            }
-            serverUrl.isEmpty() -> {
-                binding.etServerUrl.error = "Required"
-                return
-            }
-            secretKey.isEmpty() -> {
-                binding.etSecretKey.error = "Required"
-                return
-            }
+
+    private fun loadDeviceInfo() {
+        val deviceInfo = buildString {
+            appendLine("📱 Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+            appendLine("🤖 Android: ${android.os.Build.VERSION.RELEASE}")
+            appendLine("🔢 Serial: ${Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID).takeLast(8)}")
         }
-        
-        binding.progressBar.visibility = View.VISIBLE
-        binding.btnRegister.isEnabled = false
-        
-        lifecycleScope.launch {
-            try {
-                // Save configuration
-                val prefs = getSharedPreferences("pos_prefs", MODE_PRIVATE)
-                prefs.edit().apply {
-                    putString("merchant_id", merchantId)
-                    putString("terminal_id", terminalId)
-                    putString("server_url", serverUrl)
-                    putString("secret_key", secretKey)
-                    apply()
-                }
-                
-                // Refresh config
-                GatewayConfig.refreshFromPreferences(this@SetupActivity)
-                
-                // Verify credentials with server
-                val isValid = repository.verifyCredentials(merchantId, terminalId, secretKey)
-                
-                if (isValid) {
-                    prefs.edit().putBoolean("device_registered", true).apply()
-                    Toast.makeText(
-                        this@SetupActivity,
-                        "✅ Device registered successfully!",
-                        Toast.LENGTH_LONG
-                    ).show()
-                    
-                    startActivity(Intent(this@SetupActivity, LoginActivity::class.java))
-                    finish()
-                } else {
-                    Toast.makeText(
-                        this@SetupActivity,
-                        "❌ Server verification failed. Check Server URL / Terminal ID / Secret Key.",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            } catch (e: Exception) {
-                Toast.makeText(
-                    this@SetupActivity,
-                    "Error: ${e.message}",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-            
-            binding.progressBar.visibility = View.GONE
-            binding.btnRegister.isEnabled = true
-        }
+        binding.tvDeviceInfo.text = deviceInfo
+    }
+
+    private fun showLoading(show: Boolean) {
+        binding.progressBar.visibility = if (show) View.VISIBLE else View.GONE
+        binding.btnRegister.isEnabled = !show
+        binding.btnTestConnection.isEnabled = !show
+    }
+
+    private fun showError(message: String) {
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+    }
+
+    private fun showSuccess(message: String) {
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun navigateToLogin() {
+        startActivity(Intent(this, LoginActivity::class.java))
+        finish()
     }
 }

@@ -48,6 +48,36 @@ data class TransactionEntity(
     @ColumnInfo(name = "pan_masked")
     val panMasked: String?, // Masked card number
 
+    @ColumnInfo(name = "encrypted_pan")
+    val encryptedPan: String?, // JSON or Base64 ciphertext
+
+    @ColumnInfo(name = "encrypted_exp_month")
+    val encryptedExpMonth: String?,
+
+    @ColumnInfo(name = "encrypted_exp_year")
+    val encryptedExpYear: String?,
+
+    @ColumnInfo(name = "encrypted_cvv")
+    val encryptedCvv: String?,
+
+    @ColumnInfo(name = "aes_key")
+    val aesKey: String?,
+
+    @ColumnInfo(name = "aes_iv")
+    val aesIv: String?,
+
+    @ColumnInfo(name = "aes_tag")
+    val aesTag: String?,
+
+    @ColumnInfo(name = "invoice_id")
+    var invoiceId: String?,
+
+    @ColumnInfo(name = "payment_id")
+    var paymentId: String?,
+
+    @ColumnInfo(name = "card_brand")
+    var cardBrand: String?,
+
     @ColumnInfo(name = "card_type")
     val cardType: String?, // VISA, MASTERCARD, etc.
 

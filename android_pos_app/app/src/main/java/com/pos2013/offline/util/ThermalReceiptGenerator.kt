@@ -103,9 +103,9 @@ object ThermalReceiptGenerator {
         
         // Transaction details - Left aligned
         sb.append(ALIGN_LEFT)
-        sb.append("DATE: ${formatDate(transaction.timestamp)}")
+        sb.append("DATE: ${formatDate(transaction.txnTimestamp)}")
         sb.append(LINE_FEED)
-        sb.append("TIME: ${formatTime(transaction.timestamp)}")
+        sb.append("TIME: ${formatTime(transaction.txnTimestamp)}")
         sb.append(LINE_FEED)
         sb.append("STAN: ${transaction.stan}")
         sb.append(LINE_FEED)
@@ -236,9 +236,9 @@ object ThermalReceiptGenerator {
         
         // Transaction details in columns
         sb.append(ALIGN_LEFT)
-        sb.append(String.format("%-12s %s", "DATE:", formatDate(transaction.timestamp)))
+        sb.append(String.format("%-12s %s", "DATE:", formatDate(transaction.txnTimestamp)))
         sb.append(LINE_FEED)
-        sb.append(String.format("%-12s %s", "TIME:", formatTime(transaction.timestamp)))
+        sb.append(String.format("%-12s %s", "TIME:", formatTime(transaction.txnTimestamp)))
         sb.append(LINE_FEED)
         sb.append(String.format("%-12s %s", "STAN:", transaction.stan))
         sb.append(LINE_FEED)
@@ -356,7 +356,7 @@ object ThermalReceiptGenerator {
             } ?: throw Exception("Printer not found. Please pair your thermal printer first.")
             
             // Connect to printer
-            val uuid = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+            val uuid = java.util.UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
             bluetoothSocket = printer.createRfcommSocketToServiceRecord(uuid)
             bluetoothSocket.connect()
             
@@ -420,7 +420,7 @@ object ThermalReceiptGenerator {
     }
 
     // UUID for Bluetooth SPP
-    private val UUID = java.util.UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+    private val DEFAULT_UUID = java.util.UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
 }
 
 /**

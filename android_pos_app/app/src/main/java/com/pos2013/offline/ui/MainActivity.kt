@@ -10,11 +10,11 @@ import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
-import androidx.work.*
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.pos2013.offline.R
 import com.pos2013.offline.config.GatewayConfig
-import com.pos2013.offline.data.worker.SyncWorker
-import java.util.concurrent.TimeUnit
+import com.pos2013.offline.worker.SyncScheduler
 
 import com.pos2013.offline.data.MyFatoorahRepository
 import com.pos2013.offline.data.OfflineOrderManager
@@ -74,24 +74,11 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun scheduleBackgroundSync() {
-        val constraints = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
-            .build()
-
-        // Run every 15 minutes
-        val syncRequest = PeriodicWorkRequestBuilder<SyncWorker>(15, TimeUnit.MINUTES)
-            .setConstraints(constraints)
-            .addTag("background_sync")
-            .build()
-
-        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
-            "BackgroundSync",
-            ExistingPeriodicWorkPolicy.KEEP,
-            syncRequest
-        )
-
+        // Use the new SyncScheduler
+        SyncScheduler.schedule(this)
+        
         // Observe the sync status to refresh the UI
-        WorkManager.getInstance(this).getWorkInfosForUniqueWorkLiveData("BackgroundSync")
+        WorkManager.getInstance(this).getWorkInfosForUniqueWorkLiveData("offline_sync_worker")
             .observe(this) { workInfos ->
                 val workInfo = workInfos.firstOrNull()
                 if (workInfo?.state == WorkInfo.State.SUCCEEDED || workInfo?.state == WorkInfo.State.ENQUEUED) {
@@ -108,9 +95,9 @@ class MainActivity : AppCompatActivity() {
         // Amount input buttons
         setupNumberPad()
         
-        // Process payment button
+        // Process payment button - Launch new Payment Entry screen
         binding.btnProcessPayment.setOnClickListener {
-            processPayment()
+            startActivity(Intent(this, PaymentEntryActivity::class.java))
         }
         
         // Redeem code button
@@ -121,6 +108,11 @@ class MainActivity : AppCompatActivity() {
         // Sync button
         binding.btnSync.setOnClickListener {
             syncPendingTransactions()
+        }
+        
+        // Dashboard button
+        binding.btnDashboard?.setOnClickListener {
+            startActivity(Intent(this, DashboardActivity::class.java))
         }
         
         // Settings button
@@ -223,7 +215,7 @@ class MainActivity : AppCompatActivity() {
                 .setTitle("Select Payment Method - ${currencyFormatter.format(amount)}")
                 .setItems(options) { _, which ->
                     when (which) {
-                        0 -> showCardEntryDialog(amount)
+                        0 -> startActivity(Intent(this, PaymentEntryActivity::class.java))
                         1 -> processMyFatoorahPayment(amount)
                         2 -> processCashPayment(amount)
                         3 -> showOfflineOrders()
@@ -245,7 +237,7 @@ class MainActivity : AppCompatActivity() {
                 .setMessage("No internet connection. Card payments will be stored securely and processed automatically when you go online.")
                 .setItems(options) { _, which ->
                     when (which) {
-                        0 -> showCardEntryDialog(amount)
+                        0 -> startActivity(Intent(this, PaymentEntryActivity::class.java))
                         1 -> createOfflineOrder(amount)
                         2 -> processCashPayment(amount)
                         3 -> createOfflineOrder(amount)
@@ -515,12 +507,15 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
     
-    private fun showCardEntryDialog(amount: Double) {
-        val dialogView = layoutInflater.inflate(R.layout.dialog_card_entry, null)
-        
-        AlertDialog.Builder(this)
-            .setTitle("Enter Card Details")
-            .setView(dialogView)
+    // Card entry now handled by PaymentEntryActivity
+    private fun showCardEntryDialogLegacy(amount: Double) {
+        // Legacy method - now redirects to PaymentEntryActivity
+        startActivity(Intent(this, PaymentEntryActivity::class.java))
+    }
+    
+    // Keeping old method for reference
+    private fun showCardEntryDialogOld(amount: Double) {
+        /* Old implementation replaced by PaymentEntryActivity */
             .setPositiveButton("Process") { _, _ ->
                 val cardNumber = dialogView.findViewById<android.widget.EditText>(R.id.etCardNumber).text.toString()
                 val expiry = dialogView.findViewById<android.widget.EditText>(R.id.etExpiry).text.toString()
@@ -630,7 +625,9 @@ class MainActivity : AppCompatActivity() {
         binding.btnSync.isEnabled = false
         
         lifecycleScope.launch {
-            val summary = repository.syncPendingTransactions()
+            // Use the new SyncRepositoryImpl for immediate sync
+            val syncRepo = com.pos2013.offline.data.repository.SyncRepositoryImpl(this@MainActivity)
+            val summary = syncRepo.syncPending()
             
             binding.progressBar.visibility = View.GONE
             binding.btnSync.isEnabled = true
@@ -693,12 +690,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun showReceipt(amount: Double, stan: String, txnId: String, settlementCode: String?, status: String, isOffline: Boolean) {
         val intent = Intent(this, ReceiptActivity::class.java).apply {
-            putExtra("AMOUNT", amount)
-            putExtra("STAN", stan)
-            putExtra("TXN_ID", txnId)
-            putExtra("SETTLEMENT_CODE", settlementCode)
-            putExtra("STATUS", status)
-            putExtra("IS_OFFLINE", isOffline)
+            putExtra(ReceiptActivity.EXTRA_LOCAL_TXN_ID, txnId)
+            putExtra(ReceiptActivity.EXTRA_AMOUNT, amount)
+            putExtra(ReceiptActivity.EXTRA_STAN, stan)
+            putExtra(ReceiptActivity.EXTRA_IS_OFFLINE, isOffline)
         }
         startActivity(intent)
     }

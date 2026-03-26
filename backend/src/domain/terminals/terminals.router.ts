@@ -17,6 +17,7 @@ router.get("/terminal/verify", (req, res) => {
 });
 
 router.post("/terminal/register", terminalsController.register.bind(terminalsController));
+router.post("/terminal/regenerate-secret", terminalsController.regenerateSecret.bind(terminalsController));
 router.post("/terminal/verify", terminalsController.verify.bind(terminalsController));
 router.get("/terminals", terminalsController.list.bind(terminalsController));
 

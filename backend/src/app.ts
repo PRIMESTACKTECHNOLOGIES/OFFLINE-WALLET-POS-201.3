@@ -7,6 +7,7 @@ import { settingsRouter } from "./domain/settings/settings.router";
 import { batchesRouter } from "./domain/batches/batches.router";
 import { paymentsRouter } from "./domain/payments/payments.router";
 import { receiptsRouter } from "./domain/receipts/receipts.router";
+import { myFatoorahRouter } from "./domain/myfatoorah/myfatoorah.router";
 
 export const app = express();
 
@@ -59,6 +60,7 @@ app.use("/merchant/v1", settingsRouter);
 app.use("/merchant/v1", batchesRouter);
 app.use("/merchant/v1", paymentsRouter);
 app.use("/merchant/v1/receipts", receiptsRouter);
+app.use("/merchant/v1", myFatoorahRouter);
 
 app.get("/", (req, res) => {
   res.send("POS 201.3 Backend Running");
@@ -66,5 +68,9 @@ app.get("/", (req, res) => {
 
 // Health check endpoint
 app.get("/health", (req, res) => {
+  res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+app.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });

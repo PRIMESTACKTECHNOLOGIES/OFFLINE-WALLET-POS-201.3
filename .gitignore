@@ -17,6 +17,12 @@ backend_csharp_api/bin/
 backend_csharp_api/obj/
 android_pos_app/build/
 android_pos_app/app/build/
+flutter_pos_2013/build/
+flutter_pos_2013/.dart_tool/
+flutter_pos_2013/.flutter-plugins
+flutter_pos_2013/.flutter-plugins-dependencies
+flutter_pos_2013/.pub-cache/
+flutter_pos_2013/.pub/
 *.exe
 *.dll
 *.pdb
