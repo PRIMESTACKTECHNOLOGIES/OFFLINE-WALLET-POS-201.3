@@ -8,4 +8,11 @@ abstract class PaymentGatewayClient {
     String currency,
     CardData card,
   );
+
+  Future<GatewayChargeResult> chargeEncryptedCard(
+    String localTxnId,
+    int amountCents,
+    String currency,
+    EncryptedCardData encryptedCard,
+  );
 }

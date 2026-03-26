@@ -1,10 +1,10 @@
 enum TransactionStatus {
-  PENDING,
-  SENDING,
-  RETRY,
-  SUCCESS,
-  FAILED,
-  UNKNOWN,
+  pending,
+  sending,
+  retry,
+  success,
+  failed,
+  unknown,
 }
 
 class PaymentTransaction {
@@ -29,7 +29,7 @@ class PaymentTransaction {
     required this.cardRefId,
     required this.amountCents,
     required this.currency,
-    this.status = TransactionStatus.PENDING,
+    this.status = TransactionStatus.pending,
     this.attemptCount = 0,
     this.lastAttemptAt,
     this.nextAttemptAt,

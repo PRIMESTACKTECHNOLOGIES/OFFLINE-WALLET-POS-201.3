@@ -8,8 +8,8 @@ class HttpGatewayClient implements PaymentGatewayClient {
 
   HttpGatewayClient({Dio? dio}) : _dio = dio ?? Dio(BaseOptions(
     baseUrl: 'https://pos-offline-sftwr.onrender.com',
-    connectTimeout: Duration(seconds: 30),
-    receiveTimeout: Duration(seconds: 30),
+    connectTimeout: const Duration(seconds: 30),
+    receiveTimeout: const Duration(seconds: 30),
   ));
 
   @override
@@ -19,39 +19,44 @@ class HttpGatewayClient implements PaymentGatewayClient {
     String currency,
     CardData card,
   ) async {
+    // This is typically not used for offline sync, but kept for interface compatibility
+    // In a real app, you'd encrypt here or throw an error
+    throw UnimplementedError('Direct charge not supported. Use chargeEncryptedCard for offline sync.');
+  }
+
+  @override
+  Future<GatewayChargeResult> chargeEncryptedCard(
+    String localTxnId,
+    int amountCents,
+    String currency,
+    EncryptedCardData encryptedCard,
+  ) async {
     try {
-      final response = await _dio.post('/api/payments/charge', data: {
-        'idempotency_key': localTxnId,
-        'amount': amountCents,
-        'currency': currency,
-        'card': {
-          'number': card.cardNumber,
-          'expiry_month': card.expiryMonth,
-          'expiry_year': card.expiryYear,
-          'cvv': card.cvv,
-          'cardholder_name': card.cardholderName,
-        },
+      // NEW SECURE AES-GCM FLOW WITH BRAND DETECTION
+      final response = await _dio.post('/api/myfatoorah/settle', data: {
+        'localTxnId': localTxnId,
+        'amount': amountCents / 100.0,
+        'encryptedPan': encryptedCard.pan.toJson(),
+        'encryptedExpMonth': encryptedCard.month.toJson(),
+        'encryptedExpYear': encryptedCard.year.toJson(),
+        'encryptedCvv': encryptedCard.cvv.toJson(),
+        'aesKey': encryptedCard.aesKey,
+        'paymentMethodId': _getPaymentMethodId(encryptedCard.cardBrand),
       });
 
       final data = response.data;
-      final status = data['status'];
-
-      if (status == 'SUCCESS') {
+      
+      // Backend returns { success: true, status: "...", authCode: "...", ... }
+      if (data['success'] == true) {
         return GatewayChargeResult(
-          type: GatewayResultType.SUCCESS,
-          gatewayTxnId: data['gateway_txn_id'],
-        );
-      } else if (status == 'FAILED') {
-        return GatewayChargeResult(
-          type: GatewayResultType.HARD_FAIL,
-          errorCode: data['error_code'],
-          errorMessage: data['error_message'],
+          type: GatewayResultType.success,
+          gatewayTxnId: data['paymentId']?.toString() ?? data['invoiceId']?.toString(),
         );
       } else {
         return GatewayChargeResult(
-          type: GatewayResultType.SOFT_FAIL,
-          errorCode: data['error_code'] ?? 'UNKNOWN',
-          errorMessage: data['error_message'] ?? 'Unknown error',
+          type: GatewayResultType.hardFail,
+          errorCode: data['status'] ?? 'DECLINED',
+          errorMessage: data['error'] ?? 'Payment declined by gateway',
         );
       }
 
@@ -61,17 +66,36 @@ class HttpGatewayClient implements PaymentGatewayClient {
           e.type == DioExceptionType.receiveTimeout ||
           e.response == null) {
         return GatewayChargeResult(
-          type: GatewayResultType.SOFT_FAIL,
+          type: GatewayResultType.softFail,
           errorCode: 'NETWORK_ERROR',
           errorMessage: e.message ?? 'Network error',
         );
       }
       
+      final errorData = e.response?.data;
       return GatewayChargeResult(
-        type: GatewayResultType.HARD_FAIL,
+        type: GatewayResultType.hardFail,
         errorCode: 'HTTP_${e.response?.statusCode}',
-        errorMessage: e.message ?? 'HTTP error',
+        errorMessage: errorData is Map ? (errorData['error'] ?? e.message) : e.message,
       );
+    } catch (e) {
+      return GatewayChargeResult(
+        type: GatewayResultType.hardFail,
+        errorCode: 'INTERNAL_ERROR',
+        errorMessage: e.toString(),
+      );
+    }
+  }
+
+  int _getPaymentMethodId(String? brand) {
+    switch (brand) {
+      case 'VISA':
+      case 'MASTERCARD':
+        return 20; // Default MF ID for Visa/Mastercard
+      case 'AMEX':
+        return 11; // MF ID for Amex
+      default:
+        return 20; // Fallback to Visa/Mastercard
     }
   }
 }

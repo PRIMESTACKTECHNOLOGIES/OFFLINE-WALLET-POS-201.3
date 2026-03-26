@@ -184,18 +184,43 @@ export class MyFatoorahService {
    * Execute direct card payment (for offline synced transactions)
    */
   async executeDirectPayment(data: {
+    localTxnId: string;
     amount: number;
     cardNumber: string;
     expiryMonth: string;
     expiryYear: string;
     cvv: string;
     customerName?: string;
+    paymentMethodId?: number;
   }): Promise<any> {
     if (!MYFATOORAH_API_KEY) {
       throw new Error("MyFatoorah API key not configured");
     }
 
-    // 1. Create Invoice first (Required for ExecutePayment)
+    // 1. Idempotency Check: Check if this localTxnId already exists in DB
+    const existing = await db.query(
+      "SELECT * FROM myfatoorah_direct_settlements WHERE local_txn_id = $1",
+      [data.localTxnId]
+    );
+
+    if (existing.rows.length > 0) {
+      console.log(`Duplicate sync detected for localTxnId: ${data.localTxnId}. Returning existing record.`);
+      const record = existing.rows[0];
+      return { 
+        success: record.status === 'Paid', 
+        data: { 
+          Data: { 
+            InvoiceId: record.invoice_id, 
+            PaymentId: record.payment_id, 
+            InvoiceStatus: record.status,
+            AuthorizationCode: record.auth_code,
+            CardInfo: record.card_brand
+          } 
+        } 
+      };
+    }
+
+    // 2. Create Invoice first (Required for ExecutePayment)
     const initiateResponse = await fetch(`${MYFATOORAH_BASE_URL}v2/SendPayment`, {
       method: "POST",
       headers: {
@@ -215,11 +240,10 @@ export class MyFatoorahService {
       return { success: false, error: initiateResult.Message };
     }
 
-    // 2. Execute Payment with Card Details
-    // Note: In a real scenario, you'd need the PaymentMethodId for "Credit Card"
-    // Usually 20 for Visa/Mastercard in MyFatoorah Test environment
+    // 3. Execute Payment with Card Details
+    // PaymentMethodId: 20 for Visa/Mastercard (default)
     const requestBody = {
-      PaymentMethodId: 20, // Default to Visa/Mastercard
+      PaymentMethodId: data.paymentMethodId || 20, 
       CustomerName: data.customerName || "Offline Customer",
       DisplayCurrencyIso: "AED",
       MobileCountryCode: "971",
@@ -246,30 +270,39 @@ export class MyFatoorahService {
     const result = await response.json();
     
     if (!result.IsSuccess) {
+      // Save failed attempt for auditing
+      await db.query(
+        `INSERT INTO myfatoorah_direct_settlements (
+          local_txn_id, amount, status, error_message, created_at
+        ) VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)`,
+        [data.localTxnId, data.amount, 'Failed', result.Message]
+      );
       return { success: false, error: result.Message };
     }
 
-    // Save direct payment to database
+    // 4. Save successful direct settlement to database
     const mf = result.Data;
     await db.query(
-      `INSERT INTO myfatoorah_payments (
+      `INSERT INTO myfatoorah_direct_settlements (
+        local_txn_id,
         invoice_id,
-        invoice_reference,
+        payment_id,
+        auth_code,
         customer_name,
         amount,
         status,
-        payment_id,
-        authorization_id,
+        card_brand,
         created_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)`,
       [
+        data.localTxnId,
         mf.InvoiceId,
-        `OFFLINE-${mf.InvoiceId}`,
+        mf.PaymentId,
+        mf.AuthorizationCode,
         data.customerName || "Offline Customer",
         data.amount,
         mf.InvoiceStatus,
-        mf.PaymentId,
-        mf.AuthorizationCode
+        mf.CardInfo
       ]
     );
 
@@ -279,9 +312,9 @@ export class MyFatoorahService {
   /**
    * Get all payments from YOUR database
    */
-  async getPayments(merchantId: string): Promise<any[]> {
+  async getPayments(): Promise<any[]> {
     const result = await db.query(
-      `SELECT * FROM myfatoorah_payments 
+      `SELECT * FROM myfatoorah_direct_settlements 
        ORDER BY created_at DESC 
        LIMIT 100`
     );

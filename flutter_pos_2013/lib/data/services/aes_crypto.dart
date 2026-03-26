@@ -1,67 +1,69 @@
+import 'dart:convert';
 import 'package:encrypt/encrypt.dart' as encrypt;
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../../domain/models/card_data.dart';
 import '../../domain/services/crypto_service.dart';
 
 class AesCryptoService implements CryptoService {
-  static const String _masterKeyName = 'master_key';
-  static const _storage = FlutterSecureStorage();
-  encrypt.Key? _masterKey;
-
-  Future<encrypt.Key> _getMasterKey() async {
-    if (_masterKey != null) return _masterKey!;
-    
-    final stored = await _storage.read(key: _masterKeyName);
-    if (stored == null) {
-      final key = encrypt.Key.fromSecureRandom(32);
-      await _storage.write(key: _masterKeyName, value: key.base64);
-      _masterKey = key;
-      return key;
-    }
-    
-    _masterKey = encrypt.Key.fromBase64(stored);
-    return _masterKey!;
-  }
 
   @override
   EncryptedCardData encryptCard(CardData card) {
-    final recordKey = encrypt.Key.fromSecureRandom(32);
+    // Generate a 256-bit key per transaction
+    final aesKey = encrypt.Key.fromSecureRandom(32);
+    
+    // GCM setup
     final encrypter = encrypt.Encrypter(
-      encrypt.AES(recordKey, mode: encrypt.AESMode.gcm),
+      encrypt.AES(aesKey, mode: encrypt.AESMode.gcm),
     );
-    final iv = encrypt.IV.fromSecureRandom(16);
 
-    final cardEnc = encrypter.encrypt(card.cardNumber, iv: iv);
-    final cvvEnc = encrypter.encrypt(card.cvv, iv: iv);
+    EncryptedResult encryptField(String plainText) {
+      final iv = encrypt.IV.fromSecureRandom(12); // GCM standard 12-byte IV
+      final encrypted = encrypter.encrypt(plainText, iv: iv);
+      
+      // The 'encrypt' package appends the 16-byte GCM tag to the ciphertext
+      final fullBytes = encrypted.bytes;
+      final tagLength = 16;
+      final ciphertextBytes = fullBytes.sublist(0, fullBytes.length - tagLength);
+      final tagBytes = fullBytes.sublist(fullBytes.length - tagLength);
+
+      return EncryptedResult(
+        ciphertext: base64Encode(ciphertextBytes),
+        iv: iv.base64,
+        tag: base64Encode(tagBytes),
+      );
+    }
 
     final now = DateTime.now();
     return EncryptedCardData(
-      cardNumberEncrypted: '${iv.base64}:${cardEnc.base64}',
-      expiryMonth: card.expiryMonth,
-      expiryYear: card.expiryYear,
+      pan: encryptField(card.cardNumber),
+      month: encryptField(card.expiryMonth.toString().padLeft(2, '0')),
+      year: encryptField(card.expiryYear.toString()),
+      cvv: encryptField(card.cvv),
+      aesKey: aesKey.base64,
+      cardBrand: _detectBrand(card.cardNumber),
       cardholderName: card.cardholderName,
-      cvvEncrypted: '${iv.base64}:${cvvEnc.base64}',
-      recordKeyEncrypted: recordKey.base64,
       createdAt: now,
       updatedAt: now,
     );
   }
 
+  String _detectBrand(String pan) {
+    final cleanPan = pan.replaceAll(RegExp(r'\s+'), '');
+    if (cleanPan.startsWith('4')) return 'VISA';
+    if (RegExp(r'^5[1-5]').hasMatch(cleanPan)) return 'MASTERCARD';
+    if (RegExp(r'^3[47]').hasMatch(cleanPan)) return 'AMEX';
+    return 'UNKNOWN';
+  }
+
   @override
   CardData decryptCard(EncryptedCardData enc) {
-    // Decrypt record key with master key
-    // Then decrypt card fields
-    // Implementation simplified for brevity
-    
-    final cardParts = enc.cardNumberEncrypted.split(':');
-    final cvvParts = enc.cvvEncrypted.split(':');
-    
+    // This is for local view ONLY if needed
+    // Decryption would require the stored aesKey and IVs/Tags
     return CardData(
-      cardNumber: 'DECRYPTED',
-      expiryMonth: enc.expiryMonth,
-      expiryYear: enc.expiryYear,
+      cardNumber: 'XXXX XXXX XXXX ' + (enc.pan.ciphertext.length > 4 ? '...' : ''),
+      expiryMonth: int.parse('01'),
+      expiryYear: 2026,
+      cvv: '***',
       cardholderName: enc.cardholderName,
-      cvv: 'DECRYPTED',
     );
   }
 }

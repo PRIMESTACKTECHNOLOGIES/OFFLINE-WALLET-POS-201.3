@@ -14,17 +14,18 @@ class AppDatabase {
     
     return await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE payment_cards (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            card_number_encrypted TEXT NOT NULL,
-            expiry_month INTEGER NOT NULL,
-            expiry_year INTEGER NOT NULL,
+            pan_encrypted TEXT NOT NULL,
+            month_encrypted TEXT NOT NULL,
+            year_encrypted TEXT NOT NULL,
+            cvv_encrypted TEXT NOT NULL,
+            aes_key TEXT NOT NULL,
+            card_brand TEXT,
             cardholder_name TEXT,
-            cvv_encrypted TEXT,
-            record_key_encrypted TEXT NOT NULL,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
           )

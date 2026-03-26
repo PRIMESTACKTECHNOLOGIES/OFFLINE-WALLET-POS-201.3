@@ -9,4 +9,5 @@ abstract class TransactionRepository {
   Future<void> markAsFailed(int id, String errorCode, String errorMessage);
   Future<void> markAsRetry(int id, DateTime nextAttemptAt);
   Future<void> recoverStuckSending(DateTime olderThan);
+  Future<int> getCountByStatus(TransactionStatus status);
 }

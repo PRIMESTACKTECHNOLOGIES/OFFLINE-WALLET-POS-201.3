@@ -16,25 +16,45 @@ class CardData {
   });
 }
 
+class EncryptedResult {
+  final String ciphertext;
+  final String iv;
+  final String tag;
+
+  EncryptedResult({
+    required this.ciphertext,
+    required this.iv,
+    required this.tag,
+  });
+
+  Map<String, String> toJson() => {
+    'ciphertext': ciphertext,
+    'iv': iv,
+    'tag': tag,
+  };
+}
+
 class EncryptedCardData {
   final int? id;
-  final String cardNumberEncrypted;
-  final int expiryMonth;
-  final int expiryYear;
+  final EncryptedResult pan;
+  final EncryptedResult month;
+  final EncryptedResult year;
+  final EncryptedResult cvv;
+  final String aesKey;
+  final String? cardBrand;
   final String? cardholderName;
-  final String cvvEncrypted;
-  final String recordKeyEncrypted;
   final DateTime createdAt;
   final DateTime updatedAt;
 
   EncryptedCardData({
     this.id,
-    required this.cardNumberEncrypted,
-    required this.expiryMonth,
-    required this.expiryYear,
+    required this.pan,
+    required this.month,
+    required this.year,
+    required this.cvv,
+    required this.aesKey,
+    this.cardBrand,
     this.cardholderName,
-    required this.cvvEncrypted,
-    required this.recordKeyEncrypted,
     required this.createdAt,
     required this.updatedAt,
   });

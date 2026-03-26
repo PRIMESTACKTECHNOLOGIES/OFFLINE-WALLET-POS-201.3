@@ -188,6 +188,23 @@ export const initDatabase = async () => {
       1    // myfatoorah_test_mode - test mode by default
     ]);
 
+    // MyFatoorah Direct Settlements Table (for offline sync)
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS myfatoorah_direct_settlements (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        local_txn_id TEXT UNIQUE NOT NULL,
+        invoice_id TEXT,
+        payment_id TEXT,
+        auth_code TEXT,
+        customer_name TEXT,
+        amount REAL,
+        status TEXT,
+        card_brand TEXT,
+        error_message TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
     console.log("Database initialized successfully.");
   } catch (error) {
     console.error("Error initializing database:", error);

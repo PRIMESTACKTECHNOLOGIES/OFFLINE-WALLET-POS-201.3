@@ -1,7 +1,7 @@
 enum GatewayResultType {
-  SUCCESS,
-  HARD_FAIL,
-  SOFT_FAIL,
+  success,
+  hardFail,
+  softFail,
 }
 
 class GatewayChargeResult {

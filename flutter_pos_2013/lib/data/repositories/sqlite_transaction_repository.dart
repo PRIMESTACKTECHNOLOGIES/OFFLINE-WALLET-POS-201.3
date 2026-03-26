@@ -49,7 +49,7 @@ class SqliteTransactionRepository implements TransactionRepository {
     
     final maps = await db.query(
       'payment_transactions',
-      where: "status IN ('PENDING', 'RETRY') AND attempt_count < 5 AND (next_attempt_at IS NULL OR next_attempt_at <= ?)",
+      where: "status IN ('pending', 'retry') AND attempt_count < 5 AND (next_attempt_at IS NULL OR next_attempt_at <= ?)",
       whereArgs: [nowMs],
       orderBy: 'created_at ASC',
       limit: limit,
@@ -64,7 +64,7 @@ class SqliteTransactionRepository implements TransactionRepository {
     await db.update(
       'payment_transactions',
       {
-        'status': 'SENDING',
+        'status': 'sending',
         'last_attempt_at': DateTime.now().millisecondsSinceEpoch,
       },
       where: 'id = ?',
@@ -78,7 +78,7 @@ class SqliteTransactionRepository implements TransactionRepository {
     await db.update(
       'payment_transactions',
       {
-        'status': 'SUCCESS',
+        'status': 'success',
         'gateway_txn_id': gatewayTxnId,
       },
       where: 'id = ?',
@@ -92,7 +92,7 @@ class SqliteTransactionRepository implements TransactionRepository {
     await db.update(
       'payment_transactions',
       {
-        'status': 'FAILED',
+        'status': 'failed',
         'error_code': errorCode,
         'error_message': errorMessage,
       },
@@ -106,7 +106,7 @@ class SqliteTransactionRepository implements TransactionRepository {
     final db = await AppDatabase.instance;
     await db.rawUpdate('''
       UPDATE payment_transactions 
-      SET status = 'RETRY', 
+      SET status = 'retry',
           attempt_count = attempt_count + 1,
           next_attempt_at = ?
       WHERE id = ?
@@ -118,10 +118,20 @@ class SqliteTransactionRepository implements TransactionRepository {
     final db = await AppDatabase.instance;
     await db.update(
       'payment_transactions',
-      {'status': 'RETRY'},
-      where: "status = 'SENDING' AND last_attempt_at < ?",
+      {'status': 'retry'},
+      where: "status = 'sending' AND last_attempt_at < ?",
       whereArgs: [olderThan.millisecondsSinceEpoch],
     );
+  }
+
+  @override
+  Future<int> getCountByStatus(TransactionStatus status) async {
+    final db = await AppDatabase.instance;
+    final result = await db.rawQuery(
+      'SELECT COUNT(*) as count FROM payment_transactions WHERE status = ?',
+      [_statusToString(status)],
+    );
+    return Sqflite.firstIntValue(result) ?? 0;
   }
 
   PaymentTransaction _mapToTxn(Map<String, dynamic> m) {
@@ -152,7 +162,7 @@ class SqliteTransactionRepository implements TransactionRepository {
   TransactionStatus _parseStatus(String s) {
     return TransactionStatus.values.firstWhere(
       (e) => e.name == s,
-      orElse: () => TransactionStatus.UNKNOWN,
+      orElse: () => TransactionStatus.unknown,
     );
   }
 }

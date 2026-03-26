@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../domain/models/transaction.dart';
 import '../../domain/services/sync_service.dart';
 import '../../data/repositories/sqlite_card_repository.dart';
 import '../../data/repositories/sqlite_transaction_repository.dart';
@@ -14,14 +15,16 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   bool _syncing = false;
-  Map<String, int> _stats = {'pending': 0, 'success': 0, 'failed': 0};
+  final Map<String, int> _stats = {'pending': 0, 'success': 0, 'failed': 0};
   late final SyncService _syncService;
+  late final SqliteTransactionRepository _txnRepo;
 
   @override
   void initState() {
     super.initState();
+    _txnRepo = SqliteTransactionRepository();
     _syncService = SyncService(
-      txnRepo: SqliteTransactionRepository(),
+      txnRepo: _txnRepo,
       cardRepo: SqliteCardRepository(),
       crypto: AesCryptoService(),
       gateway: HttpGatewayClient(),
@@ -30,8 +33,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _loadStats() async {
-    // TODO: Implement stats query in repository
-    setState(() {});
+    final pendingCount = await _txnRepo.getCountByStatus(TransactionStatus.pending);
+    final successCount = await _txnRepo.getCountByStatus(TransactionStatus.success);
+    final failedCount = await _txnRepo.getCountByStatus(TransactionStatus.failed);
+
+    if (mounted) {
+      setState(() {
+        _stats['pending'] = pendingCount;
+        _stats['success'] = successCount;
+        _stats['failed'] = failedCount;
+      });
+    }
   }
 
   Future<void> _syncNow() async {
@@ -134,7 +146,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Card(
       child: ListTile(
         leading: CircleAvatar(
-          backgroundColor: color.withOpacity(0.2),
+          backgroundColor: color.withAlpha(51),
           child: Icon(icon, color: color),
         ),
         title: Text(title),

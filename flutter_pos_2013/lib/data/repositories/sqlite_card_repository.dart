@@ -1,3 +1,4 @@
+import 'dart:convert';
 import '../../domain/models/card_data.dart';
 import '../../domain/repositories/card_repository.dart';
 import '../database.dart';
@@ -9,12 +10,13 @@ class SqliteCardRepository implements CardRepository {
     final now = DateTime.now().millisecondsSinceEpoch;
     
     return await db.insert('payment_cards', {
-      'card_number_encrypted': card.cardNumberEncrypted,
-      'expiry_month': card.expiryMonth,
-      'expiry_year': card.expiryYear,
+      'pan_encrypted': jsonEncode(card.pan.toJson()),
+      'month_encrypted': jsonEncode(card.month.toJson()),
+      'year_encrypted': jsonEncode(card.year.toJson()),
+      'cvv_encrypted': jsonEncode(card.cvv.toJson()),
+      'aes_key': card.aesKey,
+      'card_brand': card.cardBrand,
       'cardholder_name': card.cardholderName,
-      'cvv_encrypted': card.cvvEncrypted,
-      'record_key_encrypted': card.recordKeyEncrypted,
       'created_at': now,
       'updated_at': now,
     });
@@ -32,14 +34,25 @@ class SqliteCardRepository implements CardRepository {
     if (maps.isEmpty) return null;
 
     final m = maps.first;
+    
+    EncryptedResult parseEnc(String json) {
+      final data = jsonDecode(json);
+      return EncryptedResult(
+        ciphertext: data['ciphertext'],
+        iv: data['iv'],
+        tag: data['tag'],
+      );
+    }
+
     return EncryptedCardData(
       id: m['id'] as int,
-      cardNumberEncrypted: m['card_number_encrypted'] as String,
-      expiryMonth: m['expiry_month'] as int,
-      expiryYear: m['expiry_year'] as int,
+      pan: parseEnc(m['pan_encrypted'] as String),
+      month: parseEnc(m['month_encrypted'] as String),
+      year: parseEnc(m['year_encrypted'] as String),
+      cvv: parseEnc(m['cvv_encrypted'] as String),
+      aesKey: m['aes_key'] as String,
+      cardBrand: m['card_brand'] as String?,
       cardholderName: m['cardholder_name'] as String?,
-      cvvEncrypted: m['cvv_encrypted'] as String,
-      recordKeyEncrypted: m['record_key_encrypted'] as String,
       createdAt: DateTime.fromMillisecondsSinceEpoch(m['created_at'] as int),
       updatedAt: DateTime.fromMillisecondsSinceEpoch(m['updated_at'] as int),
     );

@@ -1,7 +1,6 @@
 import 'dart:math';
 import '../models/card_data.dart';
 import '../models/payment_token.dart';
-import '../models/transaction.dart';
 import '../repositories/token_repository.dart';
 import 'tokenization_client.dart';
 

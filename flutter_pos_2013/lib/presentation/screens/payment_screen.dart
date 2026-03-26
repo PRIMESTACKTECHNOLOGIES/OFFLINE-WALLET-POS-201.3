@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../../domain/models/card_data.dart';
 import '../../domain/services/payment_service.dart';
 import '../../data/repositories/sqlite_card_repository.dart';
 import '../../data/repositories/sqlite_transaction_repository.dart';
 import '../../data/services/aes_crypto.dart';
+import '../utils/card_input_formatters.dart';
 
 class PaymentScreen extends StatefulWidget {
   const PaymentScreen({super.key});
@@ -130,6 +132,19 @@ class _PaymentScreenState extends State<PaymentScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            // LOGO SECTION
+            Center(
+              child: Image.asset(
+                'assets/logo/logo.png.jpg', // Updated to match your current filename
+                height: 100,
+                errorBuilder: (context, error, stackTrace) {
+                  // If logo file is missing, show a placeholder icon instead
+                  return const Icon(Icons.account_balance_wallet, size: 80, color: Colors.blueGrey);
+                },
+              ),
+            ),
+            const SizedBox(height: 20),
+
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(16),
@@ -143,7 +158,10 @@ class _PaymentScreenState extends State<PaymentScreen> {
                         prefixIcon: Icon(Icons.credit_card),
                       ),
                       keyboardType: TextInputType.number,
-                      maxLength: 19,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly,
+                        CardNumberInputFormatter(),
+                      ],
                     ),
                     const SizedBox(height: 12),
                     Row(
@@ -156,7 +174,9 @@ class _PaymentScreenState extends State<PaymentScreen> {
                               hintText: '12/28',
                             ),
                             keyboardType: TextInputType.number,
-                            maxLength: 5,
+                            inputFormatters: [
+                              CardMonthInputFormatter(),
+                            ],
                           ),
                         ),
                         const SizedBox(width: 16),
@@ -170,6 +190,9 @@ class _PaymentScreenState extends State<PaymentScreen> {
                             keyboardType: TextInputType.number,
                             maxLength: 4,
                             obscureText: true,
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly,
+                            ],
                           ),
                         ),
                       ],

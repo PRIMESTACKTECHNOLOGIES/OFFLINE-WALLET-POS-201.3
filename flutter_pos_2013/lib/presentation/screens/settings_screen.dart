@@ -1,5 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../../domain/services/sync_service.dart';
+import '../../data/repositories/sqlite_card_repository.dart';
+import '../../data/repositories/sqlite_transaction_repository.dart';
+import '../../data/services/aes_crypto.dart';
+import '../../data/services/http_gateway.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -10,13 +15,21 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _forceOffline = false;
+  bool _syncing = false;
   final _backendUrlController = TextEditingController(
     text: 'https://pos-offline-sftwr.onrender.com',
   );
+  late final SyncService _syncService;
 
   @override
   void initState() {
     super.initState();
+    _syncService = SyncService(
+      txnRepo: SqliteTransactionRepository(),
+      cardRepo: SqliteCardRepository(),
+      crypto: AesCryptoService(),
+      gateway: HttpGatewayClient(),
+    );
     _loadSettings();
   }
 
@@ -31,6 +44,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('force_offline', value);
     setState(() => _forceOffline = value);
+  }
+
+  Future<void> _triggerSync() async {
+    if (_syncing) return;
+    setState(() => _syncing = true);
+
+    try {
+      await _syncService.syncPendingTransactions(20);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Sync completed successfully'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Sync failed: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _syncing = false);
+    }
   }
 
   @override
@@ -69,13 +110,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const Divider(),
           ListTile(
             title: const Text('Sync Now'),
-            leading: const Icon(Icons.sync),
-            onTap: () {
-              // Trigger sync
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Sync triggered')),
-              );
-            },
+            leading: _syncing 
+              ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))
+              : const Icon(Icons.sync),
+            onTap: _syncing ? null : _triggerSync,
           ),
           const Divider(),
           const ListTile(

@@ -11,7 +11,8 @@ import { myfatoorahService } from "./myfatoorah.service";
        encryptedExpMonth, 
        encryptedExpYear, 
        encryptedCvv, 
-       aesKey 
+       aesKey,
+       paymentMethodId
      } = req.body; 
  
      // 🔓 Decrypt card data (each field has its own ciphertext, IV, and tag)
@@ -22,11 +23,13 @@ import { myfatoorahService } from "./myfatoorah.service";
  
      // 💳 Execute payment 
      const result = await myfatoorahService.executeDirectPayment({ 
+       localTxnId,
        amount, 
        cardNumber, 
        expiryMonth, 
        expiryYear, 
-       cvv 
+       cvv,
+       paymentMethodId
      }); 
  
      if (!result.success) { 

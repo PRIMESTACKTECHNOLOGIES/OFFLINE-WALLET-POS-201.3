@@ -32,7 +32,7 @@ class PaymentService {
       cardRefId: cardId,
       amountCents: amountCents,
       currency: currency,
-      status: TransactionStatus.PENDING,
+      status: TransactionStatus.pending,
       attemptCount: 0,
       createdAt: now,
       updatedAt: now,

@@ -47,18 +47,16 @@ class SyncService {
         return;
       }
 
-      final card = _crypto.decryptCard(encCard);
-
-      final result = await _gateway.chargeCard(
+      final result = await _gateway.chargeEncryptedCard(
         txn.localTxnId,
         txn.amountCents,
         txn.currency,
-        card,
+        encCard,
       );
 
-      if (result.type == GatewayResultType.SUCCESS) {
+      if (result.type == GatewayResultType.success) {
         await _txnRepo.markAsSuccess(txn.id!, result.gatewayTxnId!);
-      } else if (result.type == GatewayResultType.HARD_FAIL) {
+      } else if (result.type == GatewayResultType.hardFail) {
         await _txnRepo.markAsFailed(
           txn.id!,
           result.errorCode!,
