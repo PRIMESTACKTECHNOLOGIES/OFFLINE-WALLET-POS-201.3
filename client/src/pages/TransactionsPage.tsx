@@ -380,11 +380,11 @@ export const TransactionsPage = () => {
               <tr className="bg-gray-50 border-b border-gray-200 text-xs uppercase tracking-wider text-gray-500 font-semibold">
                 <th className="px-6 py-4 bg-gray-50">Date & Time</th>
                 <th className="px-6 py-4 bg-gray-50">Terminal</th>
+                <th className="px-6 py-4 bg-gray-50">Card / Brand</th>
                 <th className="px-6 py-4 bg-gray-50">Amount</th>
                 <th className="px-6 py-4 bg-gray-50">Status</th>
-                <th className="px-6 py-4 bg-gray-50">STAN</th>
-                <th className="px-6 py-4 bg-gray-50">Batch ID</th>
-                <th className="px-6 py-4 text-right bg-gray-50">Action</th>
+                <th className="px-6 py-4 bg-gray-50">Ref ID</th>
+                <th className="px-6 py-4 text-right bg-gray-50">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -415,11 +415,21 @@ export const TransactionsPage = () => {
                     <td className="px-6 py-4 text-sm text-gray-600 font-medium">
                       {t.terminalId}
                     </td>
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-2">
+                        <div className="w-8 h-5 bg-gray-100 rounded flex items-center justify-center text-[10px] font-bold text-gray-400">
+                          {t.cardBrand ? t.cardBrand.substring(0, 4) : 'CARD'}
+                        </div>
+                        <div className="text-xs text-gray-600 font-medium">
+                          {t.cardBrand || (t.panMasked ? 'VISA' : 'UNKNOWN')}
+                        </div>
+                      </div>
+                    </td>
                     <td className="px-6 py-4 text-sm font-bold text-gray-900 tracking-tight">
                       <div className="flex items-center">
                         {new Intl.NumberFormat('en-US', { style: 'currency', currency: t.currency || 'USD' }).format(t.amountMinor / 100)}
-                        {(t.status === 'OFFLINE_APPROVED' || t.status === 'STORED') && (
-                          <span title="Offline Transaction" className="ml-2 text-blue-500">
+                        {(t.status === 'OFFLINE_APPROVED' || t.status === 'STORED' || t.terminalId === 'FLUTTER-POS') && (
+                          <span title="Offline Sync Transaction" className="ml-2 text-blue-500">
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z" /></svg>
                           </span>
                         )}
@@ -429,10 +439,7 @@ export const TransactionsPage = () => {
                       <StatusBadge status={t.status} />
                     </td>
                     <td className="px-6 py-4 text-xs font-mono text-gray-500">
-                      {t.stan || '-'}
-                    </td>
-                    <td className="px-6 py-4 text-xs font-mono text-gray-500">
-                      {t.batchId ? `#${t.batchId}` : '-'}
+                      {t.invoiceId || t.stan || t.id.substring(0, 8)}
                     </td>
                     <td className="px-6 py-4 text-right">
                       <button 
@@ -546,6 +553,24 @@ export const TransactionsPage = () => {
                   <span className="text-gray-500">Terminal ID</span>
                   <span className="text-gray-900 font-medium">{selectedTxn.terminalId}</span>
                 </div>
+                {selectedTxn.cardBrand && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-500">Card Brand</span>
+                    <span className="text-gray-900 font-medium">{selectedTxn.cardBrand}</span>
+                  </div>
+                )}
+                {selectedTxn.invoiceId && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-500">Invoice ID</span>
+                    <span className="text-gray-900 font-medium">{selectedTxn.invoiceId}</span>
+                  </div>
+                )}
+                {selectedTxn.paymentId && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-500">Payment ID</span>
+                    <span className="text-gray-900 font-medium">{selectedTxn.paymentId}</span>
+                  </div>
+                )}
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-500">STAN</span>
                   <span className="text-gray-900 font-medium">{selectedTxn.stan || '-'}</span>

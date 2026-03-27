@@ -6,7 +6,7 @@ const MYFATOORAH_BASE_URL = process.env.MYFATOORAH_TEST_MODE === "true"
   ? "https://apitest.myfatoorah.com/" 
   : "https://api.myfatoorah.com/";
 
-const MYFATOORAH_API_KEY = process.env.MYFATOORAH_API_KEY || "";
+const MYFATOORAH_API_KEY = process.env.MYFATOORAH_API_KEY || "SK_ARE_GHXzJs81newi8L06b8dDE8qZhaidkdcjuf2seTAgnZjVrzjzTwSh6ACeRYsfJ0w0";
 
 export interface MyFatoorahPaymentData {
   invoiceId: number;

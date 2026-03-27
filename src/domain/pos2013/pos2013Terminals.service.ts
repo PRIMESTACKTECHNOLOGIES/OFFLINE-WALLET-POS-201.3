@@ -46,13 +46,32 @@ export class Pos2013TerminalsService {
           amount_minor as "amountMinor",
           currency,
           status,
-          txn_timestamp as "txnTimestamp"
+          txn_timestamp as "txnTimestamp",
+          NULL as "cardBrand",
+          NULL as "invoiceId",
+          NULL as "paymentId"
         FROM pos2013_transactions
         WHERE merchant_id = ?
-        ORDER BY txn_timestamp DESC
+        
+        UNION ALL
+
+        SELECT 
+          local_txn_id as id,
+          ? as "merchantId",
+          'FLUTTER-POS' as "terminalId",
+          CAST(amount * 100 AS INTEGER) as "amountMinor",
+          'AED' as currency,
+          status,
+          created_at as "txnTimestamp",
+          card_brand as "cardBrand",
+          invoice_id as "invoiceId",
+          payment_id as "paymentId"
+        FROM myfatoorah_direct_settlements
+        
+        ORDER BY "txnTimestamp" DESC
         LIMIT 100
         `,
-        [merchantId]
+        [merchantId, merchantId]
       );
       return result.rows;
     } catch (e) {

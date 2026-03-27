@@ -29,6 +29,9 @@ export interface Transaction {
   status: string;
   emvData?: any;
   txnTimestamp: string;
+  cardBrand?: string;
+  invoiceId?: string;
+  paymentId?: string;
 }
 
 export interface Batch {
