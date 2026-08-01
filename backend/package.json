@@ -1,33 +1,34 @@
 {
   "name": "pos-offline-backend",
   "version": "1.0.0",
-  "description": "POS Offline Backend",
+  "description": "POS Offline Backend with Primestack Processor",
   "main": "dist/server.js",
   "scripts": {
     "start": "node dist/server.js",
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "check-binance": "ts-node -r dotenv/config src/scripts/check_binance_keys.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
     "@types/bcryptjs": "^2.4.6",
-    "@types/braintree": "^3.4.3",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/sqlite3": "^3.1.11",
     "axios": "^1.6.0",
     "bcryptjs": "^3.0.3",
-    "braintree": "^3.36.0",
     "cors": "^2.8.5",
-    "dotenv": "^16.3.1",
+    "dotenv": "^16.6.1",
     "express": "^4.18.2",
     "jsonwebtoken": "^9.0.3",
+    "nfc-pcsc": "^0.8.1",
     "open": "^11.0.0",
     "pg": "^8.11.3",
+    "socket.io": "^4.8.3",
     "sqlite": "^5.1.1",
     "sqlite3": "^6.0.1",
-    "uuid": "^9.0.1"
+    "uuid": "^14.0.1"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
