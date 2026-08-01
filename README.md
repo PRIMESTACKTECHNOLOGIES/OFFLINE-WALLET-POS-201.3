@@ -1,242 +1,103 @@
-# POS Offline Software — Current Status
+# POS Offline Software
 
-> Last updated: June 2026
+> Last updated: August 2026
 
----
+This repository contains a full offline-capable POS stack with a React + Vite dashboard, a Node.js/TypeScript backend, and an Android client. The current setup is suitable for local development and for deployment to a public HTTPS host with a real payment processor or payout provider.
 
-## What This Software Is
+## What is included
 
-A full **Point-of-Sale (POS) system** with:
-- Web-based dashboard (React + Vite frontend)
-- Node.js/TypeScript backend
-- Android app (Kotlin)
-- Full offline EMV card processing engine
-- Integrated with **Primestack** payment processor for external payment routing
+- Web dashboard and POS UI
+- Node.js/TypeScript backend with SQLite storage
+- Android POS app
+- Offline transaction handling and batch sync flow
+- Primestack integration for live payment routing
+- Optional crypto and bank payout provider integrations
 
----
+## Quick start
 
-## How to Start
+### Windows
 
-Double-click **`START POS.bat`** in the root folder.
+Use the helper scripts in the repository root:
 
-It will:
-1. Install dependencies if missing (first run only)
-2. Start the backend on `http://localhost:7000`
-3. Start the frontend on `http://localhost:7001`
-4. Open the browser automatically after 10 seconds
+- Run [start_all.bat](start_all.bat) to start the backend and frontend together
+- Or run [start_dev.ps1](start_dev.ps1) from PowerShell
 
-**First run login:**
-- Username: `admin`
-- Password: set via `ADMIN_PASSWORD` in `backend/.env` (default: `admin123` — change immediately after first login)
+### Manual start
 
-> ⚠️ Primestack processor must also be running on `http://localhost:6001` before testing payments.
+From the repository root:
 
----
+1. Install backend dependencies
+   - cd backend
+   - npm install
 
-## Architecture Overview
+2. Install frontend dependencies
+   - cd client
+   - npm install
 
-```
-Browser (localhost:7001)
-    │
-    ├── Online payments  ──────────────────► Primestack (localhost:6001)
-    │                                              │
-    │                                              └──► Configurable payment backend
-    │
-    ├── Offline payments ─► EMV Engine (browser)
-    │                              │
-    │                              ├── AES-MAC cryptogram (Web Crypto API)
-    │                              ├── Terminal risk management
-    │                              ├── Card risk management
-    │                              ├── CVM processing (PIN / Signature / No-CVM)
-    │                              ├── Action code evaluation (TAC/IAC)
-    │                              └── localStorage storage
-    │
-    └── Sync (when back online) ──────────► Primestack /api/v1/offline/sync
+3. Start the backend
+   - cd backend
+   - npm run dev
 
-POS Backend (localhost:7000)
-    │
-    ├── Auth (JWT)
-    ├── Terminals management
-    ├── Transactions / Batches
-    ├── Settings
-    └── Receipts
+4. Start the frontend
+   - cd client
+   - npm run dev
 
-Android App ──────────────────────────────► Primestack (via local IP)
-```
+Default local URLs:
+- Backend: http://localhost:7000
+- Frontend: http://localhost:7001
 
----
+## Default login
 
-## Payment Flow
+On the first run, sign in with:
+- Username: admin
+- Password: set in the backend environment file
 
-### Online Payment
-```
-1. POS calls  POST http://localhost:6001/api/v1/charge
-   Header:    x-api-key: ps_pub_xxxx
-   Body:      { amount, currency }
+If no password has been configured, the default example value is admin123, but it should be changed immediately.
 
-2. Primestack creates PaymentIntent via configured backend → returns clientSecret
+## Configuration
 
-3. POS confirms card payment via clientSecret
-   → Payment backend processes the charge
-   → Payment dashboard shows: Succeeded ✅
-```
+Copy the backend environment template before running the app:
 
-### Offline Payment (EMV Engine)
-```
-1. Card details entered manually
-2. EMV engine runs all 11 steps:
-   ├── TLV parse (card + terminal data)
-   ├── Application selection (Visa / Mastercard / Amex / Discover)
-   ├── Offline data authentication (SDA / DDA / CDA)
-   ├── Terminal risk management (floor limit, random selection, velocity)
-   ├── Card risk management (consecutive offline, cumulative amount, IAC)
-   ├── CVM processing (PIN / Signature / No-CVM)
-   ├── Action code evaluation (TAC-Denial, IAC-Denial, TAC-Online, IAC-Online)
-   ├── Cryptogram generation — REAL AES-MAC via Web Crypto API
-   ├── Transaction stored in localStorage (EMV format)
-   ├── Queued on Primestack  POST /api/v1/offline/queue
-   └── Decision: TC (approved) / AAC (declined) / ARQC (needs online)
+- backend/.env.example -> backend/.env
 
-3. When internet returns → press Sync Now
-   POST http://localhost:6001/api/v1/offline/sync
-   → Primestack settles all pending transactions
-```
+Important variables:
+- PORT=7000
+- JWT_SECRET=your_secret_here
+- PRIMESTACK_API_URL=http://localhost:6001
+- PRIMESTACK_API_KEY=your_key_here
 
----
+Optional live integrations:
+- CRYPTO_PROVIDER / CUSTOM_CRYPTO_PROVIDER
+- BANK_PAYOUT_PROVIDER / BANK_PAYOUT_API_URL
 
-## Credentials & Keys
+## Build commands
 
-> **Security Warning:** Default bootstrap credentials are for FIRST RUN ONLY. Immediately change all passwords, JWT secrets, API keys, and Primestack credentials via the `/backend/.env` file before any non-localhost deployment. Never commit real secrets to version control.
+From the repository root:
 
-| Item | Location |
-|---|---|
-| Merchant admin login | Set via `ADMIN_PASSWORD` in `backend/.env` |
-| Primestack public / secret keys | `PS_PUBLIC_KEY` / `PS_SECRET_KEY` in `backend/.env` |
-| Primestack admin dashboard | `PRIMESTACK_ADMIN_URL` + `PRIMESTACK_ADMIN_PASSWORD` in `backend/.env` |
-| JWT signing secret | `JWT_SECRET` in `backend/.env` (generate with: `openssl rand -hex 32`) |
-| Binance live trading keys | `BINANCE_API_KEY` / `BINANCE_API_SECRET` in `backend/.env` |
+- Backend build: cd backend && npm run build
+- Frontend build: cd client && npm run build
+- Full build: npm run build
 
----
+## Project structure
 
-## Ports
+- backend/ — Express API, SQLite schema, domain services, auth, payments, terminals, transactions
+- client/ — Vite React frontend and POS pages
+- android_pos_app/ — Android Kotlin app
+- docker-compose.yml — container-based startup template
+- start_all.bat / start_dev.ps1 — local development helpers
 
-| Service | Port |
-|---|---|
-| POS Frontend | `7001` |
-| POS Backend | `7000` |
-| Primestack Processor | `6001` |
+## Deployment notes
 
----
+The app is prepared for deployment with:
+- Docker Compose
+- A public HTTPS host such as Render, Railway, Fly.io, or a similar provider
+- Environment variables for the payment processor and payout provider
 
-## Project Structure
+For public deployment, ensure that:
+- The backend is reachable over HTTPS
+- JWT secrets and API keys are not committed to source control
+- Webhook URLs are configured with the deployed backend host
 
-```
-POS OFFLINE SFTWR/
-│
-├── START POS.bat              ← Double-click to start everything
-├── BUILD APK.bat              ← Build Android APK
-│
-├── backend/                   ← Node.js / TypeScript API
-│   ├── src/
-│   │   ├── app.ts             ← Express app, all routes
-│   │   ├── server.ts          ← Entry point, port 7000
-│   │   └── domain/
-│   │       ├── auth/          ← JWT login, profile, sessions
-│   │       ├── payments/      ← Charge endpoint (→ Primestack)
-│   │       ├── primestack/    ← Primestack proxy routes
-│   │       ├── batches/       ← Offline batch management
-│   │       ├── terminals/     ← Terminal registration
-│   │       ├── transactions/  ← Transaction records
-│   │       ├── settings/      ← Merchant settings
-│   │       └── receipts/      ← Receipt generation
-│   ├── .env                   ← Keys and config
-│   └── database.sqlite        ← SQLite database
-│
-├── client/                    ← React + Vite frontend
-│   ├── src/
-│   │   ├── pages/
-│   │   │   ├── POSPage.tsx        ← Simple POS terminal
-│   │   │   ├── POSPageSecure.tsx  ← Full POS with EMV engine
-│   │   │   ├── OverviewPage.tsx   ← Dashboard
-│   │   │   ├── TransactionsPage.tsx
-│   │   │   ├── BatchesPage.tsx
-│   │   │   ├── SettingsPage.tsx
-│   │   │   └── ...
-│   │   └── lib/
-│   │       ├── api.ts             ← All API calls
-│   │       ├── crypto.ts          ← HMAC signatures
-│   │       └── emv/               ← Full EMV offline engine
-│   │           ├── emv-engine.ts          ← Orchestrator (11 steps)
-│   │           ├── emv-pos-bridge.ts      ← Wires engine to UI
-│   │           ├── cryptogram-generator.ts ← Real AES-MAC cryptogram
-│   │           ├── terminal-risk-management.ts
-│   │           ├── card-risk-management.ts
-│   │           ├── cvm-processor.ts
-│   │           ├── action-code-processor.ts
-│   │           ├── offline-data-authentication.ts
-│   │           ├── offline-storage.ts
-│   │           ├── tlv-parser.ts
-│   │           └── application-selector.ts
-│   └── .env.development       ← Frontend env vars
-│
-└── android_pos_app/           ← Kotlin Android app
-    └── app/src/main/
-        ├── ui/MainActivity.kt      ← POS UI with keypad
-        └── data/api/PosApi.kt      ← Primestack API client
-```
+## Notes
 
----
-
-## EMV Engine Status
-
-| Feature | Status |
-|---|---|
-| TLV Parser | ✅ Full EMV spec |
-| Application Selection | ✅ Visa, Mastercard, Amex, Discover, JCB |
-| Offline Data Authentication (SDA/DDA/CDA) | ✅ Structure complete |
-| Terminal Risk Management | ✅ Floor limit, random selection, velocity |
-| Card Risk Management | ✅ Consecutive/cumulative offline limits, IAC |
-| CVM Processing | ✅ PIN, Signature, No-CVM |
-| Action Code Evaluation | ✅ TAC/IAC Denial, Online, Default |
-| **Offline Cryptogram (TC/AAC/ARQC)** | ✅ **Real AES-MAC via Web Crypto API** |
-| Offline Storage | ✅ localStorage, batch export, CSV |
-| Offline Batch Mode | ✅ Queue → Sync via Primestack |
-| Offline Floor Limits | ✅ Configurable per terminal |
-| Connected to POS UI | ✅ Full integration in POSPageSecure |
-
-> **Production Hardening:** PIN verification and RSA certificate chain validation require certified hardware (HSM/P2PE) and real CA public keys from the card schemes. Software POS terminals cannot perform these operations in a PCI-DSS compliant manner without certified hardware peripherals and terminal injection of certified CAPK keys.
-
----
-
-## Android App
-
-- Package: `com.pos2013.offline`
-- Connects to Primestack directly at the backend's IP
-- Supports online charge and offline queue
-- For **emulator**: uses `http://10.0.2.2:7000/`
-- For **real device**: change `BASE_URL` in `PosApi.kt` to your PC's local IP
-
-To build: double-click **`BUILD APK.bat`** (requires Android Studio installed)
-
----
-
-## Production Hardening Checklist
-
-| Item | Detail |
-|---|---|
-| PIN verification | Requires PCI-certified hardware PIN pad peripheral; software entry is for development only |
-| RSA certificate verification | Requires certified CA public keys (CAPKs) injected per terminal via P2PE secure loader |
-| PCI-DSS compliance | Must be formally assessed / SAQ D filled; codebase does not grant compliance |
-| Android BASE_URL | Must be updated to PC's IP / real domain for real device testing |
-| Virtual card numbers | Issued via Luhn algorithm for internal standalone use — replace with real network-issued PANs via processor |
-| Cardholder data storage | Ensure PAN/cvv is never persisted; offline storage holds only cryptograms + masked card data |
-
----
-
-## What's Next (Recommended)
-
-1. **Connect a payment processor backend** — plug Primestack or any processor to your acquiring bank / card network
-2. **Receipt printer integration** — connect to thermal printer via Web USB or Bluetooth
-3. **Android IP config** — add a settings screen in the Android app to set the backend IP
-4. **Multi-terminal support** — register multiple Android devices as separate terminals
-5. **Production deployment** — Docker + HTTPS + proper PCI-DSS assessment
+This codebase includes offline transaction logic and live payment integration hooks, but it is not a PCI-certified payment solution. Any production deployment should be reviewed for compliance, secure storage, and operational controls before handling real customer payments at scale.
