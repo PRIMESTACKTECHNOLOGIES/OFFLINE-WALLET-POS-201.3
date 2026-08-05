@@ -1,33 +1,12 @@
 services:
   - type: web
-    name: pos-offline-backend
-    env: node
-    plan: free
-    buildCommand: npm install --prefix backend && npm --prefix backend run build
-    startCommand: npm --prefix backend start
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: PORT
-        value: 10000
-      - key: JWT_SECRET
-        generateValue: true
-      - key: ALLOWED_ORIGINS
-        value: https://your-frontend-domain.com
-  - type: web
     name: pos-offline-docker
     env: docker
     plan: free
     branch: main
-    # Use the repository root Dockerfile to build the image
-    dockerfilePath: Dockerfile
-    # Deploy in Frankfurt (EU Central) region
     region: frankfurt
-    # Optional: root directory for the service (use repo root)
-    root: /
-    # For docker services the image build will follow the Dockerfile; commands below are optional placeholders
-    buildCommand: ""
-    startCommand: ""
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
@@ -36,19 +15,4 @@ services:
       - key: JWT_SECRET
         generateValue: true
       - key: ALLOWED_ORIGINS
-        value: https://your-frontend-domain.com
-  - type: static
-    name: pos-offline-frontend
-    env: static
-    plan: free
-    branch: main
-    root: /client
-    buildCommand: npm install --prefix client && npm --prefix client run build
-    publishCommand: npm --prefix client run publish
-    publishDirectory: client/dist
-    region: frankfurt
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: VITE_API_URL
-        value: https://your-backend-domain.com
+        value: https://offline-wallet-pos-201-3.onrender.com
