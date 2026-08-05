@@ -1,72 +1,54 @@
-# ═════════════════════════════════════════════════════════════════════════════
-# RENDER.COM PRODUCTION DEPLOYMENT CONFIGURATION
-# ═════════════════════════════════════════════════════════════════════════════
-# 
-# DEPLOYMENT INSTRUCTIONS:
-# 1. Push this code to GitHub
-# 2. Go to https://dashboard.render.com/
-# 3. Click "New +" → "Blueprint"
-# 4. Connect your GitHub repository
-# 5. Click "Apply" - Render will deploy automatically
-#
-# IMPORTANT: This uses a paid plan (Starter $7/month) for persistent storage.
-# Free tier will lose data on every restart - NOT for production!
-#
-# ═════════════════════════════════════════════════════════════════════════════
-
 services:
   - type: web
-    name: pos-offline-sftwr
-    env: docker
-    plan: starter  # REQUIRED: Disks need Starter plan ($7/month)
-    region: singapore  # Change to closest region: singapore, frankfurt, oregon
-    
-    # Environment Variables
+    name: pos-offline-backend
+    env: node
+    plan: free
+    buildCommand: npm install --prefix backend && npm --prefix backend run build
+    startCommand: npm --prefix backend start
     envVars:
-      - key: PORT
-        value: 3000
-      
-      - key: DATABASE_URL
-        value: /var/lib/data/pos_offline.sqlite
-      
       - key: NODE_ENV
         value: production
-      
-      # 🔴 CHANGE THESE SECRETS BEFORE DEPLOYING:
-      - key: ADMIN_PASSWORD
-        value: ChangeThisToStrongPassword123!
-      
-      - key: SECRET_KEY
-        value: your-jwt-secret-key-min-32-characters-long
-      
-      - key: MYFATOORAH_TOKEN
-        value: ""  # Add your MyFatoorah token here for real payments
-      
-      - key: MYFATOORAH_TEST_MODE
-        value: "false"  # Set to "true" for testing, "false" for LIVE payments
-    
-    # Persistent Disk for SQLite Database
-    # This ensures your data survives restarts and deployments
-    disk:
-      name: pos_data
-      mountPath: /var/lib/data
-      sizeGB: 1  # 1GB is plenty for POS data
-
-# ═════════════════════════════════════════════════════════════════════════════
-# OPTIONAL: PostgreSQL Database (if you want to upgrade from SQLite)
-# ═════════════════════════════════════════════════════════════════════════════
-# 
-# Uncomment below to use PostgreSQL instead of SQLite:
-#
-# databases:
-#   - name: pos-offline-db
-#     plan: starter
-#     region: singapore
-#     ipAllowList: []  # Allow access from anywhere
-#
-# Then update DATABASE_URL env var to:
-#   - key: DATABASE_URL
-#     fromDatabase:
-#       name: pos-offline-db
-#       property: connectionString
-# ═════════════════════════════════════════════════════════════════════════════
+      - key: PORT
+        value: 10000
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ALLOWED_ORIGINS
+        value: https://your-frontend-domain.com
+  - type: web
+    name: pos-offline-docker
+    env: docker
+    plan: free
+    branch: main
+    # Use the repository root Dockerfile to build the image
+    dockerfilePath: Dockerfile
+    # Deploy in Frankfurt (EU Central) region
+    region: frankfurt
+    # Optional: root directory for the service (use repo root)
+    root: /
+    # For docker services the image build will follow the Dockerfile; commands below are optional placeholders
+    buildCommand: ""
+    startCommand: ""
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ALLOWED_ORIGINS
+        value: https://your-frontend-domain.com
+  - type: static
+    name: pos-offline-frontend
+    env: static
+    plan: free
+    branch: main
+    root: /client
+    buildCommand: npm install --prefix client && npm --prefix client run build
+    publishCommand: npm --prefix client run publish
+    publishDirectory: client/dist
+    region: frankfurt
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: VITE_API_URL
+        value: https://your-backend-domain.com
