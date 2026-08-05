@@ -10,7 +10,7 @@ class DbAdapter {
 
   constructor() {
     this.dbPromise = open({
-      filename: path.join(__dirname, '../../database.sqlite'),
+      filename: process.env.DATABASE_PATH || path.join(process.cwd(), 'data', 'database.sqlite'),
       driver: sqlite3.Database
     });
   }
@@ -42,7 +42,7 @@ class DbAdapter {
     }
   }
 
-  // Mock connect() to return self (since SQLite is file-based and "always connected" in this wrapper)
+  // connect() compatibility shim (SQLite is file-based and "always connected" in this wrapper)
   async connect() {
     return {
       query: this.query.bind(this),

@@ -16,3 +16,9 @@ services:
         generateValue: true
       - key: ALLOWED_ORIGINS
         value: https://offline-wallet-pos-201-3.onrender.com
+      - key: DATABASE_PATH
+        value: /app/data/database.sqlite
+    disk:
+      name: sqlite-data
+      mountPath: /app/data
+      sizeGB: 1

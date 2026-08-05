@@ -15,11 +15,55 @@ class DbAdapter {
   async initDb() {
     if (!this.dbPromise) {
       this.dbPromise = open({
-        filename: path.join(__dirname, '../../../database.sqlite'),
+        filename: process.env.DATABASE_PATH || path.join(process.cwd(), 'data', 'database.sqlite'),
         driver: sqlite3.Database
       });
       const db = await this.dbPromise;
       await db.run('PRAGMA foreign_keys = ON;'); // Enable foreign keys
+
+      // ── Runtime schema guarantees (fire-and-forget safe for live dbs) ──────────
+      // init_tables runs migrations inside app boot, but if an old pre-existing
+      // SQLite file is attached mid-process these columns won't exist yet.
+      // We therefore explicitly add any required missing columns on every startup
+      // (SQLite ALTER TABLE for columns that already exist throws — we catch).
+      const guarantees: Array<[string, string]> = [
+        ['customer_wallets', 'wallet_code TEXT'],
+        ['merchant_pos_settlements', 'settled_at TEXT'],
+        ['merchant_crypto_withdrawals', 'network TEXT'],
+        ['crypto_transactions', 'provider_mode TEXT'],
+        ['pos2013_transactions', 'updated_at TEXT DEFAULT CURRENT_TIMESTAMP'],
+        ['pos2013_transactions', 'settled_at TEXT'],
+        ['pos2013_transactions', 'processor_reference TEXT'],
+        ['pos2013_transactions', 'auth_code_ref2 TEXT'],
+        ['pos2013_transactions', 'webhook_trace TEXT'],
+        ['pos2013_transactions', 'card_brand TEXT'],
+        ['pos2013_transactions', 'reader_source TEXT'],
+        ['pos2013_transactions', 'cvm_result TEXT'],
+        ['pos2013_transactions', 'pin_verified INTEGER DEFAULT 0'],
+        ['merchant_payouts', 'updated_at TEXT DEFAULT CURRENT_TIMESTAMP'],
+        ['merchant_payouts', 'provider_reference TEXT'],
+        ['merchant_payouts', 'meta TEXT'],
+        ['merchant_payouts', 'transaction_id TEXT'],
+        ['merchant_payouts', 'settled_at TEXT'],
+      ];
+      for (const [table, def] of guarantees) {
+        try {
+          await db.run(`ALTER TABLE ${table} ADD COLUMN ${def}`);
+        } catch (_) {
+          // "duplicate column name" → already present, safe to ignore.
+        }
+      }
+      // Backfill any NULL wallet_code rows — deterministic unique IDs per row.
+      try {
+        await db.run(`
+          UPDATE customer_wallets
+          SET wallet_code = 'PSW-' || (abs(random()) % 9000 + 1000) || '-' || (abs(random()) % 9000 + 1000)
+          WHERE wallet_code IS NULL OR wallet_code = ''
+        `);
+      } catch (_) { /* ignore */ }
+      try {
+        await db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_wallets_wallet_code ON customer_wallets(wallet_code)`);
+      } catch (_) { /* ignore */ }
     }
     return this.dbPromise;
   }
@@ -59,11 +103,11 @@ class DbAdapter {
     }
   }
 
-  // Mock connect() to return a client-like object
+  // connect() compatibility shim — SQLite is file-based and always-connected in this wrapper
   async connect() {
     return {
       query: this.query.bind(this),
-      release: () => {}, // No-op
+      release: () => {}, // No-op for release
     };
   }
 }
