@@ -2,7 +2,7 @@ FROM node:20-bookworm-slim AS build
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 make g++ sqlite3 libsqlite3-dev \
+    python3 make g++ pkg-config sqlite3 libsqlite3-dev libpcsclite-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/package*.json ./backend/
@@ -17,7 +17,7 @@ ENV NODE_ENV=production
 ENV PORT=10000
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    sqlite3 libsqlite3-dev \
+    sqlite3 libsqlite3-dev libpcsclite-dev pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/package*.json ./backend/
