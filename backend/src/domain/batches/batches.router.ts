@@ -5,6 +5,7 @@ const router = Router();
 
 // List all batches
 router.get("/", batchesController.list);
+router.get("/batches", batchesController.list);
 
 // Get all transactions
 router.get("/transactions", batchesController.getTransactions);
@@ -12,20 +13,23 @@ router.get("/transactions", batchesController.getTransactions);
 // Verify merchant credentials
 router.post("/verify", batchesController.verifyCredentials);
 
+// Sync locally stored offline funds receipts when the machine is back online
+router.post("/sync-offline-funds", batchesController.syncOfflineFunds);
+
 // Process offline batch upload from POS (Legacy)
 router.post("/api/payment2013/batch", batchesController.processOfflineBatch);
 
 // Protocol 201.3 CARD batch
 router.post("/pos/201.3/offline-batch", batchesController.processOfflineBatch);
 
-// Protocol 201.3 MYFATOORAH batch (reuses same controller for now)
-router.post("/pos/201.3/myfatoorah-batch", batchesController.processOfflineBatch);
-
-// Redeem payment code
+// Redeem payment code  
 router.post("/api/payment2013/redeem", batchesController.redeemPaymentCode);
+// Also handle the /pos/201.3/redeem path used by older frontend versions
+router.post("/pos/201.3/redeem", batchesController.redeemPaymentCode);
 
-// Legacy Braintree cashout
+// Legacy Braintree cashout (deprecated)
 router.post("/api/payment2013/cashout", batchesController.cashoutBraintree);
+router.post("/merchant/v1/cashout/braintree", batchesController.cashoutBraintree);
 
 // Health check for POS
 router.get("/api/health", (req, res) => {

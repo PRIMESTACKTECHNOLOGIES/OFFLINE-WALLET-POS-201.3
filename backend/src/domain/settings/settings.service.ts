@@ -1,4 +1,6 @@
 import { db } from "../../config/db";
+import dotenv from "dotenv";
+dotenv.config();
 
 export class SettingsService {
   async getSettings(merchantId: string) {
@@ -20,28 +22,38 @@ export class SettingsService {
           banking: extended.banking || {},
           notifications: extended.notifications || { email: false, sms: false, alerts: {} },
           security: extended.security || { twoFactorEnabled: false, activeDevices: [] },
+          terminal: extended.terminal || {
+            offlineMode: true,
+            autoUpdate: true,
+            features: { manualEntry: false, refunds: true, tips: true }
+          },
           paymentConfig
         };
       }
     } catch (e) {
-      console.warn("DB Error in getSettings, returning mock", e);
+      console.warn("DB Error in getSettings, returning defaults", e);
     }
     
-    // Return default/mock if DB fails or empty
+    // Return default settings if DB fails or empty
     return {
         merchant_id: merchantId,
-        api_key: "sk_test_mock_key_12345",
-        webhook_url: "https://example.com/webhook",
-        test_mode: true,
-        merchant_name: "Demo Merchant",
-        support_email: "support@demo.com",
-        paypal_client_id: "AZ78gCo54gfr-itujBtnWMJyFYAYsrONPvIDRJq252pL_kcm3PWt-uS2rRwNTJFhZRRIDc0QRPS0QBWk",
-        paypal_client_secret: "EAnAkvmZ4OeAqgr4fTN7gqrc0wiDpovMP7Uni4bOu5Zoh8sDgLhbYZ9Lv4DxJAEr0aFtDJIY0Xj_n9ny",
+        api_key: "",
+        webhook_url: "",
+        test_mode: false,
+        merchant_name: "",
+        support_email: "",
+        paypal_client_id: "",
+        paypal_client_secret: "",
         features: { manualEntry: false, refunds: false, tips: false },
         business: {},
         banking: {},
         notifications: {},
         security: {},
+        terminal: {
+          offlineMode: true,
+          autoUpdate: true,
+          features: { manualEntry: false, refunds: false, tips: false }
+        },
         paymentConfig: []
     };
   }
@@ -61,7 +73,12 @@ export class SettingsService {
         business: business || {},
         banking: banking || {},
         notifications: notifications || {},
-        security: security || {}
+        security: security || {},
+        terminal: data.terminal || {
+          offlineMode: true,
+          autoUpdate: true,
+          features: { manualEntry: false, refunds: true, tips: true }
+        }
       };
       const extendedJson = JSON.stringify(extendedSettings);
       
@@ -98,6 +115,11 @@ export class SettingsService {
         banking: extended.banking,
         notifications: extended.notifications,
         security: extended.security,
+        terminal: extended.terminal || {
+          offlineMode: true,
+          autoUpdate: true,
+          features: { manualEntry: false, refunds: true, tips: true }
+        },
         paymentConfig: row.payment_config ? JSON.parse(row.payment_config) : []
       };
     } catch (e) {
@@ -107,7 +129,7 @@ export class SettingsService {
   }
 
   async regenerateApiKey(merchantId: string) {
-    const newApiKey = `sk_live_${Math.random().toString(36).substring(2, 15)}${Math.random().toString(36).substring(2, 15)}`;
+    const newApiKey = `mk_${Math.random().toString(36).substring(2, 15)}${Math.random().toString(36).substring(2, 15)}`;
     await db.query(`UPDATE merchant_settings SET api_key = $1 WHERE merchant_id = $2`, [newApiKey, merchantId]);
     return { api_key: newApiKey };
   }

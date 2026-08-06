@@ -1,9 +1,58 @@
 import { db } from "../../config/db";
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
 import { v4 as uuidv4 } from 'uuid';
 
 export const initTables = async () => {
   try {
+
+    // Allow skipping default/demo seeding in CI or production by setting SKIP_SEED=1
+    const skipSeed = process.env.SKIP_SEED === '1' || process.env.SKIP_SEED === 'true';
+
+
+    // ── Run migrations FIRST (add missing columns to existing tables) ─────────
+    const migrations = [
+      // pos2013_batches — columns added over time
+      `ALTER TABLE pos2013_batches ADD COLUMN total_amount_minor INTEGER DEFAULT 0`,
+      `ALTER TABLE pos2013_batches ADD COLUMN signature TEXT`,
+      `ALTER TABLE pos2013_batches ADD COLUMN nonce TEXT`,
+      `ALTER TABLE pos2013_batches ADD COLUMN upload_timestamp TEXT DEFAULT CURRENT_TIMESTAMP`,
+      `ALTER TABLE pos2013_batches ADD COLUMN processed_at TEXT`,
+      `ALTER TABLE pos2013_batches ADD COLUMN batch_seq INTEGER`,
+      `ALTER TABLE pos2013_batches ADD COLUMN batch_file TEXT`,
+      `ALTER TABLE pos2013_batches ADD COLUMN protocol_version TEXT DEFAULT '201.3'`,
+      `ALTER TABLE pos2013_batches ADD COLUMN settlement_code TEXT`,
+      // pos2013_transactions — columns added over time
+      `ALTER TABLE pos2013_transactions ADD COLUMN auth_code TEXT`,
+      `ALTER TABLE pos2013_transactions ADD COLUMN local_txn_id TEXT NOT NULL DEFAULT ''`,
+      `ALTER TABLE pos2013_transactions ADD COLUMN txn_type TEXT`,
+      `ALTER TABLE pos2013_transactions ADD COLUMN auth_mode TEXT`,
+      `ALTER TABLE pos2013_transactions ADD COLUMN entry_mode TEXT`,
+      `ALTER TABLE pos2013_transactions ADD COLUMN card_brand TEXT`,
+      `ALTER TABLE pos2013_transactions ADD COLUMN reader_source TEXT`,
+      `ALTER TABLE pos2013_transactions ADD COLUMN cvm_result TEXT`,
+      `ALTER TABLE pos2013_transactions ADD COLUMN pin_verified INTEGER DEFAULT 0`,
+      // merchant_settings extended fields
+      `ALTER TABLE merchant_settings ADD COLUMN features TEXT`,
+      `ALTER TABLE merchant_settings ADD COLUMN extended_settings TEXT`,
+      `ALTER TABLE merchant_settings ADD COLUMN terminal_id TEXT`,
+      // admin_users fields
+      `ALTER TABLE admin_users ADD COLUMN two_factor_enabled INTEGER DEFAULT 0`,
+      // New tables columns
+      `ALTER TABLE virtual_cards ADD COLUMN daily_spent REAL DEFAULT 0.00`,
+      // POS idempotency table columns (safe for existing databases)
+      `ALTER TABLE pos_idempotency ADD COLUMN result_json TEXT`,
+      `ALTER TABLE pos_idempotency ADD COLUMN created_at TEXT DEFAULT CURRENT_TIMESTAMP`,
+    ];
+
+    for (const sql of migrations) {
+      try {
+        await db.query(sql);
+      } catch (_) {
+        // "duplicate column name" — column already exists, safe to ignore
+      }
+    }
+
     // Admin Users Table
     await db.query(`
       CREATE TABLE IF NOT EXISTS admin_users (
@@ -42,19 +91,56 @@ export const initTables = async () => {
       );
     `);
 
-    // Batches Table - Updated to match usage in pos2013Offline.service.ts
+    // Merchant POS settlement ledger for offline and batch reconciliation
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS merchant_pos_settlements (
+        id TEXT PRIMARY KEY,
+        merchant_id TEXT NOT NULL,
+        ledger_entry_id TEXT,
+        amount REAL NOT NULL,
+        currency TEXT DEFAULT 'USD',
+        status TEXT NOT NULL DEFAULT 'unsettled',
+        settled_at TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        meta TEXT
+      );
+    `);
+
+    // Settlement discrepancies for reconciliation mismatches
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS settlement_discrepancies (
+        id TEXT PRIMARY KEY,
+        merchant_id TEXT NOT NULL,
+        provider_ref TEXT,
+        local_settlement_id TEXT,
+        amount REAL NOT NULL,
+        currency TEXT DEFAULT 'USD',
+        discrepancy_type TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'unresolved',
+        details TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Batches Table — SQLite-compatible, with all columns the service uses
     await db.query(`
       CREATE TABLE IF NOT EXISTS pos2013_batches (
         id TEXT PRIMARY KEY,
         batch_id TEXT NOT NULL,
         merchant_id TEXT NOT NULL,
         terminal_id TEXT NOT NULL,
-        protocol_version TEXT,
-        status TEXT NOT NULL,
+        protocol_version TEXT DEFAULT '201.3',
+        status TEXT NOT NULL DEFAULT 'RECEIVED',
         settlement_code TEXT,
-        txn_count INTEGER,
-        batch_file TEXT, -- JSON stored as TEXT
+        txn_count INTEGER DEFAULT 0,
+        total_amount_minor INTEGER DEFAULT 0,
+        signature TEXT,
+        nonce TEXT,
+        batch_file TEXT,
         batch_seq INTEGER,
+        upload_timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+        processed_at TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       );
@@ -75,12 +161,43 @@ export const initTables = async () => {
         txn_type TEXT,
         auth_mode TEXT,
         entry_mode TEXT,
+        card_brand TEXT,
+        reader_source TEXT,
+        cvm_result TEXT,
+        pin_verified INTEGER DEFAULT 0,
         rrn TEXT,
         auth_code TEXT,
         status TEXT,
         emv_data TEXT, -- JSON or String
         txn_timestamp TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // POS idempotency cache for duplicate transaction retries
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS pos_idempotency (
+        idempotency_key TEXT PRIMARY KEY,
+        result_json TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Local offline funds ledger for machine-offline receipt persistence
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS offline_funds_receipts (
+        id TEXT PRIMARY KEY,
+        merchant_id TEXT NOT NULL,
+        terminal_id TEXT NOT NULL,
+        transaction_id TEXT,
+        stan TEXT,
+        amount_minor INTEGER NOT NULL,
+        currency TEXT DEFAULT 'USD',
+        status TEXT NOT NULL DEFAULT 'PENDING',
+        receipt_payload TEXT,
+        synced_at TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
@@ -106,6 +223,16 @@ export const initTables = async () => {
         receipt_data TEXT NOT NULL, -- JSON
         generated_at TEXT DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (transaction_id) REFERENCES pos2013_transactions(id)
+      );
+    `);
+
+    // Incoming Payments Table (internal receiver)
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS incoming_payments (
+        id TEXT PRIMARY KEY,
+        source TEXT,
+        payload TEXT,
+        received_at TEXT DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
@@ -137,42 +264,315 @@ export const initTables = async () => {
       );
     `);
 
-    // Seed Admin User
-    const userRes = await db.query("SELECT * FROM admin_users WHERE username = ?", ["admin"]);
-    if (userRes.rowCount === 0) {
-      const hash = await bcrypt.hash("admin123", 10);
-      const adminId = uuidv4();
-      await db.query("INSERT INTO admin_users (id, username, password_hash) VALUES (?, ?, ?)", [adminId, "admin", hash]);
-      console.log("Default admin user created: admin / admin123");
-    }
-
-    // Seed Merchant Settings
-    const settingsRes = await db.query("SELECT * FROM merchant_settings WHERE merchant_id = ?", ["MRC-1001"]);
-    if (settingsRes.rowCount === 0) {
+      // Products Table (simple inventory) 
       await db.query(`
-        INSERT INTO merchant_settings (merchant_id, api_key, webhook_url, test_mode, merchant_name, support_email, paypal_client_id, paypal_client_secret)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `, [
-        "MRC-1001", 
-        "sk_test_default_key_123", 
-        "https://api.example.com/webhook", 
-        1, 
-        "Default Store", 
-        "support@example.com",
-        "AZ78gCo54gfr-itujBtnWMJyFYAYsrONPvIDRJq252pL_kcm3PWt-uS2rRwNTJFhZRRIDc0QRPS0QBWk",
-        "EAnAkvmZ4OeAqgr4fTN7gqrc0wiDpovMP7Uni4bOu5Zoh8sDgLhbYZ9Lv4DxJAEr0aFtDJIY0Xj_n9ny"
-      ]);
-      console.log("Default settings created for MRC-1001");
+        CREATE TABLE IF NOT EXISTS products (
+          id TEXT PRIMARY KEY,
+          merchant_id TEXT NOT NULL,
+          sku TEXT,
+          name TEXT NOT NULL,
+          price_minor INTEGER DEFAULT 0,
+          stock INTEGER DEFAULT 0,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+
+    // Seed Admin User
+    const adminUsername = process.env.ADMIN_USERNAME || "admin";
+    const adminPassword = process.env.ADMIN_PASSWORD || "admin1234";
+    const hash = await bcrypt.hash(adminPassword, 10);
+    const userRes = await db.query("SELECT * FROM admin_users WHERE username = ?", [adminUsername]);
+
+    if (userRes.rowCount === 0) {
+      const adminId = uuidv4();
+      await db.query("INSERT INTO admin_users (id, username, password_hash) VALUES (?, ?, ?)", [adminId, adminUsername, hash]);
+      console.log(`Default admin user created: ${adminUsername} / ${adminPassword}`);
+    } else {
+      await db.query("UPDATE admin_users SET password_hash = ? WHERE username = ?", [hash, adminUsername]);
+      console.log(`Admin password ensured for ${adminUsername}`);
     }
 
-    const terminalRes = await db.query("SELECT * FROM terminals WHERE merchant_id = ? AND terminal_id = ?", ["MRC-1001", "T2013-001"]);
-    if (terminalRes.rowCount === 0) {
-      await db.query(
-        `INSERT INTO terminals (id, merchant_id, terminal_id, name, terminal_secret, offline_enabled) VALUES (?, ?, ?, ?, ?, ?)`,
-        [uuidv4(), "MRC-1001", "T2013-001", "Main Terminal", "secret_term_001", 1]
-      );
-      console.log("Default terminal created: MRC-1001 / T2013-001");
+    // Seed Merchant Settings and Terminal unless SKIP_SEED is set
+    if (!skipSeed) {
+      const settingsRes = await db.query("SELECT * FROM merchant_settings WHERE merchant_id = ?", ["MRC-1001"]);
+      if (settingsRes.rowCount === 0) {
+        await db.query(`
+          INSERT INTO merchant_settings (merchant_id, api_key, webhook_url, test_mode, merchant_name, support_email, paypal_client_id, paypal_client_secret)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
+          "MRC-1001",
+          "offline_secret_001",
+          "",
+          0,
+          "Default Store",
+          "support@example.com",
+          "",
+          ""
+        ]);
+        console.log("Default settings created for MRC-1001 with offline API key offline_secret_001.");
+        console.log("Use this secret in your POS batch HMAC signature until you configure a custom merchant API key.");
+      }
+
+      const terminalRes = await db.query("SELECT * FROM terminals WHERE merchant_id = ? AND terminal_id = ?", ["MRC-1001", "T2013-001"]);
+      if (terminalRes.rowCount === 0) {
+        await db.query(
+          `INSERT INTO terminals (id, merchant_id, terminal_id, name, terminal_secret, offline_enabled) VALUES (?, ?, ?, ?, ?, ?)`,
+          [uuidv4(), "MRC-1001", "T2013-001", "Main Terminal", "secret_term_001", 1]
+        );
+        console.log("Default terminal created: MRC-1001 / T2013-001");
+      }
+    } else {
+      console.log('SKIP_SEED is set — skipping merchant and terminal default seeding');
     }
+
+    // Customers Table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS customers (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        email TEXT,
+        phone TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Customer Wallets Table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS customer_wallets (
+        id TEXT PRIMARY KEY,
+        customer_id TEXT NOT NULL,
+        balance REAL NOT NULL DEFAULT 0.00,
+        currency TEXT DEFAULT 'USD',
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (customer_id)
+      );
+    `);
+
+    // Wallet Transactions Table (Ledger)
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS wallet_transactions (
+        id TEXT PRIMARY KEY,
+        wallet_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        amount REAL NOT NULL,
+        source TEXT NOT NULL,
+        reference TEXT,
+        description TEXT,
+        pan_masked TEXT,
+        emv_data TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Merchant Wallets Table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS merchant_wallets (
+        id TEXT PRIMARY KEY,
+        merchant_id TEXT UNIQUE NOT NULL,
+        balance REAL NOT NULL DEFAULT 0.00,
+        currency TEXT DEFAULT 'USD',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Merchant Wallet Transactions Table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS merchant_wallet_transactions (
+        id TEXT PRIMARY KEY,
+        wallet_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        amount REAL NOT NULL,
+        source TEXT NOT NULL,
+        reference TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Ledger Entries Table for transaction lifecycle auditing
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS ledger_entries (
+        id TEXT PRIMARY KEY,
+        transaction_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        amount REAL NOT NULL,
+        currency TEXT NOT NULL,
+        status TEXT NOT NULL,
+        description TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Cashouts Table (Settlement Payouts)
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS cashouts (
+        id TEXT PRIMARY KEY,
+        merchant_id TEXT NOT NULL,
+        amount_minor INTEGER NOT NULL,
+        currency TEXT DEFAULT 'USD',
+        status TEXT NOT NULL DEFAULT 'PENDING',
+        gateway TEXT DEFAULT 'OFFLINE',
+        gateway_payout_id TEXT,
+        error_message TEXT,
+        fee_minor INTEGER DEFAULT 0,
+        net_amount_minor INTEGER,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Cashout-Transactions Join Table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS cashout_transactions (
+        id TEXT PRIMARY KEY,
+        cashout_id TEXT NOT NULL,
+        batch_id TEXT,
+        transaction_id TEXT,
+        amount_minor INTEGER NOT NULL,
+        FOREIGN KEY (cashout_id) REFERENCES cashouts(id) ON DELETE CASCADE
+      );
+    `);
+
+    // Payment Codes Table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS payment_codes (
+        id TEXT PRIMARY KEY,
+        code TEXT UNIQUE NOT NULL,
+        amount_minor INTEGER NOT NULL,
+        currency TEXT DEFAULT 'USD',
+        used INTEGER DEFAULT 0, -- Boolean
+        used_at TEXT,
+        used_by_merchant TEXT,
+        reference TEXT,
+        stan TEXT,
+        pan_masked TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Customer Crypto Wallets Table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS customer_crypto_wallets (
+        id TEXT PRIMARY KEY,
+        customer_id TEXT NOT NULL,
+        crypto_coin TEXT NOT NULL, -- e.g., BTC, ETH, USDT
+        balance REAL NOT NULL DEFAULT 0.0,
+        crypto_address TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(customer_id, crypto_coin)
+      );
+    `);
+
+    // Crypto Transactions Table (Buy/Sell Crypto with wallet transactions
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS crypto_transactions (
+        id TEXT PRIMARY KEY,
+        customer_id TEXT NOT NULL,
+        crypto_coin TEXT NOT NULL,
+        transaction_type TEXT NOT NULL, -- 'buy' or 'sell'
+        fiat_amount REAL NOT NULL, -- In USD (or whatever fiat)
+        crypto_amount REAL NOT NULL,
+        fiat_currency TEXT DEFAULT 'USD',
+        exchange_rate REAL,
+        source TEXT, -- e.g., 'wallet_balance' (for buying with wallet)
+        reference TEXT,
+        tx_hash TEXT, -- On-chain tx hash if applicable
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Merchant Crypto Balances Table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS merchant_crypto_balances (
+        id TEXT PRIMARY KEY,
+        merchant_id TEXT NOT NULL,
+        asset TEXT NOT NULL,
+        amount REAL NOT NULL DEFAULT 0.0,
+        meta TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Virtual Cards Table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS virtual_cards (
+        id TEXT PRIMARY KEY,
+        customer_id TEXT NOT NULL,
+        card_number TEXT NOT NULL,
+        masked_number TEXT NOT NULL,
+        expiry_month INTEGER NOT NULL,
+        expiry_year INTEGER NOT NULL,
+        cvv TEXT NOT NULL,
+        cardholder_name TEXT NOT NULL,
+        card_type TEXT DEFAULT 'VISA',
+        status TEXT DEFAULT 'ACTIVE',
+        balance REAL DEFAULT 0.00,
+        currency TEXT DEFAULT 'USD',
+        daily_limit REAL DEFAULT 1000.00,
+        daily_spent REAL DEFAULT 0.00,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Bank Accounts Table (for wallet-to-bank transfers)
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS bank_accounts (
+        id TEXT PRIMARY KEY,
+        customer_id TEXT NOT NULL,
+        bank_name TEXT NOT NULL,
+        account_holder TEXT NOT NULL,
+        account_number TEXT NOT NULL,
+        routing_number TEXT,
+        iban TEXT,
+        swift_code TEXT,
+        currency TEXT DEFAULT 'USD',
+        is_default INTEGER DEFAULT 0,
+        verified INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Wallet Transfers Table (wallet-to-wallet)
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS wallet_transfers (
+        id TEXT PRIMARY KEY,
+        sender_customer_id TEXT NOT NULL,
+        receiver_customer_id TEXT NOT NULL,
+        amount REAL NOT NULL,
+        currency TEXT DEFAULT 'USD',
+        note TEXT,
+        status TEXT DEFAULT 'COMPLETED',
+        fee REAL DEFAULT 0.00,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Bank Payouts Table (wallet-to-bank)
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS bank_payouts (
+        id TEXT PRIMARY KEY,
+        customer_id TEXT NOT NULL,
+        bank_account_id TEXT NOT NULL,
+        amount REAL NOT NULL,
+        currency TEXT DEFAULT 'USD',
+        fee REAL DEFAULT 0.00,
+        net_amount REAL NOT NULL,
+        status TEXT DEFAULT 'PENDING',
+        reference TEXT,
+        scheduled_at TEXT,
+        completed_at TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
 
     console.log("Tables initialized successfully (SQLite)");
   } catch (error) {

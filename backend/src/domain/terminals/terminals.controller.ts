@@ -3,13 +3,13 @@ import { terminalsService } from "./terminals.service";
 
 export class TerminalsController {
   async register(req: Request, res: Response) {
-    const { terminalName } = req.body;
+    const { terminalName, deviceSerial } = req.body;
     if (!terminalName) {
       return res.status(400).json({ error: "terminalName required" });
     }
 
     try {
-      const result = await terminalsService.registerTerminal(terminalName);
+      const result = await terminalsService.registerTerminal(terminalName, deviceSerial);
       res.json(result);
     } catch (error) {
       console.error(error);
@@ -64,6 +64,25 @@ export class TerminalsController {
     } catch (error) {
       console.error("[Terminal Verify] Error:", error);
       res.status(500).json({ valid: false, error: "Internal Server Error" });
+    }
+  }
+
+  async delete(req: Request, res: Response) {
+    const { merchantId, terminalId } = req.params;
+
+    if (!merchantId || !terminalId) {
+      return res.status(400).json({ error: "merchantId and terminalId are required" });
+    }
+
+    try {
+      const result = await terminalsService.deleteTerminal(merchantId, terminalId);
+      if (!result) {
+        return res.status(404).json({ error: "Terminal not found" });
+      }
+      return res.json({ success: true, deleted: result });
+    } catch (error) {
+      console.error("[Terminal Delete] Error:", error);
+      return res.status(500).json({ error: "Internal Server Error" });
     }
   }
 

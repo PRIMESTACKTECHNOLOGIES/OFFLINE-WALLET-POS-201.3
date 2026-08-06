@@ -128,6 +128,23 @@ export class BatchesController {
     }
   }
 
+  async syncOfflineFunds(req: Request, res: Response) {
+    try {
+      const merchantId = req.headers['x-merchant-id'] as string || req.body.merchantId;
+      const terminalId = req.headers['x-terminal-id'] as string || req.body.terminalId;
+
+      if (!merchantId) {
+        return res.status(400).json({ error: 'merchantId required' });
+      }
+
+      const result = await batchesService.syncOfflineFundsReceipts(merchantId, terminalId);
+      res.json(result);
+    } catch (e: any) {
+      console.error('Error syncing offline receipts:', e);
+      res.status(500).json({ error: e.message });
+    }
+  }
+
   /**
    * Redeem a payment code (Live transaction)
    */
@@ -164,7 +181,7 @@ export class BatchesController {
       const { batches } = req.body;
       const merchantId = req.headers['x-merchant-id'] as string || 'MRC-1001';
       
-      console.warn('[Deprecated] Braintree cashout called by:', merchantId);
+      console.warn(`[Deprecated] Braintree cashout called by: ${merchantId}`);
       
       const result = await batchesService.cashoutBraintree(merchantId, batches);
       res.json(result);

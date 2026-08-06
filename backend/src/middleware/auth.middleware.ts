@@ -10,7 +10,7 @@ export const authenticateToken = (req: Request, res: Response, next: NextFunctio
     return res.status(401).json({ error: "Unauthorized: Missing token" });
   }
 
-  jwt.verify(token, SECRET_KEY, (err: any, user: any) => {
+  jwt.verify(token, SECRET_KEY as string, (err: any, user: any) => {
     if (err) {
       return res.status(403).json({ error: "Forbidden: Invalid token" });
     }
