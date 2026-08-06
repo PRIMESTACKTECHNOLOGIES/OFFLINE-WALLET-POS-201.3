@@ -1,9 +1,17 @@
 import sqlite3 from 'sqlite3';
 import { open, Database } from 'sqlite';
 import path from 'path';
+import fs from 'fs';
 
 // Enable verbose mode for debugging
 sqlite3.verbose();
+
+// Resolve DB path and ensure the directory exists BEFORE opening
+const DB_PATH = process.env.DATABASE_PATH || path.join(process.cwd(), 'data', 'database.sqlite');
+const DB_DIR = path.dirname(DB_PATH);
+if (!fs.existsSync(DB_DIR)) {
+  fs.mkdirSync(DB_DIR, { recursive: true });
+}
 
 class DbAdapter {
   private dbPromise: Promise<Database> | null = null;
@@ -15,7 +23,7 @@ class DbAdapter {
   async initDb() {
     if (!this.dbPromise) {
       this.dbPromise = open({
-        filename: process.env.DATABASE_PATH || path.join(process.cwd(), 'data', 'database.sqlite'),
+        filename: DB_PATH,
         driver: sqlite3.Database
       });
       const db = await this.dbPromise;
