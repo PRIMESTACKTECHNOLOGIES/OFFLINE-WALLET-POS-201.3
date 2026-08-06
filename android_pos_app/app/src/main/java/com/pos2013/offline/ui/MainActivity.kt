@@ -461,7 +461,6 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 val amountMinor = (amount * 100).toLong()
-                val now = System.currentTimeMillis().toString()
                 val topup = WalletTopupEntity(
                     id = UUID.randomUUID().toString(),
                     customerId = customerId,
@@ -469,7 +468,7 @@ class MainActivity : AppCompatActivity() {
                     currency = "AED",
                     panMasked = cardData?.pan ?: "MANUAL_ENTRY",
                     expiry = cardData?.expiryDate ?: "",
-                    txnTimestamp = now,
+                    txnTimestamp = System.currentTimeMillis(),
                     entryMode = if (cardData != null) "EMV_CHIP" else "MANUAL",
                     emvData = cardData?.emvData
                 )

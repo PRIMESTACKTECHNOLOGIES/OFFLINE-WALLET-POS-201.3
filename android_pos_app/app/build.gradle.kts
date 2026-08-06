@@ -6,66 +6,58 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
-val keystorePropertiesFile = rootProject.file("keystore.properties")
-val keystoreProperties = Properties()
-if (keystorePropertiesFile.exists()) {
-    keystorePropertiesFile.inputStream().use { keystoreProperties.load(it) }
-}
-
 android {
     namespace = "com.pos2013.offline"
-    compileSdk = 36
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.pos2013.offline"
         minSdk = 24
-        targetSdk = 34
-        versionCode = 2013
-        versionName = "201.3"
+        targetSdk = 35
+        versionCode = 3
+        versionName = "1.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        
-        ndk {
-            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
-        }
+    }
+
+    // Load keystore properties
+    val keystorePropertiesFile = rootProject.file("keystore.properties")
+    val keystoreProperties = Properties()
+    if (keystorePropertiesFile.exists()) {
+        keystoreProperties.load(keystorePropertiesFile.inputStream())
     }
 
     signingConfigs {
         create("release") {
-            keyAlias = (keystoreProperties["keyAlias"] ?: project.findProperty("signing.keyAlias")) as String?
-            keyPassword = (keystoreProperties["keyPassword"] ?: project.findProperty("signing.keyPassword")) as String?
-            val storeFilePath = (keystoreProperties["storeFile"] ?: project.findProperty("signing.storeFile")) as String?
-            storeFile = storeFilePath?.let { rootProject.file(it) }
-            storePassword = (keystoreProperties["storePassword"] ?: project.findProperty("signing.storePassword")) as String?
+            if (keystorePropertiesFile.exists()) {
+                storeFile = rootProject.file(keystoreProperties["storeFile"] as String)
+                storePassword = keystoreProperties["storePassword"] as String
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+            }
         }
     }
 
     buildTypes {
-        debug {
-            isMinifyEnabled = false
-        }
         release {
-            isMinifyEnabled = true
-            signingConfig = signingConfigs.getByName("release")
+            isMinifyEnabled = false
+            isShrinkResources = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.getByName("release")
+        }
+        debug {
+            signingConfig = signingConfigs.getByName("release")
         }
     }
-    
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
     }
-    
     kotlinOptions {
-        jvmTarget = "17"
-    }
-    
-    buildFeatures {
-        viewBinding = true
-        buildConfig = true
+        jvmTarget = "11"
     }
 }
 
@@ -75,30 +67,26 @@ dependencies {
     implementation(libs.material)
     implementation(libs.androidx.constraintlayout)
     implementation(libs.androidx.lifecycle.runtime.ktx)
-    implementation(libs.androidx.lifecycle.viewmodel.ktx)
-    implementation(libs.kotlinx.coroutines.android)
-    implementation(libs.androidx.security.crypto)
     
-    // Room - Upgraded to 2.7.0-rc01 to fix "unexpected jvm signature V" with Kotlin 2.0 + KSP
-    val roomVersion = "2.7.0-rc01"
+    // Room
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
 
-    // WorkManager
-    implementation(libs.androidx.work.runtime.ktx)
-
-    // Retrofit for API
+    // Retrofit + OkHttp
     implementation(libs.retrofit)
     implementation(libs.converter.gson)
     implementation(libs.logging.interceptor)
     
-    // Gson for JSON
-    implementation(libs.gson)
-    
-    // Timber
-    implementation(libs.timber)
-    
+    // Coroutines
+    implementation(libs.kotlinx.coroutines.android)
+
+    // WorkManager
+    implementation(libs.androidx.work.runtime.ktx)
+
+    // ACS NFC Smart Card Library
+    implementation(files("libs/acssmc-1.1.7.aar"))
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
