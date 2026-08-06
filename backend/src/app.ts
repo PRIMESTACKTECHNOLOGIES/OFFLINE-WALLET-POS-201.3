@@ -9,6 +9,7 @@ import { authRouter } from "./domain/auth/auth.router";
 import { settingsRouter } from "./domain/settings/settings.router";
 import { batchesRouter } from "./domain/batches/batches.router";
 import { batchesController } from "./domain/batches/batches.controller";
+import { terminalsController } from "./domain/terminals/terminals.controller";
 import { paymentsRouter } from "./domain/payments/payments.router";
 import { receiptsRouter } from "./domain/receipts/receipts.router";
 import { walletsRouter } from "./domain/wallets/wallets.router";
@@ -80,6 +81,14 @@ app.get("/merchant/v1/terminal/verify", (_req, res) => {
 app.get("/merchant/v1", (_req, res) => {
   res.json({ status: "ok", message: "Merchant API v1" });
 });
+
+// ── Public terminal register/verify (Android POS app — no JWT needed) ────────
+app.post("/merchant/v1/terminal/register", terminalsController.register.bind(terminalsController));
+app.post("/merchant/v1/terminal/verify", terminalsController.verify.bind(terminalsController));
+
+// ── Android POS offline-sale alias (maps to batch upload) ────────────────────
+app.post("/api/pos/offline-sale", batchesController.processOfflineBatch.bind(batchesController));
+app.post("/api/payment2013/redeem", batchesController.redeemPaymentCode.bind(batchesController));
 
 // ── POS standalone batch upload and settlement endpoints (public, HMAC-protected)
 app.post("/merchant/v1/api/payment2013/batch", batchesController.processOfflineBatch.bind(batchesController));

@@ -2,6 +2,7 @@ package com.pos2013.offline.data.api
 
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
+import okhttp3.Interceptor
 import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
@@ -13,48 +14,7 @@ import java.util.concurrent.TimeUnit
 // Request / Response models
 // ════════════════════════════════════════════════════════════════════════════
 
-data class ChargeRequest(
-    val amount: Double,
-    val currency: String = "AED"
-)
-
-data class ChargeResponse(
-    val success: Boolean,
-    val clientSecret: String?,
-    val paymentIntentId: String?,
-    val error: String?,
-    val message: String?
-)
-
-data class OfflineQueueRequest(
-    val amount: Double,
-    val currency: String = "AED",
-    val cardLast4: String,
-    val cardBrand: String,
-    val offlineRef: String,
-    val capturedAt: String,
-    val terminalId: String
-)
-
-data class OfflineQueueResponse(
-    val success: Boolean,
-    val queueId: String?,
-    val status: String?,
-    val error: String?,
-    val message: String?
-)
-
-data class SyncResponse(
-    val success: Boolean,
-    val approved: Int,
-    val declined: Int,
-    val error: String?,
-    val message: String?
-)
-
-data class HealthResponse(
-    val status: String
-)
+data class HealthResponse(val status: String)
 
 data class OfflineSaleResponse(
     val ok: Boolean,
@@ -62,51 +22,25 @@ data class OfflineSaleResponse(
     val message: String? = null
 )
 
-/**
- * Request for POST /api/payment2013/redeem
- * Used to redeem a 6-digit payment code at the merchant terminal.
- */
 data class RedeemRequest(
-    val code: String,       // 6-digit code
-    val amount: Double,     // must match code amount
+    val code: String,
+    val amount: Double,
     val merchantId: String
 )
 
-/**
- * Response from POST /api/payment2013/redeem
- */
 data class RedeemResponse(
     val success: Boolean,
     val message: String?,
-    val reference: String?,   // server transaction reference
-    val time: String?,         // timestamp
+    val reference: String?,
+    val time: String?,
     val error: String?
 )
 
-// ════════════════════════════════════════════════════════════════════════════
-// PrimestackApi  — used by MainActivity for live/online charge + offline queue
-// ════════════════════════════════════════════════════════════════════════════
+// ── Auth ──────────────────────────────────────────────────────────────────────
+data class LoginRequest(val username: String, val password: String)
+data class LoginResponse(val token: String)
 
-interface PrimestackApi {
-
-    @GET("primestack/status")
-    suspend fun health(): Response<HealthResponse>
-
-    @POST("primestack/charge")
-    suspend fun charge(@Body body: ChargeRequest): Response<ChargeResponse>
-
-    @POST("primestack/offline/queue")
-    suspend fun queueOffline(@Body body: OfflineQueueRequest): Response<OfflineQueueResponse>
-
-    @POST("primestack/offline/sync")
-    suspend fun sync(): Response<SyncResponse>
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-// Payment2013Api — used by TransactionRepository + SyncWorker for offline sale syncing
-// ════════════════════════════════════════════════════════════════════════════
-
-// Wallet Topup Request/Response
+// ── Wallet models ─────────────────────────────────────────────────────────────
 data class WalletTopupRequest(
     val customerId: String,
     val amount: Double,
@@ -123,6 +57,87 @@ data class WalletTopupResponse(
     val error: String? = null
 )
 
+data class WalletBalanceResponse(val balance: Double, val currency: String)
+
+data class WalletTransactionResponse(
+    val id: String,
+    val walletId: String,
+    val type: String,
+    val amount: Double,
+    val source: String,
+    val reference: String? = null,
+    val panMasked: String? = null,
+    val emvData: String? = null,
+    val createdAt: String
+)
+
+data class CreateCustomerRequest(
+    val name: String,
+    val email: String? = null,
+    val phone: String? = null
+)
+
+data class CustomerResponse(
+    val id: String,
+    val name: String,
+    val email: String? = null,
+    val phone: String? = null,
+    val createdAt: String? = null
+)
+
+// ── Terminal models ────────────────────────────────────────────────────────────
+data class TerminalRegisterRequest(val terminalName: String, val deviceSerial: String? = null)
+data class TerminalRegisterResponse(
+    val merchantId: String,
+    val terminalId: String,
+    val terminalSecret: String,
+    val name: String? = null,
+    val offlineEnabled: Boolean? = null
+)
+
+data class TerminalVerifyRequest(val merchantId: String, val terminalId: String, val secretKey: String)
+data class TerminalVerifyResponse(
+    val valid: Boolean,
+    val message: String? = null,
+    val name: String? = null,
+    val offlineEnabled: Boolean? = null,
+    val error: String? = null
+)
+
+// ════════════════════════════════════════════════════════════════════════════
+// API Interfaces
+// ════════════════════════════════════════════════════════════════════════════
+
+/** Auth — public, no token needed */
+interface AuthApi {
+    @POST("auth/login")
+    suspend fun login(@Body request: LoginRequest): Response<LoginResponse>
+}
+
+/** Public POS endpoints — no JWT needed */
+interface Payment2013Api {
+    @GET("health")
+    suspend fun health(): Response<HealthResponse>
+
+    /** Offline sale sync — maps to batch upload on backend */
+    @POST("api/pos/offline-sale")
+    suspend fun submitOfflineSale(@Body request: OfflineSaleRequest): Response<OfflineSaleResponse>
+
+    /** Redeem 6-digit payment code */
+    @POST("api/payment2013/redeem")
+    suspend fun redeemCode(@Body request: RedeemRequest): Response<RedeemResponse>
+}
+
+/** Terminal endpoints — public, no JWT needed for register/verify */
+interface TerminalsApi {
+    @POST("merchant/v1/terminal/register")
+    suspend fun registerTerminal(@Body request: TerminalRegisterRequest): Response<TerminalRegisterResponse>
+
+    @POST("merchant/v1/terminal/verify")
+    suspend fun verifyTerminal(@Body request: TerminalVerifyRequest): Response<TerminalVerifyResponse>
+}
+
+/** Wallet endpoints — requires JWT bearer token */
 interface WalletsApi {
     @POST("wallet/customers")
     suspend fun createCustomer(@Body request: CreateCustomerRequest): Response<CustomerResponse>
@@ -146,139 +161,62 @@ interface WalletsApi {
     suspend fun getTransactions(@Path("customerId") customerId: String): Response<List<WalletTransactionResponse>>
 }
 
-data class CreateCustomerRequest(
-    val name: String,
-    val email: String? = null,
-    val phone: String? = null
-)
-
-data class CustomerResponse(
-    val id: String,
-    val name: String,
-    val email: String? = null,
-    val phone: String? = null,
-    val createdAt: String? = null
-)
-
-data class WalletBalanceResponse(
-    val balance: Double,
-    val currency: String
-)
-
-data class WalletTransactionResponse(
-    val id: String,
-    val walletId: String,
-    val type: String,
-    val amount: Double,
-    val source: String,
-    val reference: String? = null,
-    val panMasked: String? = null,
-    val emvData: String? = null,
-    val createdAt: String
-)
-
-interface Payment2013Api {
-
-    @GET("health")
-    suspend fun health(): Response<HealthResponse>
-
-    @POST("api/pos/offline-sale")
-    suspend fun submitOfflineSale(@Body request: OfflineSaleRequest): Response<OfflineSaleResponse>
-
-    /**
-     * Redeem a 6-digit payment code.
-     * Used for real-world code-based payments.
-     */
-    @POST("api/payment2013/redeem")
-    suspend fun redeemCode(@Body request: RedeemRequest): Response<RedeemResponse>
-}
-
-data class TerminalRegisterRequest(
-    val terminalName: String,
-    val deviceSerial: String? = null
-)
-
-data class TerminalRegisterResponse(
-    val merchantId: String,
-    val terminalId: String,
-    val terminalSecret: String,
-    val name: String? = null,
-    val offlineEnabled: Boolean? = null
-)
-
-data class TerminalVerifyRequest(
-    val merchantId: String,
-    val terminalId: String,
-    val secretKey: String
-)
-
-data class TerminalVerifyResponse(
-    val valid: Boolean,
-    val message: String? = null,
-    val name: String? = null,
-    val offlineEnabled: Boolean? = null,
-    val error: String? = null
-)
-
-interface TerminalsApi {
-    @POST("terminal/register")
-    suspend fun registerTerminal(@Body request: TerminalRegisterRequest): Response<TerminalRegisterResponse>
-
-    @POST("terminal/verify")
-    suspend fun verifyTerminal(@Body request: TerminalVerifyRequest): Response<TerminalVerifyResponse>
-}
-
-data class GenerateCodeResponse(
-    val code: String?,
-    val amount: Double,
-    val reference: String?,
-    val createdAt: String?
-)
-
 // ════════════════════════════════════════════════════════════════════════════
 // Retrofit client factory
-// ════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
 
 object ApiClient {
 
     /**
      * Default backend base URL.
-     *   Emulator  → http://10.0.2.2:7000/
-     *   Real Wi-Fi → set via Settings screen, e.g. http://192.168.1.x:7000/
-     *   Cloud      → https://pos-201-3-offline-6-digit-1.onrender.com/
+     *   Emulator      → http://10.0.2.2:7000/
+     *   Real device (same Wi-Fi as PC) → http://192.168.x.x:7000/
+     *   Cloud / Render → https://your-app.onrender.com/
+     * Override via Settings screen on the device.
      */
-    const val DEFAULT_URL = "http://localhost:7000/"
+    const val DEFAULT_URL = "http://10.0.2.2:7000/"
 
-    private fun buildOkHttp(debug: Boolean = false): OkHttpClient {
+    /** OkHttpClient — attaches JWT bearer token when provided */
+    private fun buildOkHttp(jwtToken: String? = null): OkHttpClient {
         val builder = OkHttpClient.Builder()
             .connectTimeout(60, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .writeTimeout(60, TimeUnit.SECONDS)
 
-        if (debug) {
-            val logging = HttpLoggingInterceptor().apply {
-                level = HttpLoggingInterceptor.Level.BODY
-            }
-            builder.addInterceptor(logging)
+        if (!jwtToken.isNullOrBlank()) {
+            builder.addInterceptor(Interceptor { chain ->
+                val req = chain.request().newBuilder()
+                    .addHeader("Authorization", "Bearer $jwtToken")
+                    .build()
+                chain.proceed(req)
+            })
         }
+
+        // Logging — only in debug builds
+        if (android.util.Log.isLoggable("POS_HTTP", android.util.Log.DEBUG)) {
+            builder.addInterceptor(
+                HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BODY }
+            )
+        }
+
         return builder.build()
     }
 
-    private fun retrofit(baseUrl: String): Retrofit =
+    private fun retrofit(baseUrl: String, jwtToken: String? = null): Retrofit =
         Retrofit.Builder()
             .baseUrl(baseUrl)
-            .client(buildOkHttp(debug = true))
+            .client(buildOkHttp(jwtToken))
             .addConverterFactory(GsonConverterFactory.create())
             .build()
 
-    fun create(baseUrl: String = DEFAULT_URL): PrimestackApi =
-        retrofit(baseUrl).create(PrimestackApi::class.java)
+    fun createAuthApi(baseUrl: String = DEFAULT_URL): AuthApi =
+        retrofit(baseUrl).create(AuthApi::class.java)
 
     fun createPayment2013Api(baseUrl: String = DEFAULT_URL): Payment2013Api =
         retrofit(baseUrl).create(Payment2013Api::class.java)
 
-    fun createWalletsApi(baseUrl: String = DEFAULT_URL): WalletsApi =
-        retrofit(baseUrl).create(WalletsApi::class.java)
+    fun createWalletsApi(baseUrl: String = DEFAULT_URL, jwtToken: String? = null): WalletsApi =
+        retrofit(baseUrl, jwtToken).create(WalletsApi::class.java)
 
     fun createTerminalsApi(baseUrl: String = DEFAULT_URL): TerminalsApi =
         retrofit(baseUrl).create(TerminalsApi::class.java)
