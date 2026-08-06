@@ -212,17 +212,47 @@ export class PaymentsService {
           validateTransition('PENDING', ledgerEntry.status as TransactionState);
           await persistLedgerEntry(ledgerEntry, db.query.bind(db));
 
-          // Credit merchant wallet or customer wallet
+          // Debit customer wallet + credit merchant wallet
           const { walletsService } = await import('../wallets/wallets.service');
           if (payload.customerId) {
-            await walletsService.topupWallet(payload.customerId, payload.amountMinor / 100, 'pos_charge', paymentIntentId);
-          } else {
-            const merchantWallet = await walletsService.getOrCreateMerchantWallet(merchantId);
-            await db.query(
-              `UPDATE merchant_wallets SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-              [payload.amountMinor / 100, merchantWallet.id]
+            await walletsService.debitWallet(
+              payload.customerId,
+              payload.amountMinor / 100,
+              'pos_card_charge',
+              paymentIntentId
             );
           }
+          // Always credit merchant wallet
+          await walletsService.creditMerchantWallet(
+            merchantId,
+            payload.amountMinor / 100,
+            'pos_card_charge',
+            paymentIntentId
+          );
+
+          // Record transaction in pos2013_transactions
+          await db.query(
+            `INSERT OR IGNORE INTO pos2013_transactions
+              (id, merchant_id, terminal_id, local_txn_id, stan, amount_minor, currency,
+               pan_masked, txn_type, auth_mode, entry_mode, auth_code, status, txn_timestamp)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              paymentIntentId,
+              merchantId,
+              payload.terminalId || '',
+              paymentIntentId,
+              payload.stan || '',
+              payload.amountMinor,
+              payload.currency || 'USD',
+              payload.pan ? `${'*'.repeat(payload.pan.length - 4)}${payload.pan.slice(-4)}` : null,
+              'PURCHASE',
+              'online',
+              payload.emv ? 'CHIP' : 'MANUAL',
+              authCode,
+              'APPROVED',
+              new Date().toISOString(),
+            ]
+          );
 
           const response: PosTransactionResult = {
             success: true,
@@ -260,15 +290,46 @@ export class PaymentsService {
 
       const { walletsService } = await import('../wallets/wallets.service');
 
+      // Debit customer wallet (take payment from customer)
       if (payload.customerId) {
-        await walletsService.topupWallet(payload.customerId, payload.amountMinor / 100, 'pos_charge', paymentIntentId);
-      } else {
-        const merchantWallet = await walletsService.getOrCreateMerchantWallet(merchantId);
-        await db.query(
-          `UPDATE merchant_wallets SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-          [payload.amountMinor / 100, merchantWallet.id]
+        await walletsService.debitWallet(
+          payload.customerId,
+          payload.amountMinor / 100,
+          'pos_card_charge',
+          paymentIntentId
         );
       }
+      // Always credit merchant wallet (merchant receives the money)
+      await walletsService.creditMerchantWallet(
+        merchantId,
+        payload.amountMinor / 100,
+        'pos_card_charge',
+        paymentIntentId
+      );
+
+      // Record transaction in pos2013_transactions
+      await db.query(
+        `INSERT OR IGNORE INTO pos2013_transactions
+          (id, merchant_id, terminal_id, local_txn_id, stan, amount_minor, currency,
+           pan_masked, txn_type, auth_mode, entry_mode, auth_code, status, txn_timestamp)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          paymentIntentId,
+          merchantId,
+          payload.terminalId || '',
+          paymentIntentId,
+          payload.stan || '',
+          payload.amountMinor,
+          payload.currency || 'USD',
+          payload.pan ? `${'*'.repeat(payload.pan.length - 4)}${payload.pan.slice(-4)}` : null,
+          'PURCHASE',
+          'offline',
+          payload.emv ? 'CHIP' : 'MANUAL',
+          authCode,
+          'APPROVED',
+          new Date().toISOString(),
+        ]
+      );
 
       const response: PosTransactionResult = {
         success: true,
