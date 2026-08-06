@@ -1,6 +1,6 @@
 node_modules
 dist
-client/dist
+# client/dist is intentionally tracked for Render deployment (pre-built)
 client/node_modules
 .env
 .env.*

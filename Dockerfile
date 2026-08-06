@@ -1,16 +1,4 @@
-# ── Stage 1: Build the React client ──────────────────────────────────────────
-FROM node:20-bookworm-slim AS client-build
-WORKDIR /app/client
-
-COPY client/package*.json ./
-RUN npm install --no-audit --no-fund
-
-COPY client ./
-# Point the client at the backend (same origin in production — served by Express)
-ENV VITE_API_URL=""
-RUN npm run build
-
-# ── Stage 2: Build the TypeScript backend ────────────────────────────────────
+# ── Stage 1: Build the TypeScript backend ────────────────────────────────────
 FROM node:20-bookworm-slim AS backend-build
 WORKDIR /app
 
@@ -25,7 +13,7 @@ RUN npm --prefix backend install --no-audit --no-fund --ignore-scripts
 COPY backend ./backend
 RUN npm --prefix backend run build
 
-# ── Stage 3: Production runtime ───────────────────────────────────────────────
+# ── Stage 2: Production runtime ───────────────────────────────────────────────
 FROM node:20-bookworm-slim AS run
 WORKDIR /app
 ENV NODE_ENV=production
@@ -42,10 +30,10 @@ RUN npm --prefix backend install --omit=dev --no-audit --no-fund --ignore-script
 # Copy compiled backend
 COPY --from=backend-build /app/backend/dist ./backend/dist
 
-# Copy built client into backend's public folder so Express can serve it
-COPY --from=client-build /app/client/dist ./backend/dist/public
+# Copy pre-built React client (built locally, committed to repo)
+COPY client/dist ./backend/dist/public
 
-# Writable directory for SQLite database (mount a volume here on Render disk)
+# Writable directory for SQLite database
 RUN mkdir -p /app/data && chown node:node /app/data
 
 USER node
