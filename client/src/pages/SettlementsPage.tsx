@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { CardSkeleton, TableSkeleton } from "../components/ui/Skeleton";
-import { cashoutMyFatoorah, fetchBatches } from "../lib/api";
+import { cashoutBraintree, fetchBatches, fetchSettings, getCashouts, createCashout, processCashout } from "../lib/api";
+import type { Cashout } from "../lib/api";
 import { useToast } from "../components/ui/Toast";
 
 // --- Types ---
@@ -161,11 +162,11 @@ const BatchDrawer = ({ batch, onClose }: { batch: Batch, onClose: () => void }) 
                 </div>
                 <div>
                   <span className="text-xs text-gray-500 block">Open Time</span>
-                  <span className="text-sm">{new Date(batch.openTime).toLocaleString()}</span>
+                  <span className="text-sm">{batch.openTime ? new Date(batch.openTime).toLocaleString() : '-'}</span>
                 </div>
                 <div>
                   <span className="text-xs text-gray-500 block">Close Time</span>
-                  <span className="text-sm">{new Date(batch.closeTime).toLocaleString()}</span>
+                  <span className="text-sm">{batch.closeTime ? new Date(batch.closeTime).toLocaleString() : '-'}</span>
                 </div>
               </section>
 
@@ -187,7 +188,7 @@ const BatchDrawer = ({ batch, onClose }: { batch: Batch, onClose: () => void }) 
                       {batch.transactions.map((tx) => (
                         <tr key={tx.id}>
                           <td className="px-3 py-2 text-sm font-mono text-gray-500">{tx.stan}</td>
-                          <td className="px-3 py-2 text-sm text-gray-500">{new Date(tx.time).toLocaleTimeString()}</td>
+                          <td className="px-3 py-2 text-sm text-gray-500">{tx.time ? new Date(tx.time).toLocaleTimeString() : '-'}</td>
                           <td className="px-3 py-2 text-sm font-medium text-gray-900">${tx.amount.toFixed(2)}</td>
                           <td className="px-3 py-2 text-sm text-gray-500">
                             {tx.cardType}
@@ -225,13 +226,13 @@ const BatchDrawer = ({ batch, onClose }: { batch: Batch, onClose: () => void }) 
                   onClick={async () => {
                     try {
                       setCashoutLoading(true);
-                      const result = await cashoutMyFatoorah([{ batchId: batch.id, id: batch.id }]);
-                      if (result.success) {
-                        showToast(`✓ Cashout successful! ${result.message}`, "success");
+                      const result = await cashoutBraintree([{ batchId: batch.id, id: batch.id }]);
+                      if (result.synced > 0) {
+                        showToast(`✓ Cashout successful! Synced ${result.synced} transactions`, "success");
                         // Refresh batches
                         await loadBatches();
                       } else {
-                        showToast(`✗ Cashout failed: ${result.message}`, "error");
+                        showToast(`✗ Cashout failed`, "error");
                       }
                     } catch (err: any) {
                       showToast(`✗ Error: ${err.message}`, "error");
@@ -242,7 +243,7 @@ const BatchDrawer = ({ batch, onClose }: { batch: Batch, onClose: () => void }) 
                   disabled={cashoutLoading}
                   className="px-4 py-2 border border-transparent rounded-md text-sm font-medium text-white bg-green-600 hover:bg-green-700 disabled:bg-gray-400"
                 >
-                  {cashoutLoading ? 'Processing...' : '💰 Cashout to MyFatoorah'}
+                  {cashoutLoading ? 'Processing...' : '💰 Cashout'}
                 </button>
               )}
               {batch.status === 'DECLINED' && (
@@ -265,6 +266,7 @@ export function SettlementsPage() {
   const [settlements, setSettlements] = useState<Settlement[]>([]);
   const [selectedBatch, setSelectedBatch] = useState<Batch | null>(null);
   const [cashoutLoading, setCashoutLoading] = useState(false);
+  const [merchantSettings, setMerchantSettings] = useState<any>(null);
   const { showToast } = useToast();
   
   // Filter States
@@ -275,43 +277,65 @@ export function SettlementsPage() {
   // Load real batches from API
   useEffect(() => {
     loadBatches();
+    loadSettings();
   }, []);
+
+  const loadSettings = async () => {
+    try {
+      const data = await fetchSettings();
+      setMerchantSettings(data);
+    } catch (err) {
+      console.error("Failed to load merchant settings:", err);
+    }
+  };
 
   const loadBatches = async () => {
     try {
       setLoading(true);
       const data = await fetchBatches();
-      // Transform API batches to UI format
-      const transformedBatches: Batch[] = data.map((b: any) => ({
-        id: b.batch_id || b.id,
-        terminalId: b.terminal_id,
-        terminalName: `Terminal ${b.terminal_id}`,
-        openTime: b.created_at,
-        closeTime: b.updated_at || b.created_at,
-        uploadTime: b.upload_timestamp || b.created_at,
-        totalTxCount: b.txn_count || 0,
-        offlineTxCount: 0,
-        storedTxCount: 0,
-        totalAmount: (b.total_amount || 0) / 100,
-        status: b.status === 'PROCESSED' ? 'UPLOADED' : b.status === 'SETTLED' ? 'ACCEPTED' : 'PENDING_UPLOAD',
-        transactions: []
-      }));
+      // Transform API batches to UI format with null-safe defaults
+      const transformedBatches: Batch[] = (data || []).map((b: any) => {
+        const openTime  = b.upload_timestamp || b.created_at || new Date().toISOString();
+        const closeTime = b.processed_at || b.updated_at || openTime;
+        const totalAmountMinor = Number(b.total_amount_minor || b.totalAmountMinor || b.total_amount || 0);
+        return {
+          id: b.batch_id || b.batchId || b.id || 'N/A',
+          terminalId: b.terminal_id || b.terminalId || 'N/A',
+          terminalName: b.terminal_name || b.terminalName || `Terminal ${b.terminal_id || b.terminalId || 'N/A'}`,
+          openTime,
+          closeTime,
+          uploadTime: b.upload_timestamp || b.created_at || null,
+          totalTxCount: Number(b.txn_count || b.transactionCount || b.txnCount || 0),
+          offlineTxCount: 0,
+          storedTxCount: 0,
+          totalAmount: totalAmountMinor / 100,
+          status: b.status === 'PROCESSED' ? 'UPLOADED'
+                : b.status === 'SETTLED'   ? 'ACCEPTED'
+                : b.status === 'RECEIVED'  ? 'UPLOADED'
+                : 'PENDING_UPLOAD',
+          transactions: []
+        };
+      });
       setBatches(transformedBatches);
-      
-      // Generate settlements from settled batches
-      const settledBatches = transformedBatches.filter((b: Batch) => b.status === 'ACCEPTED');
-      const generatedSettlements: Settlement[] = settledBatches.map((b: Batch, i: number) => ({
-        id: `STL-${Date.now()}-${i}`,
-        date: new Date(b.uploadTime).toISOString().split('T')[0],
-        merchant: 'MRC-1001',
-        grossAmount: b.totalAmount,
-        fees: b.totalAmount * 0.029 + 0.30,
-        netAmount: b.totalAmount - (b.totalAmount * 0.029 + 0.30),
-        txCount: b.totalTxCount,
-        status: 'SETTLED',
-        cardBrandBreakdown: {},
-        transactions: []
-      }));
+
+      // Generate settlements from processed/settled batches
+      const settledBatches = transformedBatches.filter(b => b.status === 'ACCEPTED' || b.status === 'UPLOADED');
+      const generatedSettlements: Settlement[] = settledBatches.map((b: Batch, i: number) => {
+        const dateStr = b.uploadTime ? new Date(b.uploadTime).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+        const fees = b.totalAmount * 0.015; // 1.5% processing fee
+        return {
+          id: `STL-${b.id.slice(-8).toUpperCase()}`,
+          date: dateStr,
+          merchant: 'MRC-1001',
+          grossAmount: b.totalAmount,
+          fees,
+          netAmount: b.totalAmount - fees,
+          txCount: b.totalTxCount,
+          status: 'SETTLED' as const,
+          cardBrandBreakdown: {},
+          transactions: []
+        };
+      });
       setSettlements(generatedSettlements);
     } catch (err) {
       console.error("Failed to load batches:", err);
@@ -340,7 +364,7 @@ export function SettlementsPage() {
 
   // Handlers
   const handleExportBatches = () => {
-    const headers = ["Batch ID", "Terminal", "Open Time", "Close Time", "Tx Count", "Total Amount", "Status"];
+    const headers = ["Batch ID", "Terminal", "Open Time", "Close Time", "Tx Count", "Total Amount", "sourceCurrency", "Status"];
     const rows = filteredBatches.map(b => [
       b.id,
       b.terminalName,
@@ -348,30 +372,107 @@ export function SettlementsPage() {
       new Date(b.closeTime).toLocaleString(),
       b.totalTxCount,
       b.totalAmount.toFixed(2),
+      (b as any).currency || "USD",
       b.status
     ]);
     downloadCSV(headers, rows, "batches_export");
   };
 
+  const buildSettlementExportData = (settlementsToExport: Settlement[]) => {
+    const settings = merchantSettings || {};
+    const business = settings.business || {};
+    const banking = settings.banking || {};
+    const profile = settings.profile || {};
+
+    const currencyCode = "USD";
+    const sourceCurrency = "USD";
+    const targetCurrency = "USD";
+
+    const headers = [
+      "name",
+      "recipientEmail",
+      "paymentReference",
+      "referenceNumber",
+      "receiverType",
+      "amountCurrency",
+      "amount",
+      "sourceCurrency",
+      "targetCurrency",
+      "accountHolderName",
+      "bankName",
+      "accountNumber",
+      "IBAN",
+      "swiftCode",
+      "nationality",
+      "dateOfBirth",
+      "addressCountryCode",
+      "addressCity",
+      "addressFirstLine",
+      "addressState",
+      "transferPurpose"
+    ];
+
+    const rows = settlementsToExport.map(s => {
+      const recipientName = banking.holderName || banking.accountHolder || profile.displayName || business.legalName || settings.merchant_name || s.merchant || "Merchant";
+      const recipientEmail = settings.support_email || profile.email || "";
+      const countryCode = String(business.country || profile.country || "").toUpperCase();
+      const addressCity = business.city || profile.city || "";
+      const addressFirstLine = business.address || profile.address || "";
+      const addressState = business.state || profile.state || "";
+
+      return [
+        recipientName,
+        recipientEmail,
+        `Settlement ${s.id}`,
+        s.id,
+        "PERSON",
+        currencyCode,
+        s.netAmount.toFixed(2),
+        sourceCurrency,
+        targetCurrency,
+        recipientName,
+        banking.bankName || "",
+        banking.accountNumber || "",
+        banking.iban || "",
+        banking.swiftCode || "",
+        countryCode,
+        "",
+        countryCode,
+        addressCity,
+        addressFirstLine,
+        addressState,
+        "SERVICES"
+      ];
+    });
+
+    return { headers, rows };
+  };
+
   const handleExportSettlements = () => {
-    const headers = ["Date", "Payout ID", "Gross", "Fees", "Net", "Status"];
-    const rows = filteredSettlements.map(s => [
-      s.date,
-      s.id,
-      s.grossAmount.toFixed(2),
-      s.fees.toFixed(2),
-      s.netAmount.toFixed(2),
-      s.status
-    ]);
-    downloadCSV(headers, rows, "settlements_export");
+    const { headers, rows } = buildSettlementExportData(filteredSettlements);
+    downloadCSV(headers, rows, "wise_batch_payments");
+  };
+
+  const handleExportSingleSettlement = (settlement: Settlement) => {
+    const { headers, rows } = buildSettlementExportData([settlement]);
+    downloadCSV(headers, rows, `wise_settlement_${settlement.id}`);
+    showToast(`Exported settlement ${settlement.id}`, "success");
   };
 
   const downloadCSV = (headers: string[], rows: (string|number)[][], filename: string) => {
+    const escapeCsvValue = (value: string | number | undefined) => {
+      const text = String(value ?? "");
+      if (!text) return "";
+      const needsQuotes = /[",\n]/.test(text);
+      const escaped = text.replace(/"/g, '""');
+      return needsQuotes ? `"${escaped}"` : escaped;
+    };
+
     const csvContent = [
-      headers.join(","),
-      ...rows.map(row => row.join(","))
+      headers.map(escapeCsvValue).join(","),
+      ...rows.map(row => row.map(escapeCsvValue).join(","))
     ].join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
     const link = document.createElement("a");
     if (link.download !== undefined) {
       const url = URL.createObjectURL(blob);
@@ -464,7 +565,19 @@ export function SettlementsPage() {
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                  {filteredBatches.map((batch) => (
+                  {loading ? (
+                    <tr><td colSpan={7} className="px-6 py-12 text-center text-gray-400">Loading...</td></tr>
+                  ) : filteredBatches.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="px-6 py-16 text-center">
+                        <div className="flex flex-col items-center gap-3">
+                          <svg className="w-12 h-12 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                          <p className="text-gray-500 font-medium">No batches yet</p>
+                          <p className="text-gray-400 text-sm">Batches appear here after the Android POS app syncs transactions.</p>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : filteredBatches.map((batch) => (
                     <tr key={batch.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => setSelectedBatch(batch)}>
                       <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-indigo-600">{batch.id}</td>
                       <td className="px-6 py-4 whitespace-nowrap">
@@ -473,8 +586,8 @@ export function SettlementsPage() {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                          <div className="text-xs text-gray-500">
-                           <div>Op: {new Date(batch.openTime).toLocaleTimeString()}</div>
-                           <div>Cl: {new Date(batch.closeTime).toLocaleTimeString()}</div>
+                           <div>Op: {batch.openTime ? new Date(batch.openTime).toLocaleTimeString() : '-'}</div>
+                           <div>Cl: {batch.closeTime ? new Date(batch.closeTime).toLocaleTimeString() : '-'}</div>
                          </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
@@ -512,10 +625,10 @@ export function SettlementsPage() {
                </>
              ) : (
                <>
-                 <StatCard title="Total Settled" value="$42,500.00" icon={<Icons.Currency />} colorClass="bg-green-500 text-green-600" />
-                 <StatCard title="Fees" value="$1,232.50" icon={<Icons.Alert />} colorClass="bg-red-500 text-red-600" />
-                 <StatCard title="Net Payout" value="$41,267.50" icon={<Icons.Check />} colorClass="bg-indigo-500 text-indigo-600" />
-                 <StatCard title="Transactions" value="842" icon={<Icons.Upload />} colorClass="bg-blue-500 text-blue-600" />
+                 <StatCard title="Total Gross" value={`$${settlements.reduce((s,x) => s + x.grossAmount, 0).toFixed(2)}`} icon={<Icons.Currency />} colorClass="bg-green-500 text-green-600" />
+                 <StatCard title="Fees (1.5%)" value={`$${settlements.reduce((s,x) => s + x.fees, 0).toFixed(2)}`} icon={<Icons.Alert />} colorClass="bg-red-500 text-red-600" />
+                 <StatCard title="Net Payout" value={`$${settlements.reduce((s,x) => s + x.netAmount, 0).toFixed(2)}`} icon={<Icons.Check />} colorClass="bg-indigo-500 text-indigo-600" />
+                 <StatCard title="Transactions" value={settlements.reduce((s,x) => s + x.txCount, 0)} icon={<Icons.Upload />} colorClass="bg-blue-500 text-blue-600" />
                </>
              )}
            </div>
@@ -558,6 +671,7 @@ export function SettlementsPage() {
                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Fees</th>
                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Net</th>
                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Status</th>
+                     <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Export</th>
                    </tr>
                  </thead>
                  <tbody className="bg-white divide-y divide-gray-200">
@@ -577,6 +691,19 @@ export function SettlementsPage() {
                        <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-green-600">${settlement.netAmount.toFixed(2)}</td>
                        <td className="px-6 py-4 whitespace-nowrap">
                          <StatusBadge status={settlement.status} />
+                       </td>
+                       <td className="px-6 py-4 whitespace-nowrap text-right">
+                         <button
+                           type="button"
+                           onClick={(e) => {
+                             e.stopPropagation();
+                             handleExportSingleSettlement(settlement);
+                           }}
+                           className="inline-flex items-center rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
+                         >
+                           <Icons.Download />
+                           <span className="ml-2">Export</span>
+                         </button>
                        </td>
                      </tr>
                    )))}
