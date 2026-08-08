@@ -268,7 +268,7 @@ export class WalletsService {
       ? await db.query('SELECT id FROM customer_wallets WHERE customer_id = ? AND currency = ?', [customerId, this.normalizeCurrency(currency)])
       : await db.query('SELECT id FROM customer_wallets WHERE customer_id = ?', [customerId]);
     if (!walletRes.rows.length) return [];
-    const walletIds = walletRes.rows.map(r => r.id);
+    const walletIds = walletRes.rows.map((r: any) => r.id);
     const placeholders = walletIds.map(() => '?').join(',');
     return (await db.query(
       `SELECT * FROM wallet_transactions WHERE wallet_id IN (${placeholders}) ORDER BY created_at DESC LIMIT 100`,
@@ -520,23 +520,50 @@ export class WalletsService {
 
   // ── Crypto ────────────────────────────────────────────────────────────────
   async getCryptoPrice(cryptoCoin: string): Promise<number> {
+    const coin = cryptoCoin.toUpperCase();
+
+    // 1. Try Binance first (live keys configured)
+    try {
+      const { buyAssetWithUsd } = await import('../../exchange/binance.service');
+      const symbol = coin === 'USDT' ? 'BTCUSDT' : `${coin}USDT`;
+      const apiKey = process.env.BINANCE_API_KEY?.trim();
+      const apiSecret = process.env.BINANCE_API_SECRET?.trim();
+      const baseUrl = process.env.BINANCE_BASE_URL?.trim() || 'https://api.binance.com';
+
+      if (apiKey && apiSecret && !apiKey.includes('your_')) {
+        const res = await (await import('axios')).default.get(
+          `${baseUrl}/api/v3/ticker/price?symbol=${symbol}`,
+          { headers: { 'X-MBX-APIKEY': apiKey }, timeout: 5000 }
+        );
+        const price = parseFloat(res.data?.price ?? '0');
+        if (price > 0) {
+          if (coin === 'USDT') return 1.0;
+          return price;
+        }
+      }
+    } catch {
+      // fall through to CoinGecko
+    }
+
+    // 2. CoinGecko fallback
     const coinMap: Record<string, string> = {
       BTC: 'bitcoin', ETH: 'ethereum', USDT: 'tether', SOL: 'solana',
       DOGE: 'dogecoin', BNB: 'binancecoin', XRP: 'ripple', ADA: 'cardano',
       AVAX: 'avalanche-2', DOT: 'polkadot', MATIC: 'matic-network', LINK: 'chainlink'
     };
-    const id = coinMap[cryptoCoin.toUpperCase()];
-    if (!id) return 1;
-
-    try {
-      const res = await axios.get(
-        `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`,
-        { timeout: 5000 }
-      );
-      return res.data?.[id]?.usd ?? this.getFallbackPrice(cryptoCoin);
-    } catch {
-      return this.getFallbackPrice(cryptoCoin);
+    const id = coinMap[coin];
+    if (id) {
+      try {
+        const res = await (await import('axios')).default.get(
+          `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`,
+          { timeout: 5000 }
+        );
+        const price = res.data?.[id]?.usd;
+        if (price) return price;
+      } catch { /* ignore */ }
     }
+
+    return this.getFallbackPrice(coin);
   }
 
   private getFallbackPrice(coin: string): number {
@@ -560,27 +587,79 @@ export class WalletsService {
   }
 
   async buyCryptoWithMerchant(merchantId: string, cryptoCoin: string, fiatAmount: number, network?: string) {
+    const coin = cryptoCoin.toUpperCase();
     const merchantWallet = await this.getOrCreateMerchantWallet(merchantId);
     const balanceRes = await db.query('SELECT balance FROM merchant_wallets WHERE id = ?', [merchantWallet.id]);
-    if (Number(balanceRes.rows[0]?.balance ?? 0) < fiatAmount) throw new Error('Insufficient merchant wallet balance');
+    const balance = Number(balanceRes.rows[0]?.balance ?? 0);
+    if (balance < fiatAmount) throw new Error(`Insufficient merchant wallet balance. Have $${balance}, need $${fiatAmount}`);
 
-    const exchangeRate = await this.getCryptoPrice(cryptoCoin);
-    const cryptoAmount = fiatAmount / exchangeRate;
-    const cryptoWallet = await this.getOrCreateCryptoWallet(merchantId, cryptoCoin);
+    // Get live price
+    const exchangeRate = await this.getCryptoPrice(coin);
+    let cryptoAmount = fiatAmount / exchangeRate;
+    let binanceOrderId: string | null = null;
+    let providerMode = 'internal';
 
-    await db.query('UPDATE merchant_wallets SET balance = balance - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [fiatAmount, merchantWallet.id]);
+    // Try live Binance buy
+    try {
+      const { buyAssetWithUsd } = await import('../../exchange/binance.service');
+      const order = await buyAssetWithUsd(coin, fiatAmount);
+      if (order && !order.mock) {
+        const filled = order.fills?.[0];
+        cryptoAmount = parseFloat(String(order.executedQty ?? cryptoAmount));
+        binanceOrderId = String(order.order_id || '');
+        providerMode = 'binance_live';
+        console.log(`[Crypto] Binance order filled: ${cryptoAmount} ${coin} orderId=${binanceOrderId}`);
+      }
+    } catch (binErr: any) {
+      console.warn(`[Crypto] Binance buy failed, using internal price: ${binErr?.message}`);
+    }
+
+    // Debit merchant fiat wallet
     await db.query(
-      `INSERT INTO merchant_wallet_transactions (id, wallet_id, type, amount, source, reference, description) VALUES (?, ?, 'debit', ?, 'crypto_purchase', ?, ?)`,
-      [uuidv4(), merchantWallet.id, fiatAmount, uuidv4(), `Bought ${cryptoAmount.toFixed(8)} ${cryptoCoin} @ $${exchangeRate}`]
+      'UPDATE merchant_wallets SET balance = balance - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [fiatAmount, merchantWallet.id]
     );
-    await db.query('UPDATE customer_crypto_wallets SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [cryptoAmount, cryptoWallet.id]);
+    await db.query(
+      `INSERT INTO merchant_wallet_transactions (id, wallet_id, type, amount, source, reference) VALUES (?, ?, 'debit', ?, 'crypto_purchase', ?)`,
+      [uuidv4(), merchantWallet.id, fiatAmount, binanceOrderId || uuidv4()]
+    );
+
+    // Credit merchant crypto balance
+    const existingCrypto = await db.query(
+      'SELECT id, amount FROM merchant_crypto_balances WHERE merchant_id = ? AND asset = ?',
+      [merchantId, coin]
+    );
+    if (existingCrypto.rows.length > 0) {
+      await db.query(
+        'UPDATE merchant_crypto_balances SET amount = amount + ?, updated_at = CURRENT_TIMESTAMP WHERE merchant_id = ? AND asset = ?',
+        [cryptoAmount, merchantId, coin]
+      );
+    } else {
+      await db.query(
+        'INSERT INTO merchant_crypto_balances (id, merchant_id, asset, amount, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)',
+        [uuidv4(), merchantId, coin, cryptoAmount]
+      );
+    }
+
+    // Record transaction
     await db.query(
       `INSERT INTO crypto_transactions (id, customer_id, crypto_coin, transaction_type, fiat_amount, crypto_amount, fiat_currency, exchange_rate, source, provider_mode, status)
        VALUES (?, ?, ?, 'buy', ?, ?, 'USD', ?, 'merchant_wallet', ?, 'completed')`,
-      [uuidv4(), merchantId, cryptoCoin, fiatAmount, cryptoAmount, exchangeRate, network || 'primary']
+      [uuidv4(), merchantId, coin, fiatAmount, cryptoAmount, exchangeRate, providerMode]
     );
 
-    return { success: true, cryptoAmount, exchangeRate, fiatAmount, merchantId, network: network || 'primary' };
+    return {
+      success: true,
+      cryptoAmount,
+      cryptoCoin: coin,
+      exchangeRate,
+      fiatAmount,
+      merchantId,
+      providerMode,
+      binanceOrderId,
+      network: network || 'primary',
+      transactionId: binanceOrderId || uuidv4()
+    };
   }
 
   async buyCryptoWithWallet(customerId: string, cryptoCoin: string, fiatAmount: number, network?: string, currency: string = 'USD') {

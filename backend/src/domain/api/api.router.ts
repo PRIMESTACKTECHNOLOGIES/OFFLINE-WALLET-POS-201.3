@@ -8,20 +8,25 @@ const router = Router();
 // POST /api/customers
 router.post('/customers', async (req, res) => {
   try {
-    const { name, email } = req.body;
-    if (!name) return res.status(400).json({ error: 'Name is required' });
-    const customer = await walletsService.createCustomer(name, email);
+    const { name, email, phone } = req.body || {};
+    const trimmedName = (name || '').trim();
+    if (!trimmedName) return res.status(400).json({ error: 'Name is required' });
+    const customer = await walletsService.createCustomer(trimmedName, email, phone);
     const wallet = await walletsService.getOrCreateWallet(customer.id);
-    res.json({ customer_id: customer.id, wallet: { id: wallet.id, balance: Number(wallet.balance), currency: wallet.currency } });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+    res.json({
+      customer_id: customer.id,
+      customer_name: customer.name,
+      wallet: { id: wallet.id, balance: Number(wallet.balance), currency: wallet.currency, wallet_code: wallet.wallet_code }
+    });
+  } catch (e: any) { res.status(e.message.includes('required') || e.message.includes('at least') || e.message.includes('too long') ? 400 : 500).json({ error: e.message }); }
 });
 
 // POST /api/wallet/customer/topup
 router.post('/wallet/customer/topup', async (req, res) => {
   try {
-    const { customer_id, amount, source, reference } = req.body;
+    const { customer_id, amount, source, reference, currency } = req.body;
     if (!customer_id || !amount || amount <= 0) return res.status(400).json({ error: 'Invalid payload' });
-    await walletsService.topupWallet(customer_id, amount, source || 'admin', reference);
+    await walletsService.topupWallet(customer_id, amount, source || 'admin', reference, currency || 'USD');
     res.json({ ok: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -30,7 +35,8 @@ router.post('/wallet/customer/topup', async (req, res) => {
 router.get('/wallet/customer/:customerId/balance', async (req, res) => {
   try {
     const { customerId } = req.params;
-    const b = await walletsService.getWalletBalance(customerId);
+    const { currency } = req.query as any;
+    const b = await walletsService.getWalletBalance(customerId, currency as string | undefined);
     res.json({ balance: Number(b.balance), currency: b.currency });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -39,8 +45,27 @@ router.get('/wallet/customer/:customerId/balance', async (req, res) => {
 router.get('/wallet/merchant/:merchantId/balance', async (req, res) => {
   try {
     const { merchantId } = req.params;
-    const wallet = await walletsService.getOrCreateMerchantWallet(merchantId);
+    const { currency } = req.query as any;
+    const wallet = await walletsService.getOrCreateMerchantWallet(merchantId, (currency as string) || 'USD');
     res.json({ balance: Number(wallet.balance), currency: wallet.currency });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/wallet/merchant/:merchantId/balances (all currencies)
+router.get('/wallet/merchant/:merchantId/balances', async (req, res) => {
+  try {
+    const { merchantId } = req.params;
+    const wallets = await walletsService.listMerchantWallets(merchantId);
+    res.json({ wallets: wallets.map((w: any) => ({ balance: Number(w.balance), currency: w.currency, id: w.id })) });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/wallet/customer/:customerId/balances (all currencies)
+router.get('/wallet/customer/:customerId/balances', async (req, res) => {
+  try {
+    const { customerId } = req.params;
+    const wallets = await walletsService.listCustomerWallets(customerId);
+    res.json({ wallets: wallets.map((w: any) => ({ balance: Number(w.balance), currency: w.currency, wallet_code: w.wallet_code, id: w.id })) });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
@@ -55,17 +80,20 @@ router.post('/pos/offline-sale', async (req, res) => {
     const processTxn = async (txn: any) => {
       const amount = Number(txn.amount);
       if (!amount || amount <= 0) throw new Error('invalid amount');
+      const txnCurrency = String(txn.currency || txn.ccy || 'USD').toUpperCase().trim();
       const stan = txn.stan;
       const rrn = txn.rrn;
       const card_masked = txn.card_masked;
-      const res = await walletsService.creditMerchantWallet(merchantId, amount, 'pos_offline', rrn || stan || null);
+      const creditResult = await walletsService.creditMerchantWallet(
+        merchantId, amount, 'pos_offline', rrn || stan || null, txnCurrency
+      );
       // Insert settlement record for reconciliation
       try {
         const settlementId = require('uuid').v4();
         await db.query(
           `INSERT INTO merchant_pos_settlements (id, merchant_id, ledger_entry_id, amount, currency, status, created_at, meta)
-           VALUES (?, ?, ?, ?, 'USD', 'unsettled', CURRENT_TIMESTAMP, ?)`,
-          [settlementId, merchantId, res.ledgerEntryId || null, amount, JSON.stringify({ stan, rrn, card_masked })]
+           VALUES (?, ?, ?, ?, ?, 'unsettled', CURRENT_TIMESTAMP, ?)`,
+          [settlementId, merchantId, creditResult.ledgerEntryId || null, amount, txnCurrency, JSON.stringify({ stan, rrn, card_masked })]
         );
       } catch (err) {
         console.error('Failed to insert settlement record', err);
