@@ -159,11 +159,17 @@ export class PaymentsController {
   async getAcr122uStatus(req: Request, res: Response) {
     try {
       const status = await acr122uReaderService.getStatus();
-      res.json({ success: true, enabled: status.enabled, connected: status.connected });
+      res.json({
+        success: true,
+        enabled: status.enabled,
+        connected: status.connected,
+        readerName: (status as any).readerName || null
+      });
     } catch (error: any) {
       res.status(500).json({
         success: false,
         enabled: false,
+        connected: false,
         error: error.message || "Unable to determine NFC status"
       });
     }

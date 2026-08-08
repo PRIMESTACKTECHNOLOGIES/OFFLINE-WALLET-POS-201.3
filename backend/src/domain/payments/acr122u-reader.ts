@@ -87,16 +87,34 @@ export class ACR122UReaderService {
     return this.enabled;
   }
 
-  async getStatus(): Promise<{ enabled: boolean; connected: boolean }> {
+  async getStatus(): Promise<{ enabled: boolean; connected: boolean; readerName?: string }> {
     if (!this.enabled) {
-      return { enabled: false, connected: this.connected };
+      return { enabled: false, connected: false };
     }
 
     try {
       await this.connect();
-      return { enabled: this.enabled, connected: Boolean(this.reader) };
+
+      // If reader already detected, return immediately
+      if (this.reader) {
+        return { enabled: true, connected: true, readerName: (this.reader as any)?.reader?.name };
+      }
+
+      // Give PC/SC up to 1.5s to enumerate the reader after connect()
+      await new Promise<void>(resolve => {
+        const timeout = setTimeout(resolve, 1500);
+        if (this.nfc) {
+          this.nfc.once('reader', () => { clearTimeout(timeout); resolve(); });
+        }
+      });
+
+      return {
+        enabled: this.enabled,
+        connected: Boolean(this.reader),
+        readerName: (this.reader as any)?.reader?.name
+      };
     } catch {
-      return { enabled: false, connected: Boolean(this.reader) };
+      return { enabled: false, connected: false };
     }
   }
 

@@ -60,6 +60,7 @@ export const POSPage = () => {
   const [nfcStatus, setNfcStatus] = useState<'unknown' | 'connected' | 'disconnected'>('unknown');
   const [nfcReading, setNfcReading] = useState(false);
   const [nfcCardData, setNfcCardData] = useState<{ uid?: string; aid?: string } | null>(null);
+  const [nfcReaderName, setNfcReaderName] = useState<string>('');
 
   const cartSubtotal = useMemo(() => 
     cart.reduce((sum, ci) => sum + (ci.product.price_minor * ci.qty), 0) / 100,
@@ -102,6 +103,7 @@ export const POSPage = () => {
         const status = await getAcr122uStatus();
         if (!cancelled) {
           setNfcStatus(status.connected ? 'connected' : 'disconnected');
+          if (status.readerName) setNfcReaderName(status.readerName);
         }
       } catch {
         if (!cancelled) setNfcStatus('disconnected');
@@ -769,8 +771,8 @@ export const POSPage = () => {
           <div className="flex items-center gap-2">
             <span className={`w-2 h-2 rounded-full ${nfcStatus === 'connected' ? 'bg-blue-500 animate-pulse' : 'bg-gray-300'}`}/>
             <span>
-              {nfcStatus === 'connected' ? 'ACR122U Ready — Tap card to read' :
-               nfcStatus === 'disconnected' ? 'NFC Reader not connected' :
+              {nfcStatus === 'connected' ? `📡 ${nfcReaderName || 'ACR122U'} — Ready` :
+               nfcStatus === 'disconnected' ? '🔌 NFC Reader not connected' :
                'Checking NFC reader...'}
             </span>
           </div>
@@ -961,11 +963,12 @@ export const POSPage = () => {
                       >
                         <div className="flex items-center gap-3">
                           <div className="w-9 h-9 rounded-full bg-gradient-to-br from-gray-100 to-gray-200 flex items-center justify-center text-gray-600 font-bold text-sm">
-                            {customer.name.charAt(0).toUpperCase()}
+                            {(customer.name?.trim() || '?').charAt(0).toUpperCase()}
                           </div>
                           <div className="flex-1 min-w-0">
-                            <div className="font-semibold text-sm truncate">{customer.name}</div>
+                            <div className="font-semibold text-sm truncate">{customer.name?.trim() || <span className="text-red-500 italic text-xs">(Unnamed)</span>}</div>
                             {customer.email && <div className="text-xs text-gray-500 truncate">{customer.email}</div>}
+                            {customer.phone && <div className="text-xs text-gray-400 truncate">📞 {customer.phone}</div>}
                           </div>
                           {selectedCustomer?.id === customer.id && (
                             <div className="w-5 h-5 rounded-full bg-emerald-500 flex items-center justify-center">
