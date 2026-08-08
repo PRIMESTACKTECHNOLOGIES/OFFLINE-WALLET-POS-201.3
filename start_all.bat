@@ -3,90 +3,114 @@ SETLOCAL EnableExtensions EnableDelayedExpansion
 
 :: ════════════════════════════════════════════════════════════════════════════
 ::  POS OFFLINE SOFTWARE — START ALL
-::  Starts backend (port 7000) + frontend (port 7001)
-::  Opens browser + adds Windows Firewall rule for Android access
+::  Auto-detects IP, updates backend + frontend, adds firewall rule, opens browser
 :: ════════════════════════════════════════════════════════════════════════════
 
-set "SCRIPT_DIR=%~dp0"
-set "BACKEND_DIR=%SCRIPT_DIR%backend"
-set "CLIENT_DIR=%SCRIPT_DIR%client"
-
+set "ROOT=%~dp0"
+set "BACKEND=%ROOT%backend"
+set "CLIENT=%ROOT%client"
 set "BACKEND_PORT=7000"
 set "CLIENT_PORT=7001"
 
-:: ── Detect PC IP automatically ───────────────────────────────────────────────
-for /f "tokens=2 delims=:" %%A in ('ipconfig ^| findstr /C:"IPv4 Address" ^| findstr /V "127.0.0.1" ^| findstr /V "172." ^| head /n 1') do (
-    set "PC_IP=%%A"
+:: ── Detect current Wi-Fi IP ──────────────────────────────────────────────────
+for /f "tokens=2 delims=:" %%A in ('ipconfig ^| findstr /C:"IPv4 Address" ^| findstr /V "172\." ^| findstr /V "127\."') do (
+    set "RAW_IP=%%A"
+    goto :got_ip
 )
-:: Trim leading spaces
-set "PC_IP=%PC_IP: =%"
-:: Fallback if detection fails
-if "%PC_IP%"=="" set "PC_IP=10.40.251.57"
-
-set "BACKEND_URL=http://localhost:%BACKEND_PORT%"
-set "CLIENT_URL=http://localhost:%CLIENT_PORT%"
-set "ANDROID_URL=http://%PC_IP%:%BACKEND_PORT%"
+:got_ip
+set "PC_IP=%RAW_IP: =%"
+if "%PC_IP%"=="" set "PC_IP=localhost"
 
 cls
 echo.
 echo  ╔══════════════════════════════════════════════════════╗
-echo  ║          POS OFFLINE SOFTWARE — STARTING UP          ║
+echo  ║        POS OFFLINE SOFTWARE — STARTING UP            ║
 echo  ╚══════════════════════════════════════════════════════╝
 echo.
-echo  Backend  : %BACKEND_URL%
-echo  Frontend : %CLIENT_URL%
-echo  Android  : %ANDROID_URL%  ← use this in Android Settings
+echo  Backend  : http://localhost:%BACKEND_PORT%
+echo  Frontend : http://localhost:%CLIENT_PORT%
+echo  Android  : http://%PC_IP%:%BACKEND_PORT%/
 echo.
 
-:: ── Kill any existing Node on these ports ────────────────────────────────────
-echo [1/5] Stopping existing Node processes on ports 7000-7001...
-powershell -NoProfile -Command ^
-  "$ports = 7000,7001,3000,5173; foreach ($p in $ports) { try { $conns = Get-NetTCPConnection -LocalPort $p -State Listen -EA Stop; foreach ($c in $conns) { $proc = Get-Process -Id $c.OwningProcess -EA SilentlyContinue; if ($proc -and $proc.ProcessName -eq 'node') { Stop-Process -Id $proc.Id -Force } } } catch {} }"
+:: ── Step 1: Git pull latest code ─────────────────────────────────────────────
+echo [1/6] Pulling latest code from GitHub...
+cd /d "%ROOT%"
+git pull origin main --no-rebase >nul 2>&1
+if errorlevel 1 (
+    echo    Warning: git pull failed (offline or no changes). Continuing...
+) else (
+    echo    Code updated.
+)
+
+:: ── Step 2: Update backend dependencies ─────────────────────────────────────
+echo.
+echo [2/6] Installing backend dependencies...
+cd /d "%BACKEND%"
+call npm install --no-audit --no-fund >nul 2>&1
 echo    Done.
 
-:: ── Open Firewall port 7000 for Android access ───────────────────────────────
+:: ── Step 3: Update frontend dependencies ────────────────────────────────────
 echo.
-echo [2/5] Allowing port %BACKEND_PORT% through Windows Firewall (for Android access)...
+echo [3/6] Installing frontend dependencies...
+cd /d "%CLIENT%"
+call npm install --no-audit --no-fund >nul 2>&1
+echo    Done.
+
+:: ── Step 4: Rebuild React frontend ──────────────────────────────────────────
+echo.
+echo [4/6] Building React frontend...
+cd /d "%CLIENT%"
+call npm run build >nul 2>&1
+if errorlevel 1 (
+    echo    Warning: Frontend build failed. Using last built version.
+) else (
+    echo    Frontend built.
+)
+
+:: ── Step 5: Firewall rule for Android access ─────────────────────────────────
+echo.
+echo [5/6] Firewall rule for port %BACKEND_PORT%...
 netsh advfirewall firewall show rule name="POS Backend %BACKEND_PORT%" >nul 2>&1
 if errorlevel 1 (
     netsh advfirewall firewall add rule name="POS Backend %BACKEND_PORT%" dir=in action=allow protocol=TCP localport=%BACKEND_PORT% >nul 2>&1
-    echo    Firewall rule added.
+    echo    Rule added.
 ) else (
-    echo    Firewall rule already exists.
+    echo    Rule already exists.
 )
+
+:: ── Step 6: Kill old Node processes on ports ─────────────────────────────────
+echo.
+echo [6/6] Stopping old processes on ports %BACKEND_PORT%-%CLIENT_PORT%...
+powershell -NoProfile -Command ^
+  "$ports=7000,7001; foreach($p in $ports){ try{ $c=Get-NetTCPConnection -LocalPort $p -State Listen -EA Stop; foreach($x in $c){ $proc=Get-Process -Id $x.OwningProcess -EA SilentlyContinue; if($proc -and $proc.ProcessName -eq 'node'){ Stop-Process -Id $proc.Id -Force }}} catch{} }"
+echo    Done.
+
+:: ── Update .env ALLOWED_ORIGINS with current IP ──────────────────────────────
+powershell -NoProfile -Command ^
+  "$env='%BACKEND%\.env'; $ip='%PC_IP%'; if(Test-Path $env){ $c=Get-Content $env -Raw; $new='ALLOWED_ORIGINS=http://localhost:7001,http://'+$ip+':7001'; $c=$c -replace 'ALLOWED_ORIGINS=.*',$new; Set-Content $env $c }" >nul 2>&1
 
 :: ── Start Backend ─────────────────────────────────────────────────────────────
 echo.
-echo [3/5] Starting backend on port %BACKEND_PORT%...
-start "POS Backend :7000" cmd /k "title POS Backend :7000 && cd /d "%BACKEND_DIR%" && echo Installing dependencies... && npm install --no-audit --no-fund 2>nul && echo Starting server... && npm run dev"
+echo Starting backend on port %BACKEND_PORT%...
+start "POS Backend :7000" cmd /k "title POS Backend :7000 && cd /d "%BACKEND%" && npm run dev"
 
 :: ── Start Frontend ────────────────────────────────────────────────────────────
-echo.
-echo [4/5] Starting frontend on port %CLIENT_PORT%...
-start "POS Frontend :7001" cmd /k "title POS Frontend :7001 && cd /d "%CLIENT_DIR%" && echo Installing dependencies... && npm install --no-audit --no-fund 2>nul && echo Starting frontend... && npm run dev -- --host 0.0.0.0 --port %CLIENT_PORT%"
+echo Starting frontend on port %CLIENT_PORT%...
+start "POS Frontend :7001" cmd /k "title POS Frontend :7001 && cd /d "%CLIENT%" && npm run dev -- --host 0.0.0.0 --port %CLIENT_PORT%"
 
-:: ── Wait for backend to be ready ─────────────────────────────────────────────
+:: ── Wait for backend ─────────────────────────────────────────────────────────
 echo.
-echo [5/5] Waiting for backend to be ready (up to 60s)...
-set "BACKEND_READY=0"
-set "CLIENT_READY=0"
-
+echo Waiting for backend to start...
+set "READY=0"
 for /L %%i in (1,1,20) do (
-    timeout /t 3 /nobreak >nul
-
-    powershell -NoProfile -Command ^
-      "try { $r = Invoke-WebRequest -Uri '%BACKEND_URL%/health' -UseBasicParsing -TimeoutSec 3; exit 0 } catch { exit 1 }" >nul 2>&1
-    if not errorlevel 1 set "BACKEND_READY=1"
-
-    powershell -NoProfile -Command ^
-      "try { $r = Invoke-WebRequest -Uri '%CLIENT_URL%' -UseBasicParsing -TimeoutSec 3; exit 0 } catch { exit 1 }" >nul 2>&1
-    if not errorlevel 1 set "CLIENT_READY=1"
-
-    if "!BACKEND_READY!"=="1" if "!CLIENT_READY!"=="1" goto :ready
-    <nul set /p "=."
+    if "!READY!"=="0" (
+        timeout /t 3 /nobreak >nul
+        powershell -NoProfile -Command "try{Invoke-WebRequest -Uri 'http://localhost:%BACKEND_PORT%/health' -UseBasicParsing -TimeoutSec 2 | Out-Null; exit 0}catch{exit 1}" >nul 2>&1
+        if not errorlevel 1 set "READY=1"
+        <nul set /p "=."
+    )
 )
 
-:ready
 echo.
 echo.
 echo  ╔══════════════════════════════════════════════════════╗
@@ -95,24 +119,22 @@ echo  ╠═══════════════════════�
 echo  ║                                                      ║
 echo  ║  Dashboard   : http://localhost:7001                 ║
 echo  ║  Backend API : http://localhost:7000                 ║
-echo  ║  Android URL : http://%PC_IP%:7000/         ║
+echo  ║  Android URL : http://%PC_IP%:7000/           ║
 echo  ║                                                      ║
-echo  ║  Default login: admin / admin1234                    ║
+echo  ║  Login: admin / admin1234                            ║
 echo  ║                                                      ║
 echo  ╚══════════════════════════════════════════════════════╝
 echo.
 
-:: ── Open browser ─────────────────────────────────────────────────────────────
-if "!BACKEND_READY!"=="1" (
-    echo  Opening dashboard in browser...
+if "!READY!"=="1" (
     start "" "http://localhost:%CLIENT_PORT%"
 ) else (
-    echo  Backend not ready yet — open http://localhost:%CLIENT_PORT% manually.
+    echo  Backend not ready — open http://localhost:%CLIENT_PORT% manually.
 )
 
-:: ── Beep to signal ready ──────────────────────────────────────────────────────
-powershell -NoProfile -Command "[console]::beep(1200,150); Start-Sleep -Milliseconds 80; [console]::beep(1500,150)" >nul 2>&1
+powershell -NoProfile -Command "[console]::beep(1200,150); Start-Sleep -ms 80; [console]::beep(1500,200)" >nul 2>&1
 
 echo.
-echo  Press any key to close this window (servers keep running in their own windows).
+echo  Press any key to close this window.
+echo  (Backend and Frontend keep running in their own windows)
 pause >nul
