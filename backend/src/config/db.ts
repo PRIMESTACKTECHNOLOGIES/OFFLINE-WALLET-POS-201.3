@@ -22,7 +22,7 @@ if (!fs.existsSync(DB_DIR)) {
   fs.mkdirSync(DB_DIR, { recursive: true });
 }
 
-console.log('[DB] Using database:', DB_PATH);
+console.log('[DB] Connected:', DB_PATH);
 
 class DbAdapter {
   private dbPromise: Promise<Database> | null = null;
