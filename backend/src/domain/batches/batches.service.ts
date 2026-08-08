@@ -65,6 +65,7 @@ export class BatchesService {
 
     // timestamp may arrive as a number (ms) or ISO string — normalise to string
     const tsString = typeof timestamp === "number" ? String(timestamp) : String(timestamp);
+    console.log('[HMAC Debug] message:', `${protocolVersion}|${merchantId}|${terminalId}|${batchId}|${tsString}|${nonce}|${transactions.length}`);
 
     const expectedSignature = this.generateHmacSignature(
       protocolVersion, merchantId, terminalId, batchId,

@@ -1,17 +1,28 @@
-import sqlite3 from 'sqlite3';
-import { open, Database } from 'sqlite';
+// Load .env FIRST — db.ts constructor runs at import time, before server.ts dotenv.config()
+import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
+dotenv.config({ path: path.join(__dirname, '../../.env') });
+
+import sqlite3 from 'sqlite3';
+import { open, Database } from 'sqlite';
 
 // Enable verbose mode for debugging
 sqlite3.verbose();
 
-// Resolve DB path and ensure the directory exists BEFORE opening
-const DB_PATH = process.env.DATABASE_PATH || path.join(process.cwd(), 'data', 'database.sqlite');
+// Always resolve DB path relative to the backend root (where .env lives)
+// __dirname is backend/src/config — go up 2 levels to backend/
+const BACKEND_ROOT = path.join(__dirname, '../..');
+const DB_PATH = process.env.DATABASE_PATH
+  ? path.resolve(BACKEND_ROOT, process.env.DATABASE_PATH)
+  : path.join(BACKEND_ROOT, 'data', 'database.sqlite');
+
 const DB_DIR = path.dirname(DB_PATH);
 if (!fs.existsSync(DB_DIR)) {
   fs.mkdirSync(DB_DIR, { recursive: true });
 }
+
+console.log('[DB] Using database:', DB_PATH);
 
 class DbAdapter {
   private dbPromise: Promise<Database> | null = null;
@@ -95,7 +106,7 @@ class DbAdapter {
     // For now, let's assume SQLite 3.35+ which supports RETURNING.
     // If not, we might need to adjust queries.
 
-    const command = sqliteText.trim().toUpperCase().split(' ')[0];
+    const command = sqliteText.trim().toUpperCase().split(/\s+/)[0];
 
     try {
       if (command === 'SELECT' || sqliteText.toUpperCase().includes('RETURNING')) {

@@ -27,7 +27,8 @@ export class BatchesController {
       // Get credentials from headers
       const merchantId = req.headers['x-merchant-id'] as string || req.body.merchantId;
       const terminalId = req.headers['x-terminal-id'] as string || req.body.terminalId;
-      const signature = req.headers['x-signature'] as string;
+      // Accept signature from header OR body (Android app sends it in body)
+      const signature = (req.headers['x-signature'] as string) || req.body.signature;
       const batchData = req.body;
 
       if (!merchantId) {
@@ -46,8 +47,8 @@ export class BatchesController {
         hasSignature: !!signature
       });
 
-      // Add signature to batch data for verification
-      batchData.signature = signature;
+      // Ensure signature is set in batchData
+      batchData.signature = signature || batchData.signature;
 
       const result = await batchesService.processOfflineBatch(merchantId, terminalId, batchData);
       
