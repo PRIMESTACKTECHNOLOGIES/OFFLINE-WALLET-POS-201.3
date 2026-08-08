@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { useToast } from "../components/ui/Toast";
 import { TableSkeleton } from "../components/ui/Skeleton";
-import { fetchTerminals, forceTerminalReboot, regenerateTerminalSecret, registerTerminal } from "../lib/api";
+import { deleteTerminal, fetchTerminals, forceTerminalReboot, regenerateTerminalSecret, registerTerminal } from "../lib/api";
 import type { Terminal } from "../types"; // Changed to type-only import
 
 // --- Icons ---
@@ -29,6 +29,7 @@ const StatusBadge = ({ status, onReboot }: { status: string | undefined, onReboo
     OFFLINE: "bg-gray-100 text-gray-800 border-gray-200",
     WARNING: "bg-amber-100 text-amber-800 border-amber-200",
     ERROR: "bg-red-100 text-red-800 border-red-200",
+    REGISTERED: "bg-blue-50 text-blue-700 border-blue-100"
   };
 
   return (
@@ -61,15 +62,25 @@ export const TerminalsPage = () => {
     try {
       setLoading(true);
       const data = await fetchTerminals();
-      setTerminals(data.map((t: any) => ({
-        ...t,
-        status: 'OFFLINE', // Default until heartbeat implemented
-        ipAddress: '-',
-        appVersion: 'v1.0'
-      })));
-    } catch (e) {
+      setTerminals(data.map((t: any) => {
+        let status = 'REGISTERED'; // default — any terminal in DB is registered
+        if (t.lastBatchAt) {
+          // Has synced at least once — check if recently active
+          const lastSeen = new Date(t.lastBatchAt).getTime();
+          const minutesAgo = (Date.now() - lastSeen) / 60000;
+          status = minutesAgo < 30 ? 'ONLINE' : 'REGISTERED';
+        }
+        return {
+          ...t,
+          status,
+          ipAddress: '-',
+          appVersion: 'v1.0'
+        };
+      }));
+    } catch (e: any) {
       console.error(e);
-      showToast("Failed to load terminals", "error");
+      const message = e?.message || "Failed to load terminals";
+      showToast(message, "error");
     } finally {
       setLoading(false);
     }
@@ -123,6 +134,36 @@ export const TerminalsPage = () => {
       loadTerminals();
     } catch (e) {
       showToast("Failed to send reboot command", "error");
+    }
+  };
+
+  const handleDeleteTerminal = async () => {
+    if (!showConfigureModal) return;
+
+    const confirmed = window.confirm(`Delete terminal ${showConfigureModal.terminalId}? This action cannot be undone.`);
+    if (!confirmed) return;
+
+    try {
+      const merchantId = showConfigureModal.merchantId || "MRC-1001";
+      await deleteTerminal(merchantId, showConfigureModal.terminalId);
+      showToast("Terminal deleted", "success");
+      setShowConfigureModal(null);
+      loadTerminals();
+    } catch (e) {
+      showToast("Failed to delete terminal", "error");
+    }
+  };
+
+  const handleDeleteTerminalForRow = async (terminal: Terminal) => {
+    const confirmed = window.confirm(`Delete terminal ${terminal.terminalId}? This action cannot be undone.`);
+    if (!confirmed) return;
+
+    try {
+      await deleteTerminal(terminal.merchantId || "MRC-1001", terminal.terminalId);
+      showToast("Terminal deleted", "success");
+      loadTerminals();
+    } catch (e) {
+      showToast("Failed to delete terminal", "error");
     }
   };
 
@@ -208,12 +249,20 @@ export const TerminalsPage = () => {
                       {terminal.lastBatchAt ? new Date(terminal.lastBatchAt).toLocaleString() : 'Never'}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                      <button 
-                        onClick={() => setShowConfigureModal(terminal)}
-                        className="text-blue-600 hover:text-blue-900"
-                      >
-                        Configure
-                      </button>
+                      <div className="flex items-center justify-end gap-3">
+                        <button 
+                          onClick={() => setShowConfigureModal(terminal)}
+                          className="text-blue-600 hover:text-blue-900"
+                        >
+                          Configure
+                        </button>
+                        <button
+                          onClick={() => handleDeleteTerminalForRow(terminal)}
+                          className="text-red-600 hover:text-red-900"
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -381,6 +430,16 @@ export const TerminalsPage = () => {
                     <div className="flex items-center gap-3">
                        <div className="p-2 bg-purple-100 text-purple-600 rounded-lg group-hover:bg-purple-200"><Icons.Wifi /></div>
                        <span className="text-sm">Force Remote Reboot</span>
+                    </div>
+                    <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                  </button>
+                  <button
+                    onClick={handleDeleteTerminal}
+                    className="w-full py-3 px-4 bg-red-50 border border-red-200 text-red-700 rounded-xl font-semibold flex items-center justify-between hover:bg-red-100 transition-all group"
+                  >
+                    <div className="flex items-center gap-3">
+                       <div className="p-2 bg-red-100 text-red-600 rounded-lg group-hover:bg-red-200"><Icons.X /></div>
+                       <span className="text-sm">Delete Terminal</span>
                     </div>
                     <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
                   </button>

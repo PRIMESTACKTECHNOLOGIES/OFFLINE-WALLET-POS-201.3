@@ -12,8 +12,8 @@ export class TerminalsService {
     await db.query(
       `
       INSERT INTO terminals (
-        id, merchant_id, terminal_id, name, terminal_secret
-      ) VALUES ($1, $2, $3, $4, $5)
+        id, merchant_id, terminal_id, name, terminal_secret, offline_enabled
+      ) VALUES ($1, $2, $3, $4, $5, 1)
       `,
       [id, merchantId, terminalId, name, terminalSecret]
     );
