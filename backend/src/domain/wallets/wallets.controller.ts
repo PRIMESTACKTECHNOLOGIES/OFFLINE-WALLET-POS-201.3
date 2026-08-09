@@ -8,7 +8,7 @@ export class WalletsController {
     try {
       const { customerId, amount, source, reference, currency } = req.body;
       if (!customerId || !amount || amount <= 0) return res.status(400).json({ error: 'Invalid payload' });
-      await walletsService.topupWallet(customerId, amount, source, reference, currency || 'USD');
+      await walletsService.topupWallet(customerId, amount, source, reference, currency || 'AED');
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   }
@@ -68,7 +68,7 @@ export class WalletsController {
     try {
       const { customerId, amount, source, reference, currency } = req.body;
       if (!customerId || !amount || amount <= 0) return res.status(400).json({ error: 'Invalid payload' });
-      await walletsService.debitWallet(customerId, amount, source, reference, currency || 'USD');
+      await walletsService.debitWallet(customerId, amount, source, reference, currency || 'AED');
       res.json({ success: true });
     } catch (e: any) {
       res.status(e.message.includes('Insufficient') ? 400 : 500).json({ error: e.message });

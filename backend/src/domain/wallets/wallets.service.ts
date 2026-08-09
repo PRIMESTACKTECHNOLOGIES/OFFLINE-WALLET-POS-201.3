@@ -232,7 +232,7 @@ export class WalletsService {
     };
   }
 
-  async debitWallet(customerId: string, amount: number, source: string, reference?: string, currency: string = 'USD') {
+  async debitWallet(customerId: string, amount: number, source: string, reference?: string, currency: string = 'AED') {
     const ccy = this.normalizeCurrency(currency);
     const wallet = await this.getOrCreateWallet(customerId, ccy);
     const balanceRes = await db.query('SELECT balance FROM customer_wallets WHERE id = ?', [wallet.id]);
@@ -259,8 +259,9 @@ export class WalletsService {
     const ccy = currency ? this.normalizeCurrency(currency) : null;
     const res = ccy
       ? await db.query('SELECT balance, currency FROM customer_wallets WHERE customer_id = ? AND currency = ?', [customerId, ccy])
-      : await db.query('SELECT balance, currency FROM customer_wallets WHERE customer_id = ? ORDER BY currency LIMIT 1', [customerId]);
-    return res.rows.length ? res.rows[0] : { balance: 0, currency: ccy || 'USD' };
+      // No currency specified: prefer AED, then first created
+      : await db.query('SELECT balance, currency FROM customer_wallets WHERE customer_id = ? ORDER BY CASE WHEN currency=\'AED\' THEN 0 ELSE 1 END, created_at ASC LIMIT 1', [customerId]);
+    return res.rows.length ? res.rows[0] : { balance: 0, currency: ccy || 'AED' };
   }
 
   async getWalletTransactions(customerId: string, currency?: string) {
@@ -278,14 +279,21 @@ export class WalletsService {
 
   // ── Customers ────────────────────────────────────────────────────────────────
   async getCustomers() {
+    // Use subquery to get only one wallet per customer — prefer AED, fallback to first created
     return (await db.query(`
       SELECT
         c.id, c.name, c.email, c.phone, c.created_at, c.updated_at,
         w.id AS wallet_id,
         w.wallet_code,
-        w.balance AS wallet_balance
+        w.balance AS wallet_balance,
+        w.currency AS wallet_currency
       FROM customers c
-      LEFT JOIN customer_wallets w ON w.customer_id = c.id
+      LEFT JOIN customer_wallets w ON w.id = (
+        SELECT id FROM customer_wallets
+        WHERE customer_id = c.id
+        ORDER BY CASE WHEN currency = 'AED' THEN 0 ELSE 1 END, created_at ASC
+        LIMIT 1
+      )
       ORDER BY c.created_at DESC
     `)).rows;
   }
