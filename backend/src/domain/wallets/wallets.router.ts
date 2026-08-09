@@ -44,5 +44,6 @@ router.post('/buy-crypto',                     wc.buyCryptoWithWallet.bind(wc));
 router.post('/sell-crypto',                    wc.sellCrypto.bind(wc));
 router.get('/crypto-transactions/:customerId', wc.getCryptoTransactions.bind(wc));
 router.post('/merchant/buy-crypto',            wc.buyCryptoWithMerchant.bind(wc));
+router.post('/crypto-withdraw',                wc.withdrawCrypto.bind(wc));
 
 export { router as walletsRouter };

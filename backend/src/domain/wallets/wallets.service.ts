@@ -674,29 +674,67 @@ export class WalletsService {
     };
   }
 
-  async buyCryptoWithWallet(customerId: string, cryptoCoin: string, fiatAmount: number, network?: string, currency: string = 'USD') {
+  async buyCryptoWithWallet(customerId: string, cryptoCoin: string, fiatAmount: number, network?: string, currency: string = 'AED') {
     const ccy = this.normalizeCurrency(currency);
-    const cryptoWallet = await this.getOrCreateCryptoWallet(customerId, cryptoCoin);
-    const exchangeRate = await this.getCryptoPrice(cryptoCoin);
-    const cryptoAmount = fiatAmount / exchangeRate;
+    const coin = cryptoCoin.toUpperCase();
+    const cryptoWallet = await this.getOrCreateCryptoWallet(customerId, coin);
+    const exchangeRate = await this.getCryptoPrice(coin);
+    let cryptoAmount = fiatAmount / exchangeRate;
+    let binanceOrderId: string | null = null;
+    let providerMode = 'internal';
 
     const wallet = await this.getOrCreateWallet(customerId, ccy);
     const balRes = await db.query('SELECT balance FROM customer_wallets WHERE id = ?', [wallet.id]);
     if (Number(balRes.rows[0]?.balance ?? 0) < fiatAmount) throw new Error(`Insufficient ${ccy} wallet balance`);
 
+    // Try live Binance buy (converts fiat amount to USD first if AED)
+    try {
+      const { buyAssetWithUsd } = await import('../../exchange/binance.service');
+      // Convert AED to USD for Binance (approx 3.67 AED = 1 USD)
+      const usdAmount = ccy === 'AED' ? fiatAmount / 3.67 : fiatAmount;
+      if (coin !== 'USDT') {
+        const order = await buyAssetWithUsd(coin, usdAmount);
+        if (order && !order.mock) {
+          cryptoAmount = parseFloat(String(order.executedQty ?? cryptoAmount));
+          binanceOrderId = String(order.order_id || '');
+          providerMode = 'binance_live';
+          console.log(`[Crypto] Customer Binance buy: ${cryptoAmount} ${coin} orderId=${binanceOrderId}`);
+        }
+      } else {
+        // USDT — internal conversion (1 USDT ≈ 1 USD)
+        cryptoAmount = usdAmount;
+        providerMode = 'internal_usdt';
+      }
+    } catch (binErr: any) {
+      console.warn(`[Crypto] Binance buy skipped, internal: ${binErr?.message}`);
+    }
+
+    // Debit fiat wallet
     await db.query('UPDATE customer_wallets SET balance = balance - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [fiatAmount, wallet.id]);
     await db.query(
       `INSERT INTO wallet_transactions (id, wallet_id, type, amount, currency, source, reference, description) VALUES (?, ?, 'debit', ?, ?, 'crypto_purchase', ?, ?)`,
-      [uuidv4(), wallet.id, fiatAmount, ccy, uuidv4(), `Bought ${cryptoAmount.toFixed(8)} ${cryptoCoin} @ $${exchangeRate}`]
+      [uuidv4(), wallet.id, fiatAmount, ccy, binanceOrderId || uuidv4(), `Bought ${cryptoAmount.toFixed(8)} ${coin} @ ${exchangeRate} [${providerMode}]`]
     );
+
+    // Credit crypto wallet
     await db.query('UPDATE customer_crypto_wallets SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [cryptoAmount, cryptoWallet.id]);
     await db.query(
       `INSERT INTO crypto_transactions (id, customer_id, crypto_coin, transaction_type, fiat_amount, crypto_amount, fiat_currency, exchange_rate, source, provider_mode, status)
        VALUES (?, ?, ?, 'buy', ?, ?, ?, ?, 'wallet_balance', ?, 'completed')`,
-      [uuidv4(), customerId, cryptoCoin, fiatAmount, cryptoAmount, ccy, exchangeRate, network || 'primary']
+      [uuidv4(), customerId, coin, fiatAmount, cryptoAmount, ccy, exchangeRate, network || providerMode]
     );
 
-    return { success: true, cryptoAmount, exchangeRate, fiatAmount, network: network || 'primary', fiat_currency: ccy };
+    return {
+      success: true,
+      cryptoAmount,
+      cryptoCoin: coin,
+      exchangeRate,
+      fiatAmount,
+      fiat_currency: ccy,
+      providerMode,
+      binanceOrderId,
+      network: network || 'primary'
+    };
   }
 
   async sellCrypto(customerId: string, cryptoCoin: string, cryptoAmount: number, network?: string, currency: string = 'USD') {

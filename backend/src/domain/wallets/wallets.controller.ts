@@ -299,6 +299,73 @@ export class WalletsController {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   }
 
+  // ── Crypto withdrawal to external wallet ──────────────────────────────────
+  async withdrawCrypto(req: Request, res: Response) {
+    try {
+      const { customerId, cryptoCoin, amount, address, network } = req.body;
+      if (!customerId || !cryptoCoin || !amount || !address || !network) {
+        return res.status(400).json({ error: 'customerId, cryptoCoin, amount, address and network are required' });
+      }
+      const coin = String(cryptoCoin).toUpperCase();
+      const withdrawAmt = Number(amount);
+      if (withdrawAmt <= 0) return res.status(400).json({ error: 'amount must be positive' });
+
+      // Check customer crypto balance
+      const { db } = await import('../../config/db');
+      const walletRes = await db.query(
+        'SELECT id, balance FROM customer_crypto_wallets WHERE customer_id = ? AND crypto_coin = ?',
+        [customerId, coin]
+      );
+      if (!walletRes.rows.length) return res.status(404).json({ error: `No ${coin} wallet found` });
+      const cryptoBal = Number(walletRes.rows[0].balance ?? 0);
+      if (cryptoBal < withdrawAmt) return res.status(400).json({ error: `Insufficient ${coin} balance. Have ${cryptoBal}, need ${withdrawAmt}` });
+
+      // Debit crypto wallet
+      await db.query(
+        'UPDATE customer_crypto_wallets SET balance = balance - ?, updated_at = CURRENT_TIMESTAMP WHERE customer_id = ? AND crypto_coin = ?',
+        [withdrawAmt, customerId, coin]
+      );
+
+      // Call Binance withdrawal API
+      let withdrawalRef = '';
+      let status = 'pending';
+      try {
+        const { withdrawAsset } = await import('../../exchange/binance.service');
+        const result = await withdrawAsset(coin, address, network, withdrawAmt);
+        withdrawalRef = result?.id || result?.withdrawId || '';
+        status = 'submitted';
+        console.log(`[Withdrawal] ${withdrawAmt} ${coin} → ${address} (${network}) ref=${withdrawalRef}`);
+      } catch (ex: any) {
+        // Binance failed — restore balance
+        await db.query(
+          'UPDATE customer_crypto_wallets SET balance = balance + ? WHERE customer_id = ? AND crypto_coin = ?',
+          [withdrawAmt, customerId, coin]
+        );
+        return res.status(500).json({ error: `Withdrawal failed: ${ex?.message || ex}` });
+      }
+
+      // Record in crypto_transactions
+      const { v4: uuidv4 } = await import('uuid');
+      await db.query(
+        `INSERT INTO crypto_transactions (id, customer_id, crypto_coin, transaction_type, fiat_amount, crypto_amount, fiat_currency, exchange_rate, source, provider_mode, status)
+         VALUES (?, ?, ?, 'withdraw', 0, ?, ?, 0, ?, ?, ?)`,
+        [uuidv4(), customerId, coin, withdrawAmt, 'USD', `withdraw:${address}:${network}`, network, status]
+      );
+
+      res.json({
+        success: true,
+        cryptoCoin: coin,
+        amount: withdrawAmt,
+        address,
+        network,
+        withdrawalRef,
+        status
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+
   // Merchant: buy crypto using merchant wallet funds
   async buyCryptoWithMerchant(req: Request, res: Response) {
     try {
