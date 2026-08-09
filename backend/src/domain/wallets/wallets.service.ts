@@ -259,9 +259,13 @@ export class WalletsService {
     const ccy = currency ? this.normalizeCurrency(currency) : null;
     const res = ccy
       ? await db.query('SELECT balance, currency FROM customer_wallets WHERE customer_id = ? AND currency = ?', [customerId, ccy])
-      // No currency specified: prefer AED, then first created
-      : await db.query('SELECT balance, currency FROM customer_wallets WHERE customer_id = ? ORDER BY CASE WHEN currency=\'AED\' THEN 0 ELSE 1 END, created_at ASC LIMIT 1', [customerId]);
-    return res.rows.length ? res.rows[0] : { balance: 0, currency: ccy || 'AED' };
+      // No currency: prefer AED, then any existing wallet
+      : await db.query(`SELECT balance, currency FROM customer_wallets WHERE customer_id = ?
+         ORDER BY CASE WHEN currency='AED' THEN 0 ELSE 1 END, created_at ASC LIMIT 1`, [customerId]);
+    if (res.rows.length) return res.rows[0];
+    // No wallet at all — create default AED wallet
+    await this.getOrCreateWallet(customerId, 'AED');
+    return { balance: 0, currency: 'AED' };
   }
 
   async getWalletTransactions(customerId: string, currency?: string) {

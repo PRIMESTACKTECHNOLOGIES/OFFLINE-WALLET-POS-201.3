@@ -722,8 +722,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         val etPan = styledInput("•••• •••• •••• ••••")
-        etPan.filters = arrayOf(InputFilter.LengthFilter(19))
-        etPan.keyListener = DigitsKeyListener.getInstance("0123456789")
+        etPan.filters = arrayOf(InputFilter.LengthFilter(23)) // 19 digits + 4 spaces
+        etPan.inputType = InputType.TYPE_CLASS_NUMBER
 
         // Auto-format PAN with spaces
         etPan.addTextChangedListener(object : android.text.TextWatcher {
@@ -733,13 +733,14 @@ class MainActivity : AppCompatActivity() {
             override fun afterTextChanged(s: android.text.Editable?) {
                 if (editing) return
                 editing = true
-                val digits = s.toString().replace(" ", "")
+                val digits = s.toString().replace(" ", "").filter { it.isDigit() }.take(19)
                 val formatted = digits.chunked(4).joinToString(" ")
-                etPan.setText(formatted)
-                etPan.setSelection(formatted.length)
-                // Update card preview
+                if (s.toString() != formatted) {
+                    etPan.setText(formatted)
+                    etPan.setSelection(formatted.length)
+                }
                 tvCardLabel.text = if (digits.isNotEmpty())
-                    digits.chunked(4).joinToString("   ").padEnd(19, '●').replace("0123456789".toRegex(), "$0")
+                    digits.chunked(4).joinToString("   ")
                 else "● ● ● ●   ● ● ● ●   ● ● ● ●   ● ● ● ●"
                 editing = false
             }
@@ -753,7 +754,7 @@ class MainActivity : AppCompatActivity() {
 
         val etExpiry = styledInput("MM/YY")
         etExpiry.filters = arrayOf(InputFilter.LengthFilter(5))
-        etExpiry.keyListener = DigitsKeyListener.getInstance("0123456789/")
+        etExpiry.inputType = InputType.TYPE_CLASS_NUMBER
         etExpiry.addTextChangedListener(object : android.text.TextWatcher {
             var editing = false
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
@@ -761,13 +762,17 @@ class MainActivity : AppCompatActivity() {
             override fun afterTextChanged(s: android.text.Editable?) {
                 if (editing) return
                 editing = true
-                val digits = s.toString().replace("/", "")
-                val fmt = if (digits.length >= 3) "${digits.take(2)}/${digits.drop(2)}"
-                          else if (digits.length == 2) "$digits/"
-                          else digits
-                etExpiry.setText(fmt)
-                etExpiry.setSelection(fmt.length)
-                tvCardExpiry.text = if (fmt.length >= 5) "Expires: $fmt" else "MM/YY"
+                val raw = s.toString().filter { it.isDigit() }.take(4)
+                val fmt = when {
+                    raw.length >= 3 -> "${raw.take(2)}/${raw.drop(2)}"
+                    raw.length == 2 -> raw
+                    else -> raw
+                }
+                if (s.toString() != fmt) {
+                    etExpiry.setText(fmt)
+                    etExpiry.setSelection(fmt.length)
+                }
+                tvCardExpiry.text = if (fmt.length == 5) "Expires: $fmt" else "MM/YY"
                 editing = false
             }
         })
@@ -776,7 +781,7 @@ class MainActivity : AppCompatActivity() {
 
         val etCvv = styledInput("CVV", isPassword = true)
         etCvv.filters = arrayOf(InputFilter.LengthFilter(4))
-        etCvv.keyListener = DigitsKeyListener.getInstance("0123456789")
+        etCvv.inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
         etCvv.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
 
         val expiryWrap = LinearLayout(ctx).apply {

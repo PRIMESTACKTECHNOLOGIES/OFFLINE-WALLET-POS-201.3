@@ -48,6 +48,9 @@ export interface Customer {
   phone?: string;
   created_at: string;
   updated_at: string;
+  wallet_id?: string;
+  wallet_code?: string;
+  wallet_balance?: number;
 }
 
 export interface WalletBalance {
@@ -279,6 +282,16 @@ export async function forceTerminalReboot(merchantId: string, terminalId: string
   return res.json();
 }
 
+export async function deleteTerminal(merchantId: string, terminalId: string) {
+  const res = await fetchWithAuth(`${BASE_URL}/merchant/v1/terminal/${encodeURIComponent(merchantId)}/${encodeURIComponent(terminalId)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    throw new Error("Failed to delete terminal");
+  }
+  return res.json();
+}
+
 export async function fetchSettings(): Promise<Settings> {
   const res = await fetchWithAuth(`${BASE_URL}/merchant/v1/settings`);
   if (!res.ok) {
@@ -384,7 +397,7 @@ export async function uploadBatch(batchData: Record<string, unknown>, secret: st
   return res.json();
 }
 
-export async function chargePayment(amountMinor: number, currency: string, merchantId: string = "MRC-1001", cardData?: { pan: string; expiry: string }) {
+export async function chargePayment(amountMinor: number, currency: string, merchantId: string = "MRC-1001", cardData?: { pan: string; expiry: string; cvv?: string; customerId?: string }) {
   const res = await fetchWithAuth(`${BASE_URL}/merchant/v1/payments/charge`, {
     method: "POST",
     body: JSON.stringify({ amountMinor, currency, merchantId, ...cardData })
@@ -559,30 +572,6 @@ export async function redeemPaymentCode(request: RedeemRequest): Promise<RedeemR
   return res.json();
 }
 
-// ── Primestack offline queue helpers (used by EMV bridge) ─────────────────────
-export interface PrimestackQueueRequest {
-  amount: number;
-  currency: string;
-  cardLast4: string;
-  cardBrand: string;
-  offlineRef: string;
-  capturedAt: string;
-  terminalId: string;
-}
-
-export async function primestackQueueOffline(data: PrimestackQueueRequest) {
-  return fetchWithAuth(`${BASE_URL}/primestack/offline/queue`, {
-    method: "POST",
-    body: JSON.stringify(data)
-  });
-}
-
-export async function primestackSyncOffline(): Promise<{ approved: number; declined: number }> {
-  const res = await fetchWithAuth(`${BASE_URL}/primestack/offline/sync`, { method: "POST" });
-  if (!res.ok) return { approved: 0, declined: 0 };
-  return res.json();
-}
-
 // Get transaction by ID
 export async function getTransactionById(id: string): Promise<Transaction | null> {
   const res = await fetchWithAuth(`${BASE_URL}/merchant/v1/transactions/${id}`);
@@ -745,8 +734,8 @@ export async function getCryptoPrice(coin: string): Promise<{ price: number; cry
   if (!res.ok) return { price: 0, cryptoCoin: coin };
   return res.json();
 }
-export async function buyCryptoWithWallet(customerId: string, cryptoCoin: string, fiatAmount: number, network?: string) {
-  const res = await fetchWithAuth(`${BASE_URL}/wallet/buy-crypto`, { method: 'POST', body: JSON.stringify({ customerId, cryptoCoin, fiatAmount, ...(network ? { network } : {}) }) });
+export async function buyCryptoWithWallet(customerId: string, cryptoCoin: string, fiatAmount: number, network?: string, currency?: string) {
+  const res = await fetchWithAuth(`${BASE_URL}/wallet/buy-crypto`, { method: 'POST', body: JSON.stringify({ customerId, cryptoCoin, fiatAmount, ...(network ? { network } : {}), ...(currency ? { currency } : {}) }) });
   if (!res.ok) { const e = await res.json().catch(() => ({} as ApiErrorPayload)); throw new Error(e.error || 'Buy failed'); }
   return res.json();
 }
@@ -762,41 +751,86 @@ export async function getCryptoTransactions(customerId: string): Promise<CryptoT
 }
 
 export async function getMerchantBalance(merchantId: string): Promise<MerchantWallet> {
-  const res = await fetchWithAuth(`${BASE_URL}/merchant/v1/wallet/${encodeURIComponent(merchantId)}`);
+  const res = await fetchWithAuth(`${BASE_URL}/wallet/merchant-balance/${encodeURIComponent(merchantId)}`);
   if (!res.ok) return { id: '', merchant_id: merchantId, balance: 0, currency: 'USD' };
-  return res.json();
+  const data = await res.json();
+  return {
+    id: data.id ?? '',
+    merchant_id: data.merchant_id ?? data.merchantId ?? merchantId,
+    balance: Number(data.balance ?? 0),
+    currency: data.currency ?? 'USD',
+    created_at: data.created_at,
+    updated_at: data.updated_at,
+  };
 }
 
 export async function getMerchantTransactions(merchantId: string): Promise<MerchantWalletTransaction[]> {
-  const res = await fetchWithAuth(`${BASE_URL}/merchant/v1/wallet/${encodeURIComponent(merchantId)}/transactions`);
+  const res = await fetchWithAuth(`${BASE_URL}/wallet/merchant-transactions/${encodeURIComponent(merchantId)}`);
   if (!res.ok) return [];
-  return res.json();
+  const data = await res.json();
+  const txns = (Array.isArray(data) ? data : []) as Array<Partial<MerchantWalletTransaction> & {
+    wallet_id?: string;
+    type?: MerchantWalletTransaction['type'];
+    amount?: number;
+    source?: string;
+    reference?: string;
+    description?: string;
+    created_at?: string;
+  }>;
+  return txns.map((txn) => ({
+    id: txn.id ?? '',
+    wallet_id: txn.wallet_id ?? '',
+    type: txn.type ?? 'credit',
+    amount: Number(txn.amount ?? 0),
+    source: txn.source ?? 'merchant_wallet',
+    reference: txn.reference,
+    description: txn.description,
+    created_at: txn.created_at ?? '',
+  }));
 }
 
 export async function exportTransactionsToCSV(transactions: Transaction[]) {
-  const rows = transactions.map((txn) => ({
-    id: txn.id,
-    merchantId: txn.merchantId,
-    terminalId: txn.terminalId,
-    amountMinor: txn.amountMinor,
-    currency: txn.currency,
-    status: txn.status,
-    createdAt: txn.txnTimestamp,
-  }));
-
-  const header = ['id', 'merchantId', 'terminalId', 'amountMinor', 'currency', 'status', 'createdAt'];
-  const csv = [header.join(','), ...rows.map((row) => header.map((col) => JSON.stringify(String(row[col as keyof typeof row] ?? ''))).join(','))].join('\n');
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  // Wise-compatible batch payment CSV
+  const headers = [
+    'name', 'recipientEmail', 'paymentReference', 'referenceNumber', 'receiverType',
+    'amount', 'sourceCurrency', 'targetCurrency',
+    'batchId', 'stan', 'authMode', 'entryMode', 'status', 'date'
+  ];
+  const escapeCsv = (v: string | number | undefined) => {
+    const s = String(v ?? '');
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+  };
+  const rows = transactions.map(t => [
+    t.merchantId || 'Merchant',
+    '',
+    `REF-${t.id}`,
+    t.id,
+    'BUSINESS',
+    ((t.amountMinor || 0) / 100).toFixed(2),
+    t.currency || 'USD',
+    t.currency || 'USD',
+    t.batchId || '',
+    t.stan || '',
+    t.authMode || '',
+    t.entryMode || '',
+    t.status,
+    new Date(t.txnTimestamp).toISOString(),
+  ]);
+  const csv = [
+    headers.join(','),
+    ...rows.map(row => row.map(escapeCsv).join(','))
+  ].join('\n');
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = 'transactions.csv';
+  link.download = `wise_transactions_${new Date().toISOString().slice(0,10)}.csv`;
   link.click();
   URL.revokeObjectURL(url);
 }
 
 export async function buyCryptoWithMerchant(merchantId: string, cryptoCoin: string, fiatAmount: number, network?: string) {
-  const res = await fetchWithAuth(`${BASE_URL}/merchant/v1/buy-crypto`, {
+  const res = await fetchWithAuth(`${BASE_URL}/wallet/merchant/buy-crypto`, {
     method: 'POST',
     body: JSON.stringify({ merchantId, cryptoCoin, fiatAmount, ...(network ? { network } : {}) })
   });
@@ -822,6 +856,14 @@ export async function processCashout(cashoutId: string) {
   const res = await fetchWithAuth(`${BASE_URL}/merchant/v1/cashouts/${cashoutId}/process`, { method: 'POST' });
   if (!res.ok) throw new Error('Failed to process cashout');
   return res.json();
+}
+export async function cashoutBraintree(items: Array<Record<string, unknown>>) {
+  return createCashout({ items, gateway: 'braintree' });
+}
+
+// Compatibility wrapper for MyFatoorah cashouts (some pages import this name)
+export async function cashoutMyFatoorah(items: Array<Record<string, unknown>>) {
+  return createCashout({ items, gateway: 'myfatoorah' });
 }
 
 // ── Offline wallet payment stubs (localStorage-based, used by POSPage) ────────
@@ -849,6 +891,89 @@ export async function syncOfflineWalletPayments(): Promise<{ synced: number; fai
       synced++;
     } catch { failed++; }
   }
+  return { synced, failed };
+}
+
+// ── Offline PIN sale upload queue for POS EMV offline approvals ─────────────
+export interface OfflinePinSalePayload {
+  merchantId: string;
+  terminalId?: string;
+  amountMinor: number;
+  currency: string;
+  panMasked?: string;
+  txnType?: string;
+  authMode?: string;
+  entryMode?: string;
+  cardBrand?: string;
+  readerSource?: string;
+  cvmResult?: string;
+  pinVerified?: boolean;
+  rrn?: string;
+  stan?: string;
+  authCode?: string;
+  emvData?: unknown;
+  tlvRaw?: string;
+  ledgerEntryId?: string | null;
+  localTxnId?: string;
+}
+
+export interface OfflinePinSale extends OfflinePinSalePayload {
+  id: string;
+  synced: boolean;
+  error?: string;
+}
+
+const OPP_KEY = "pos_offline_pin_sales";
+
+export async function uploadOfflinePinSale(payload: OfflinePinSalePayload) {
+  const res = await fetch(`${BASE_URL}/merchant/v1/payments/offline-pin`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({} as ApiErrorPayload));
+    throw new Error(body.error || `Offline PIN upload failed (${res.status})`);
+  }
+
+  return res.json();
+}
+
+export function saveOfflinePinSale(p: Omit<OfflinePinSale, "id" | "synced">): OfflinePinSale {
+  const arr: OfflinePinSale[] = JSON.parse(localStorage.getItem(OPP_KEY) || "[]");
+  const item: OfflinePinSale = { id: `opp_${Date.now()}`, synced: false, ...p };
+  arr.push(item);
+  localStorage.setItem(OPP_KEY, JSON.stringify(arr));
+  return item;
+}
+
+export function getOfflinePinSales(): OfflinePinSale[] {
+  return JSON.parse(localStorage.getItem(OPP_KEY) || "[]");
+}
+
+export async function syncOfflinePinSales(): Promise<{ synced: number; failed: number }> {
+  const pending = getOfflinePinSales().filter(p => !p.synced);
+  let synced = 0;
+  let failed = 0;
+  const remaining: OfflinePinSale[] = [];
+
+  for (const item of pending) {
+    try {
+      await uploadOfflinePinSale(item);
+      synced++;
+    } catch (error: any) {
+      failed++;
+      remaining.push({ ...item, error: error?.message || 'Upload failed' });
+    }
+  }
+
+  if (remaining.length !== pending.length) {
+    localStorage.setItem(OPP_KEY, JSON.stringify(remaining));
+  }
+
   return { synced, failed };
 }
 

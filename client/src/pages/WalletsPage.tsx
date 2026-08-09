@@ -8,11 +8,12 @@ import {
   getVirtualCards, issueVirtualCard, topupVirtualCard, freezeCard, unfreezeCard,
   getBankAccounts, addBankAccount, bankPayout, getBankPayouts,
   getCryptoWallets, getCryptoPrice, buyCryptoWithWallet, sellCrypto, getCryptoTransactions,
-  buyCryptoWithMerchant,
+  getMerchantBalance, getMerchantTransactions, buyCryptoWithMerchant,
   type Customer, type WalletBalance, type WalletTransaction,
   type VirtualCard, type BankAccount, type BankPayout,
-  type CryptoWallet, type CryptoTransaction,
+  type CryptoWallet, type CryptoTransaction, type MerchantWallet, type MerchantWalletTransaction,
 } from "../lib/api";
+import { resolveApiBaseUrl } from "../lib/backendUrl";
 import { useNotifications } from "../contexts/NotificationContext";
 import "../styles/wallet-codepen-theme.css";
 import {
@@ -124,11 +125,47 @@ export const WalletsPage = () => {
   const [selBank, setSelBank] = useState('');
   const [cryptoWallets, setCryptoWallets] = useState<CryptoWallet[]>([]);
   const [cryptoTxns, setCryptoTxns] = useState<CryptoTransaction[]>([]);
+  const [merchantWallet, setMerchantWallet] = useState<MerchantWallet | null>(null);
+  const [merchantTxns, setMerchantTxns] = useState<MerchantWalletTransaction[]>([]);
+  const [merchantLoading, setMerchantLoading] = useState(false);
   const [selCoin, setSelCoin] = useState('BTC');
   const [selectedNetwork, setSelectedNetwork] = useState('bitcoin');
   const [coinPrice, setCoinPrice] = useState(0);
   const [f, setF] = useState<Record<string,string>>({});
+  const [modalBalanceLoading, setModalBalanceLoading] = useState(false);
+  const [coinPriceMap, setCoinPriceMap] = useState<Record<string, number>>(() => {
+    const map: Record<string, number> = {};
+    COINS.forEach(c => { map[c] = 0; });
+    return map;
+  });
+  const selectedNetworkMap: Record<string, string> = {};
+  COINS.forEach(c => { selectedNetworkMap[c] = getNetworkOptions(c)[0]; });
   const sel = customers.find(c => c.id === selId);
+
+  const refreshMerchantWallet = async (merchantIdOverride?: string) => {
+    const targetMerchantId = merchantIdOverride || f.merchantId || '';
+    if (!targetMerchantId) {
+      setMerchantWallet(null);
+      setMerchantTxns([]);
+      return;
+    }
+
+    setMerchantLoading(true);
+    try {
+      const [wallet, txns] = await Promise.all([
+        getMerchantBalance(targetMerchantId),
+        getMerchantTransactions(targetMerchantId),
+      ]);
+      setMerchantWallet(wallet);
+      setMerchantTxns(txns);
+    } catch (error) {
+      console.warn('[Merchant wallet] refresh failed', error);
+      setMerchantWallet(null);
+      setMerchantTxns([]);
+    } finally {
+      setMerchantLoading(false);
+    }
+  };
 
   useEffect(() => {
     const up = () => { setIsOnline(true); setQueuedOps(offlinePending()); };
@@ -177,11 +214,21 @@ export const WalletsPage = () => {
     // also fetch settings to get merchant id for merchant buys
     fetchSettings().then(s => {
       if (s?.merchant_id) {
-        // store merchant id in form state for merchant buy
-        setF(p => ({ ...p, merchantId: s.merchant_id }));
+        const merchantId = s.merchant_id;
+        setF(p => ({ ...p, merchantId }));
+        void refreshMerchantWallet(merchantId);
       }
     }).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!f.merchantId) {
+      setMerchantWallet(null);
+      setMerchantTxns([]);
+      return;
+    }
+    void refreshMerchantWallet(f.merchantId);
+  }, [f.merchantId]);
 
   useEffect(() => {
     if (!selId) return;
@@ -205,6 +252,44 @@ export const WalletsPage = () => {
       getCryptoPrice(selCoin).then(r=>setCoinPrice(r.price)).catch(()=>{});
   }, [modal, selCoin]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const preload = async () => {
+      const entries: [string, number][] = [];
+      for (const coin of COINS) {
+        try {
+          const r = await getCryptoPrice(coin);
+          if (!cancelled) entries.push([coin, r.price]);
+        } catch {}
+      }
+      if (!cancelled && entries.length) {
+        setCoinPriceMap(prev => {
+          const next = { ...prev };
+          for (const [coin, price] of entries) next[coin] = price;
+          return next;
+        });
+      }
+    };
+    preload();
+    const interval = setInterval(preload, 30000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  useEffect(() => {
+    if (modal !== 'topup-card' || !selId) return;
+
+    let cancelled = false;
+    setModalBalanceLoading(true);
+
+    void refreshWalletAndCards().finally(() => {
+      if (!cancelled) setModalBalanceLoading(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [modal, selId]);
+
   const refreshWallet = async () => {
     if (!selId) return;
     try {
@@ -214,6 +299,19 @@ export const WalletsPage = () => {
     setQueuedOps(offlinePending());
   };
   const refreshCards = async () => { if (selId) setCards(await getVirtualCards(selId)); };
+  const refreshWalletAndCards = async () => {
+    if (!selId) return;
+    try {
+      const [bal, cardsData] = await Promise.all([getWalletBalance(selId), getVirtualCards(selId)]);
+      setBalance(bal);
+      setCards(cardsData);
+      setSelCard(prev => cardsData.find(card => card.id === prev?.id) ?? prev);
+      cacheBalance(selId, Number(bal.balance), bal.currency);
+    } catch {
+      const c = getCachedBalance(selId);
+      if (c) setBalance(c);
+    }
+  };
   const refreshBank  = async () => {
     if (!selId) return;
     const [ba, bp] = await Promise.all([getBankAccounts(selId), getBankPayouts(selId)]);
@@ -237,117 +335,202 @@ export const WalletsPage = () => {
 
   // Handlers
   const handleCreateCustomer = () => act(async () => {
-    if (!f.name?.trim()) throw new Error('Name required');
-    const c = await createCustomer(f.name, f.email, f.phone);
-    setCustomers(p => [...p, c]); setSelId(c.id);
-    // Fetch and display wallet ID
+    // ── Snapshot ALL state into local constants BEFORE any await.
+    //    This defends against stale closures if any UI path calls setF({}) mid-flight.
+    const snapF = { ...f };
+
+    const formName = (snapF.name || '').trim();
+    const formEmail = (snapF.email || '').trim();
+    const formPhone = (snapF.phone || '').trim();
+
+    if (!formName) throw new Error('Name required');
+    if (formName.length < 2) throw new Error('Name must be at least 2 characters');
+    const c = await createCustomer(formName, formEmail || undefined, formPhone || undefined);
+    if (!c || !c.id) throw new Error('Server returned an invalid customer record');
+    const savedName = (c.name || '').trim() || formName;
+    const safeCustomer = {
+      ...c,
+      name: savedName,
+      email: c.email ?? (formEmail || undefined),
+      phone: c.phone ?? (formPhone || undefined)
+    };
+    setCustomers(p => [...p, safeCustomer]);
+    setSelId(safeCustomer.id);
     try {
-      const walBal = await getWalletBalance(c.id);
-      addNotification('Wallet Created', `Customer wallet ready — ID: ${c.id}`, 'success');
-    } catch {}
-  }, 'Customer created');
+      await getWalletBalance(safeCustomer.id);
+      const walletId = safeCustomer.wallet_id || safeCustomer.id;
+      const walletCode = safeCustomer.wallet_code ? ` · Code: ${safeCustomer.wallet_code}` : '';
+      addNotification('Wallet Created', `${savedName}'s wallet ready — ID: ${walletId}${walletCode}`, 'success');
+    } catch {
+      addNotification('Wallet Created', `${savedName}'s wallet created — ID: ${safeCustomer.id}`, 'success');
+    }
+  }, `Customer created`);
 
   const handleTopup = () => act(async () => {
-    if (!selId) throw new Error('No customer selected');
-    const amt = parseFloat(f.amount);
+    // ── Snapshot ALL state into local constants BEFORE any await.
+    const snapF = { ...f };
+    const snapSelId = selId;
+    const snapIsOnline = isOnline;
+
+    if (!snapSelId) throw new Error('No customer selected');
+    const amt = parseFloat(snapF.amount);
     if (!amt || amt <= 0) throw new Error('Enter a valid USD top-up amount');
-    const pan = cleanCardNumber(f.topupPan || '');
-    const expiry = f.topupExpiry || '';
-    const cvv = (f.topupCvv || '').trim();
+    const pan = cleanCardNumber(snapF.topupPan || '');
+    const expiry = snapF.topupExpiry || '';
+    const cvv = (snapF.topupCvv || '').trim();
     if (!pan || pan.length < 13 || pan.length > 19) throw new Error('Enter a valid card number');
     if (!expiry || !/^\d{2}\/\d{2}$/.test(expiry)) throw new Error('Enter card expiry as MM/YY');
     if (!cvv || !/^\d{3,4}$/.test(cvv)) throw new Error('Enter a valid CVV');
     const panMasked = '*'.repeat(pan.length - 4) + pan.slice(-4);
 
-    if (!isOnline) {
+    if (!snapIsOnline) {
       const op = enqueue('wallet_topup_card', {
-        customerId: selId,
+        customerId: snapSelId,
         amount: amt,
         cardNumber: pan,
         panMasked,
         expiry,
         cvv,
       });
-      applyLocalBalance(selId, amt);
+      applyLocalBalance(snapSelId, amt);
       setBalance(prev => ({ ...prev, balance: prev.balance + amt }));
       setQueuedOps(offlinePending());
       addNotification('Queued for Sync', `Card top-up of $${amt.toFixed(2)} is queued and will be applied when the connection returns.`, 'success');
       return;
     }
 
-    const result = await topupWalletWithCard(selId, amt, pan, panMasked, expiry, cvv);
+    const result = await topupWalletWithCard(snapSelId, amt, pan, panMasked, expiry, cvv);
     await refreshWallet();
     addNotification('Top Up Complete', `Amount $${amt.toFixed(2)} credited. Auth: ${result.authCode || 'N/A'}${result.processorId ? ` · Processor: ${result.processorId}` : ''}`, 'success');
   }, '');
 
   const handleDebit = () => act(async () => {
-    if (!selId) throw new Error('No customer');
-    const amt = parseFloat(f.amount);
-    if (!isOnline) { const c=getCachedBalance(selId); if(c&&c.balance<amt) throw new Error('Insufficient balance'); enqueue('wallet_debit',{customerId:selId,amount:amt,source:'admin_debit'}); applyLocalBalance(selId,-amt); }
-    else await debitWallet(selId, amt, 'admin_debit');
+    // ── Snapshot ALL state into local constants BEFORE any await.
+    const snapF = { ...f };
+    const snapSelId = selId;
+    const snapIsOnline = isOnline;
+
+    if (!snapSelId) throw new Error('No customer');
+    const amt = parseFloat(snapF.amount);
+    if (!snapIsOnline) { const c=getCachedBalance(snapSelId); if(c&&c.balance<amt) throw new Error('Insufficient balance'); enqueue('wallet_debit',{customerId:snapSelId,amount:amt,source:'admin_debit'}); applyLocalBalance(snapSelId,-amt); }
+    else await debitWallet(snapSelId, amt, 'admin_debit');
     await refreshWallet();
-  }, `Debited $${f.amount}`);
+  }, 'Debit applied');
 
   const handleTransfer = () => act(async () => {
-    if (!selId) throw new Error('No customer');
-    const amt = parseFloat(f.amount);
-    if (!isOnline) { enqueue('wallet_transfer',{senderCustomerId:selId,receiverCustomerId:f.receiverId,amount:amt,note:f.note}); applyLocalBalance(selId,-amt); }
-    else await walletTransfer(selId, f.receiverId, amt, f.note);
+    // ── Snapshot ALL state into local constants BEFORE any await.
+    const snapF = { ...f };
+    const snapSelId = selId;
+    const snapIsOnline = isOnline;
+
+    if (!snapSelId) throw new Error('No customer');
+    const amt = parseFloat(snapF.amount);
+    if (!snapIsOnline) { enqueue('wallet_transfer',{senderCustomerId:snapSelId,receiverCustomerId:snapF.receiverId,amount:amt,note:snapF.note}); applyLocalBalance(snapSelId,-amt); }
+    else await walletTransfer(snapSelId, snapF.receiverId, amt, snapF.note);
     await refreshWallet();
   }, 'Transfer sent');
 
   const handleIssueCard = () => act(async () => {
-    if (!selId) throw new Error('No customer');
-    const card = await issueVirtualCard(selId, f.name||sel?.name||'Card Holder', f.currency||'USD');
+    // ── Snapshot ALL state into local constants BEFORE any await.
+    const snapF = { ...f };
+    const snapSelId = selId;
+    const snapSelName = sel?.name;
+
+    if (!snapSelId) throw new Error('No customer');
+    const card = await issueVirtualCard(snapSelId, snapF.name||snapSelName||'Card Holder', snapF.currency||'USD');
     addNotification('Card Issued', `Number: ${(card as any).cardNumber}  CVV: ${(card as any).cvv}`, 'success');
     await refreshWallet(); await refreshCards();
   }, '');
 
   const handleTopupCard = () => act(async () => {
-    if (!selId||!selCard) throw new Error('Select a card');
-    await topupVirtualCard(selId, selCard.id, parseFloat(f.amount));
+    // ── Snapshot ALL state into local constants BEFORE any await.
+    const snapF = { ...f };
+    const snapSelId = selId;
+    const snapSelCard = selCard;
+
+    if (!snapSelId||!snapSelCard) throw new Error('Select a card');
+    await topupVirtualCard(snapSelId, snapSelCard.id, parseFloat(snapF.amount));
     await refreshWallet(); await refreshCards();
-  }, `Card topped up $${f.amount}`);
+  }, 'Card topped up');
 
   const handleAddBank = () => act(async () => {
-    if (!selId) throw new Error('No customer');
-    await addBankAccount({customerId:selId,bankName:f.bankName,accountHolder:f.holder,accountNumber:f.accountNumber,routingNumber:f.routing,iban:f.iban,swiftCode:f.swift,currency:f.currency||'USD'});
+    // ── Snapshot ALL state into local constants BEFORE any await.
+    const snapF = { ...f };
+    const snapSelId = selId;
+
+    if (!snapSelId) throw new Error('No customer');
+    await addBankAccount({customerId:snapSelId,bankName:snapF.bankName,accountHolder:snapF.holder,accountNumber:snapF.accountNumber,routingNumber:snapF.routing,iban:snapF.iban,swiftCode:snapF.swift,currency:snapF.currency||'USD'});
     await refreshBank();
   }, 'Bank account added');
 
   const handleBankPayout = () => act(async () => {
-    if (!selId||!selBank) throw new Error('Select bank account');
-    await bankPayout(selId, selBank, parseFloat(f.amount));
+    // ── Snapshot ALL state into local constants BEFORE any await.
+    const snapF = { ...f };
+    const snapSelId = selId;
+    const snapSelBank = selBank;
+
+    if (!snapSelId||!snapSelBank) throw new Error('Select bank account');
+    await bankPayout(snapSelId, snapSelBank, parseFloat(snapF.amount));
     await refreshWallet(); await refreshBank();
-  }, `Payout of $${f.amount} initiated`);
+  }, 'Payout initiated');
 
   const handleBuyCrypto = () => act(async () => {
-    if (!selId) throw new Error('No customer');
-    if (!isOnline) throw new Error('Online connection required for crypto purchases');
-    const amt = parseFloat(f.amount);
-    if (!amt || amt <= 0) throw new Error('Enter a valid USD amount to spend');
-    await buyCryptoWithWallet(selId, selCoin, amt, selectedNetwork);
+    const snapF = { ...f };
+    const snapSelId = selId;
+    const snapSelCoin = selCoin;
+    const snapSelectedNetwork = selectedNetwork;
+    const snapIsOnline = isOnline;
+    const snapCurrency = balance.currency; // use customer's actual wallet currency
+
+    if (!snapSelId) throw new Error('No customer');
+    if (!snapIsOnline) throw new Error('Online connection required for crypto purchases');
+    const amt = parseFloat(snapF.amount);
+    if (!amt || amt <= 0) throw new Error(`Enter a valid ${snapCurrency} amount to spend`);
+    await buyCryptoWithWallet(snapSelId, snapSelCoin, amt, snapSelectedNetwork, snapCurrency);
     await refreshCrypto();
     await refreshWallet();
-  }, `Bought ${selCoin}`);
+  }, 'Crypto purchase complete');
 
   const handleMerchantBuy = () => act(async () => {
-    const merchantId = f.merchantId || '';
+    // ── Snapshot ALL state into local constants BEFORE any await.
+    //    This defends against stale closures if any UI path calls setF({}) mid-flight.
+    const snapF = { ...f };
+    const snapSelCoin = selCoin;
+    const snapSelectedNetwork = selectedNetwork;
+    const snapMerchantWallet = merchantWallet;
+
+    const merchantId =
+      snapF.merchantId?.trim() ||
+      snapMerchantWallet?.merchant_id?.trim() ||
+      snapMerchantWallet?.id?.trim() ||
+      'MRC-1001';
+
     if (!merchantId) throw new Error('Merchant ID not configured');
     if (!isOnline) throw new Error('Online connection required for merchant buys');
-    const amt = parseFloat(f.amount);
+
+    const amt = parseFloat(snapF.amount);
     if (!amt || amt <= 0) throw new Error('Enter a valid USD amount to spend');
-    await buyCryptoWithMerchant(merchantId, selCoin, amt, selectedNetwork);
-    addNotification('Success', `Merchant bought ${selCoin} on ${selectedNetwork} for $${amt}`, 'success');
+
+    // ── Async execution starts here — state values above are fully captured by closure.
+    await buyCryptoWithMerchant(merchantId, snapSelCoin, amt, snapSelectedNetwork);
+    await refreshMerchantWallet(merchantId);
+    addNotification('Success', `Merchant bought ${snapSelCoin} on ${snapSelectedNetwork} for $${amt}`, 'success');
     closeAll();
   }, 'Merchant buy executed');
 
   const handleSellCrypto = () => act(async () => {
-    if (!selId) throw new Error('No customer');
-    if (!isOnline) throw new Error('Crypto sell requires internet');
-    await sellCrypto(selId, selCoin, parseFloat(f.amount), selectedNetwork);
+    // ── Snapshot ALL state into local constants BEFORE any await.
+    const snapF = { ...f };
+    const snapSelId = selId;
+    const snapSelCoin = selCoin;
+    const snapSelectedNetwork = selectedNetwork;
+    const snapIsOnline = isOnline;
+
+    if (!snapSelId) throw new Error('No customer');
+    if (!snapIsOnline) throw new Error('Crypto sell requires internet');
+    await sellCrypto(snapSelId, snapSelCoin, parseFloat(snapF.amount), snapSelectedNetwork);
     await refreshWallet(); await refreshCrypto();
-  }, `Sold ${selCoin}`);
+  }, 'Crypto sale complete');
 
 
   return (
@@ -356,13 +539,22 @@ export const WalletsPage = () => {
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.25em] text-slate-200">
-              <span className="h-2 w-2 rounded-full bg-emerald-400" /> PrimeStack 201.3 Offline
+              <span className="h-2 w-2 rounded-full bg-emerald-400" /> Offline POS 201.3
             </div>
-            <h1 className="mt-3 text-2xl font-bold">Customer Wallets</h1>
-            <p className="mt-2 max-w-2xl text-sm text-slate-300">Manage fiat, cards, bank payouts, and crypto purchases with an offline-first experience designed for live retail flow.</p>
+            <h1 className="mt-3 text-2xl font-bold">Customer & Merchant Wallets</h1>
+            <p className="mt-2 max-w-2xl text-sm text-slate-300">Manage customer balances, merchant settlement funds, cards, bank payouts, and crypto purchases in one offline-first dashboard.</p>
           </div>
           <div className="flex flex-wrap gap-3">
-            <button onClick={() => { setF({}); setModal('merchant-buy'); }}
+            <button onClick={() => {
+                const prev = f;
+                const resolvedMerchantId =
+                  prev.merchantId?.trim() ||
+                  merchantWallet?.merchant_id?.trim() ||
+                  merchantWallet?.id?.trim() ||
+                  'MRC-1001';
+                setF({ merchantId: resolvedMerchantId });
+                setModal('merchant-buy');
+              }}
               className="rounded-xl border border-emerald-400/30 bg-emerald-500/15 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/25">Merchant Buy Crypto</button>
             <button onClick={() => { setF({}); setModal('create-customer'); }}
               className="rounded-xl bg-blue-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-400">+ New Customer</button>
@@ -397,9 +589,10 @@ export const WalletsPage = () => {
             : customers.map(c => (
               <button key={c.id} onClick={() => setSelId(c.id)}
                 className={`w-full text-left p-3 rounded-lg mb-1 text-sm transition-all ${selId===c.id?'bg-blue-50 border border-blue-200 text-blue-700':'hover:bg-gray-50 text-gray-700'}`}>
-                <div className="font-semibold">{c.name}</div>
+                <div className="font-semibold">{c.name?.trim() || <span className="text-red-500 italic">(Unnamed Customer)</span>}</div>
                 {c.wallet_code && <div className="text-xs font-mono text-blue-500">{c.wallet_code}</div>}
                 {c.email && <div className="text-xs text-gray-400">{c.email}</div>}
+                {c.phone && <div className="text-xs text-gray-400">📞 {c.phone}</div>}
               </button>
             ))
           }
@@ -407,36 +600,47 @@ export const WalletsPage = () => {
 
         {sel ? (
           <div className="lg:col-span-3 space-y-4">
-            {/* Balance hero — wp-card theme, correct ISO 7810 ID-1 bank card ratio */}
-            <div className="wp-card-wrap wp-card-balance-hero">
-              <div className="wp-card wp-card-balance">
-                <div className="wp-card-head">
-                  <div style={{display:'flex',alignItems:'center',gap:'0.8em'}}>
-                    <div className="wp-card-chip" />
-                    <div>
-                      <div className="wp-card-label">Fiat Balance</div>
-                      <div className="wp-card-sub">{sel.name}{sel.email ? ` · ${sel.email}` : ''}</div>
-                      {sel.wallet_code && <div className="wp-card-sub" style={{fontFamily:'monospace',fontSize:'0.65rem',opacity:0.7}}>{sel.wallet_code}</div>}
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+              <div className="rounded-[28px] border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-slate-100 p-6 shadow-sm">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.3em] text-slate-400">Merchant wallet</div>
+                    <h3 className="mt-2 text-xl font-semibold text-slate-900">Settlement balance</h3>
+                    <p className="mt-2 max-w-xl text-sm text-slate-600">
+                      Live merchant funds credited from offline POS batches and reduced by payouts or crypto purchases.
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white/80 px-4 py-3 shadow-sm">
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.25em] text-slate-500">Available</div>
+                    <div className="mt-1 text-2xl font-semibold text-slate-900">
+                      {merchantLoading ? '…' : `$${Number(merchantWallet?.balance ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                     </div>
                   </div>
-                  <div className="wp-card-wifi">
-                    <span /><span /><span /><span />
-                  </div>
                 </div>
-
-                <div className="wp-card-amount">
-                  {balance.currency} {Number(balance.balance).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
+                <div className="mt-6 rounded-2xl border border-dashed border-slate-200 bg-white/70 p-4 text-sm text-slate-500">
+                  This area remains available for wallet summaries and future balance widgets.
                 </div>
+              </div>
 
-                <div className="wp-card-foot">
-                  <div className="wp-card-number">
-                    <span>••••</span><span>••••</span><span>••••</span><span>••••</span>
+              <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.3em] text-slate-400">Customer wallet</div>
+                <div className="mt-4 text-sm text-slate-600">
+                  <div className="font-semibold text-slate-900">{sel.name?.trim() || <span className="text-red-500 italic">(Unnamed Customer — ID: {sel.id.slice(0,8)}…)</span>}</div>
+                  {sel.email && <div className="mt-1">{sel.email}</div>}
+                  {sel.phone && <div className="mt-1 text-slate-500">📞 {sel.phone}</div>}
+                </div>
+                <div className="mt-6 grid gap-3">
+                  <div className="rounded-2xl bg-slate-50 p-4">
+                    <div className="text-xs uppercase tracking-[0.25em] text-slate-400">Wallet Code</div>
+                    <div className="mt-1 font-semibold text-slate-900">{sel.wallet_code || 'Not available'}</div>
                   </div>
-                  <div style={{display:'flex',gap:'0.5em'}}>
-                    <button onClick={()=>{setF({});setModal('topup');}} className="wp-card-pill" style={{cursor:'pointer'}}>+ Top Up</button>
-                    <button onClick={()=>{setF({});setModal('debit');}} className="wp-card-pill" style={{cursor:'pointer'}}>– Debit</button>
-                    <button onClick={()=>{setF({});setModal('transfer');}} className="wp-card-pill" style={{cursor:'pointer'}}>⇄ Transfer</button>
-                    <button onClick={()=>{setF({});setModal('bank-payout');}} className="wp-card-pill" style={{cursor:'pointer',background:'rgba(34,197,94,0.25)'}}>🏦 Payout</button>
+                  <div className="rounded-2xl bg-slate-50 p-4">
+                    <div className="text-xs uppercase tracking-[0.25em] text-slate-400">Wallet ID</div>
+                    <div className="mt-1 font-semibold text-slate-900">{sel.wallet_id || sel.id}</div>
+                  </div>
+                  <div className="rounded-2xl bg-slate-50 p-4">
+                    <div className="text-xs uppercase tracking-[0.25em] text-slate-400">Balance</div>
+                    <div className="mt-1 font-semibold text-slate-900">{balance.currency} {Number(balance.balance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                   </div>
                 </div>
               </div>
@@ -456,11 +660,11 @@ export const WalletsPage = () => {
             {tab==='wallet' && (
               <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
                 <h3 className="font-bold text-gray-800 mb-4">Transaction History</h3>
-                {walletTxns.length === 0
+                {walletTxns.filter((t:any) => t.source !== 'card_topup').length === 0
                   ? <p className="text-center text-gray-400 py-8">No transactions yet</p>
                   : <div className="space-y-2 max-h-96 overflow-y-auto">
-                      {walletTxns.map(t => (
-                        <div key={t.id} className="flex items-center justify-between p-3 rounded-lg bg-gray-50 border border-gray-100">
+                      {walletTxns.filter((t:any) => t.source !== 'card_topup').map((t, index) => (
+                        <div key={t.id || `wallet-txn-${index}`} className="flex items-center justify-between p-3 rounded-lg bg-gray-50 border border-gray-100">
                           <div className="flex items-center gap-3">
                             <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${t.type==='credit'?'bg-green-100 text-green-700':'bg-red-100 text-red-700'}`}>{t.type==='credit'?'+':'–'}</div>
                             <div>
@@ -486,14 +690,14 @@ export const WalletsPage = () => {
                 {cards.length === 0
                   ? <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-400">No cards — issue one to get started</div>
                   : <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      {cards.map(card => {
+                      {cards.map((card, index) => {
                         const frozen = card.status?.toUpperCase() === 'FROZEN';
                         const mm = String(card.expiry_month||0).padStart(2,'0');
                         const yy = String(card.expiry_year||0).slice(-2);
                         const maskedParts = (card.masked_number||'**** **** **** ****').split(' ');
                         const isFlipped = flippedCardId === card.id;
                         return (
-                          <div key={card.id} className="flex flex-col gap-3">
+                          <div key={card.id || `card-${index}`} className="flex flex-col gap-3">
                             <div
                               className={`wp-card-wrap wp-card-id1 cursor-pointer ${selCard?.id===card.id?'wp-card-selected':''}`}
                               onClick={() => {
@@ -505,30 +709,40 @@ export const WalletsPage = () => {
                                 <div className="wp-card-face">
                                   <div className="wp-card-head">
                                     <div style={{display:'flex',alignItems:'center',gap:'0.7em'}}>
-                                      <div className="wp-card-chip" />
-                                      <div>
+                                      <div className="wp-card-chip">
+                                        <div className="wp-card-chip-lines">
+                                          <span /><span /><span />
+                                          <span /><span /><span />
+                                        </div>
+                                      </div>
+                                      <div className="wp-card-brand-stack">
                                         <div className="wp-card-label">{card.card_type||'VISA'}</div>
-                                        <div className="wp-card-pill" style={{marginTop:'0.2em',fontSize:'0.6rem'}}>{frozen?'FROZEN':'ACTIVE'}</div>
+                                        <div className="wp-card-pill">{frozen?'FROZEN':'ACTIVE'}</div>
                                       </div>
                                     </div>
                                     <div className="wp-card-wifi"><span /><span /><span /><span /></div>
                                   </div>
 
+                                  <div className="wp-card-strip" />
+
                                   <div className="wp-card-number">
                                     {maskedParts.map((s,i)=><span key={i}>{s}</span>)}
                                   </div>
 
-                                  <div className="wp-card-foot">
+                                  <div className="wp-card-front-meta">
                                     <div>
                                       <div className="wp-card-block-label">Cardholder</div>
                                       <div className="wp-card-block-value">{card.cardholder_name}</div>
                                     </div>
-                                    <div>
-                                      <div className="wp-card-block-label">Expires</div>
+                                    <div className="text-right">
+                                      <div className="wp-card-block-label">Valid Thru</div>
                                       <div className="wp-card-block-value">{mm}/{yy}</div>
                                     </div>
+                                  </div>
+
+                                  <div className="wp-card-foot">
                                     <div>
-                                      <div className="wp-card-block-label">Balance</div>
+                                      <div className="wp-card-block-label">Available</div>
                                       <div className="wp-card-block-value" style={{color:'#34d399',fontWeight:700}}>${Number(card.balance).toFixed(2)}</div>
                                     </div>
                                     <div className="wp-card-brand wp-brand-visa">VISA</div>
@@ -537,13 +751,14 @@ export const WalletsPage = () => {
 
                                 <div className="wp-card-face wp-card-face-back">
                                   <div className="wp-card-magstripe" />
+                                  <div className="hologram-strip" />
                                   <div className="wp-card-sig-cvv">
                                     <div className="wp-card-signature" />
                                     <div className="wp-card-cvv">***</div>
                                   </div>
-                                  <div className="px-4 pt-3 text-sm text-slate-200">
-                                    <div className="font-semibold uppercase tracking-[0.2em] text-[10px] text-slate-400">PrimeStack Multi-Currency Card</div>
-                                    <div className="mt-2 text-xs leading-5 text-slate-300">Use this card for secure top-ups, wallet loading, and domestic or cross-border spending. Keep your CVV private and never share it with anyone.</div>
+                                  <div className="rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 text-sm text-slate-200">
+                                    <div className="font-semibold uppercase tracking-[0.2em] text-[10px] text-slate-400">CVV</div>
+                                    <div className="mt-1 text-xs leading-5 text-slate-300">Keep this private and never share it with anyone.</div>
                                   </div>
                                   <div className="absolute bottom-4 right-4 text-[11px] uppercase tracking-[0.25em] text-slate-400">Secure</div>
                                 </div>
@@ -552,7 +767,7 @@ export const WalletsPage = () => {
 
                             <div className="flex flex-wrap gap-2">
                               <button onClick={e=>{e.stopPropagation();setSelCard(card);setF({});setModal('topup-card');}}
-                                className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50">+ Top Up</button>
+                                className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50">Move Balance</button>
                               <button onClick={e=>{e.stopPropagation();act(async()=>{frozen?await unfreezeCard(selId!,card.id):await freezeCard(selId!,card.id);await refreshCards();},frozen?'Card unfrozen':'Card frozen');}}
                                 className={`flex-1 rounded-xl px-3 py-2 text-sm font-semibold transition ${frozen?'bg-emerald-50 text-emerald-700 hover:bg-emerald-100':'bg-rose-50 text-rose-700 hover:bg-rose-100'}`}>{frozen?'🔓 Unfreeze':'🔒 Freeze'}</button>
                             </div>
@@ -573,8 +788,8 @@ export const WalletsPage = () => {
                 </div>
                 {bankAccounts.length === 0
                   ? <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-400">No bank accounts</div>
-                  : bankAccounts.map(b => (
-                      <div key={b.id} onClick={()=>setSelBank(b.id)}
+                  : bankAccounts.map((b, index) => (
+                      <div key={b.id || `bank-${index}`} onClick={()=>setSelBank(b.id)}
                         className={`bg-white rounded-xl border p-4 cursor-pointer transition-all ${selBank===b.id?'border-blue-400 ring-1 ring-blue-400':'border-gray-200'}`}>
                         <div className="flex justify-between items-center">
                           <div>
@@ -595,8 +810,8 @@ export const WalletsPage = () => {
                 {bankPayouts.length > 0 && (
                   <div className="bg-white rounded-xl border border-gray-200 p-5">
                     <h4 className="font-bold text-gray-700 mb-3 text-sm">Payout History</h4>
-                    {bankPayouts.map(p => (
-                      <div key={p.id} className="flex justify-between text-sm py-2 border-b border-gray-50 last:border-0">
+                    {bankPayouts.map((p, index) => (
+                      <div key={p.id || `payout-${index}`} className="flex justify-between text-sm py-2 border-b border-gray-50 last:border-0">
                         <div>
                           <div className="font-medium">{p.bank_name} •••• {String(p.account_number).slice(-4)}</div>
                           <div className="text-xs text-gray-400">{new Date(p.created_at).toLocaleString()}</div>
@@ -612,67 +827,299 @@ export const WalletsPage = () => {
               </div>
             )}
 
-            {/* CRYPTO */}
+            {/* CRYPTO — PROFESSIONAL INTERNAL WALLET EXCHANGE */}
             {tab==='crypto' && (
-              <div className="space-y-4">
-                <div className="flex justify-between items-center">
-                  <h3 className="font-bold text-gray-800">Crypto Wallets</h3>
-                  <div className="flex gap-2">
-                    <button onClick={()=>{if(isOnline){setF({});setModal('buy-crypto');}}} disabled={!isOnline}
-                      className={`px-4 py-2 rounded-lg text-sm font-medium text-white ${isOnline?'bg-orange-500 hover:bg-orange-600 bg-orange-500':'bg-orange-200 cursor-not-allowed'}`}>🟢 Buy</button>
-                    <button onClick={()=>{if(isOnline){setF({});setModal('sell-crypto');}}} disabled={!isOnline}
-                      className={`px-4 py-2 rounded-lg text-sm font-medium text-white ${isOnline?'bg-purple-600 hover:bg-purple-700 bg-purple-600':'bg-purple-200 cursor-not-allowed'}`}>🔴 Sell</button>
+              <div className="space-y-5">
+                {/* Money Flow Visualization */}
+                <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-950 via-indigo-950 to-slate-900 p-5 text-white shadow-lg">
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <div className="text-[10px] font-bold uppercase tracking-[0.3em] text-indigo-300">Internal Wallet Loop</div>
+                      <h3 className="mt-1 text-lg font-semibold">Money Flow · Card → Wallet → Crypto</h3>
+                    </div>
+                    <div className="text-xs text-slate-400">Atomic · Offline-hardened · Ledger-attested</div>
                   </div>
-                </div>
-                {cryptoWallets.length === 0
-                  ? <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-400">No crypto yet — buy some above</div>
-                  : <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                      {cryptoWallets.map(w => (
-                        <div key={w.id} className="bg-gradient-to-br from-gray-900 to-gray-800 text-white rounded-xl p-4">
-                          <div className="flex justify-between items-start">
+                  <div className="grid grid-cols-5 gap-2 items-center">
+                    {[
+                      {label:'Customer Card', sub:'Debit / Credit', icon:'💳', amt:null, color:'from-sky-500/20 to-sky-500/5', border:'border-sky-400/30'},
+                      {label:'Top-Up Engine', sub:'Auth → Ledger', icon:'⚡', amt:null, color:'from-violet-500/20 to-violet-500/5', border:'border-violet-400/30'},
+                      {label:'Fiat Wallet', sub:'USD Balance', icon:'🏦', amt:balance.balance, color:'from-emerald-500/20 to-emerald-500/5', border:'border-emerald-400/30'},
+                      {label:'Spot Engine', sub:'Internal Swap', icon:'🔁', amt:null, color:'from-amber-500/20 to-amber-500/5', border:'border-amber-400/30'},
+                      {label:'Crypto Vault', sub:'Cold-internal', icon:'🪙', amt:cryptoWallets.reduce((s:number,w)=>s+Number(w.balance)*(coinPriceMap[w.crypto_coin]||0),0), color:'from-orange-500/20 to-orange-500/5', border:'border-orange-400/30'},
+                    ].map((node, i, arr) => (
+                      <React.Fragment key={`flow-node-${i}`}>
+                        <div className={`relative rounded-2xl border ${node.border} bg-gradient-to-br ${node.color} p-3 backdrop-blur-sm`}>
+                          <div className="flex items-center gap-2 mb-2">
+                            <div className="text-2xl">{node.icon}</div>
                             <div>
-                              <div className="text-2xl mb-1">{COIN_ICONS[w.crypto_coin]||'🪙'}</div>
-                              <div className="font-bold text-sm">{w.crypto_coin}</div>
-                              <div className="text-lg font-extrabold text-amber-400">{Number(w.balance).toFixed(8)}</div>
-                            </div>
-                            <div className="text-xs text-right">
-                              <div>Wallet ID</div>
-                              <div className="font-mono text-[10px]">{w.id}</div>
+                              <div className="text-[11px] font-bold uppercase tracking-wider text-slate-200">{node.label}</div>
+                              <div className="text-[10px] text-slate-400">{node.sub}</div>
                             </div>
                           </div>
-                          {w.crypto_address && (
-                            <div className="mt-3 bg-white/10 rounded p-2 text-xs flex items-center justify-between">
-                              <div className="truncate mr-3">{w.crypto_address}</div>
-                              <button onClick={()=>{navigator.clipboard?.writeText(w.crypto_address||''); addNotification('Copied','Address copied to clipboard','success');}}
-                                className="ml-2 text-[11px] bg-white/10 px-2 py-1 rounded">Copy</button>
+                          {node.amt !== null && (
+                            <div className="mt-2 rounded-xl bg-black/30 px-2 py-1.5">
+                              <div className="text-[10px] uppercase tracking-wider text-slate-400">Value</div>
+                              <div className="text-sm font-bold text-white">${Number(node.amt).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
                             </div>
                           )}
                         </div>
-                      ))}
-                    </div>
-                }
-                {cryptoTxns.length > 0 && (
-                  <div className="bg-white rounded-xl border border-gray-200 p-5">
-                    <h4 className="font-bold text-gray-700 mb-3 text-sm">Crypto Transactions</h4>
-                    <div className="space-y-2 max-h-64 overflow-y-auto">
-                      {cryptoTxns.map(t => (
-                        <div key={t.id} className="flex justify-between text-sm py-2 border-b border-gray-50 last:border-0">
-                          <div className="flex items-center gap-2">
-                            <span>{t.transaction_type==='buy'?'🟢':'🔴'}</span>
-                            <div>
-                              <div className="font-semibold">{t.transaction_type==='buy'?'Bought':'Sold'} {t.crypto_coin}</div>
-                              <div className="text-xs text-gray-400">{new Date(t.created_at).toLocaleString()} @ ${Number(t.exchange_rate).toLocaleString()}</div>
+                        {i < arr.length - 1 && (
+                          <div className="hidden md:flex flex-col items-center justify-center">
+                            <div className="w-full h-0.5 bg-gradient-to-r from-white/20 via-white/60 to-white/20 relative">
+                              <div className="absolute right-0 -top-[5px] w-0 h-0 border-t-[6px] border-t-transparent border-b-[6px] border-b-transparent border-l-[10px] border-l-white/60" />
                             </div>
+                            <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider">atomic</div>
                           </div>
-                          <div className="text-right">
-                            <div className="font-bold text-indigo-600">{Number(t.crypto_amount).toFixed(8)} {t.crypto_coin}</div>
-                            <div className="text-xs text-gray-500">${Number(t.fiat_amount).toFixed(2)}</div>
+                        )}
+                      </React.Fragment>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Portfolio Summary + Ticker Strip */}
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  <div className="lg:col-span-2 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                    <div className="flex items-start justify-between mb-4">
+                      <div>
+                        <div className="text-[10px] font-bold uppercase tracking-[0.3em] text-slate-400">Portfolio Value</div>
+                        <div className="mt-1 text-3xl font-extrabold text-slate-900 tracking-tight">
+                          ${(
+                            Number(balance.balance) +
+                            cryptoWallets.reduce((s:number,w)=>s+Number(w.balance)*(coinPriceMap[w.crypto_coin]||0),0)
+                          ).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
+                        </div>
+                        <div className="mt-1 text-xs text-slate-500">
+                          Fiat ${Number(balance.balance).toLocaleString(undefined,{minimumFractionDigits:2})} · Crypto ${cryptoWallets.reduce((s:number,w)=>s+Number(w.balance)*(coinPriceMap[w.crypto_coin]||0),0).toLocaleString(undefined,{minimumFractionDigits:2})}
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <button onClick={()=>{if(isOnline){setF({});setModal('buy-crypto');}}} disabled={!isOnline}
+                          className={`px-5 py-2.5 rounded-xl text-sm font-bold text-white shadow-sm transition-all ${isOnline?'bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500':'bg-emerald-300 cursor-not-allowed'}`}>
+                          Buy Crypto
+                        </button>
+                        <button onClick={()=>{if(isOnline){setF({});setModal('sell-crypto');}}} disabled={!isOnline || cryptoWallets.every(w=>Number(w.balance)<=0)}
+                          className={`px-5 py-2.5 rounded-xl text-sm font-bold text-white shadow-sm transition-all ${(isOnline && cryptoWallets.some(w=>Number(w.balance)>0))?'bg-gradient-to-br from-rose-500 to-rose-600 hover:from-rose-400 hover:to-rose-500':'bg-rose-300 cursor-not-allowed'}`}>
+                          Sell Crypto
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Live mini ticker */}
+                    <div className="flex flex-wrap gap-2 border-t border-slate-100 pt-4">
+                      {COINS.map(coin => (
+                        <div key={`ticker-${coin}`}
+                          onClick={()=>{setSelCoin(coin); if(isOnline) getCryptoPrice(coin).then(r=>setCoinPriceMap(p=>({...p,[coin]:r.price})));}}
+                          className={`group cursor-pointer rounded-xl px-3 py-2 border transition-all ${selCoin===coin?'border-emerald-400 bg-emerald-50 shadow-sm':'border-slate-100 bg-slate-50 hover:border-slate-200 hover:bg-white'}`}>
+                          <div className="flex items-center gap-2">
+                            <span className="text-lg leading-none">{COIN_ICONS[coin]||'🪙'}</span>
+                            <div>
+                              <div className="text-[11px] font-bold text-slate-800">{coin}</div>
+                              <div className="text-[11px] font-semibold text-slate-500 tabular-nums">${(coinPriceMap[coin]||0).toLocaleString(undefined,{maximumFractionDigits:coinPriceMap[coin]&&coinPriceMap[coin]>100?2:6})}</div>
+                            </div>
                           </div>
                         </div>
                       ))}
                     </div>
                   </div>
-                )}
+
+                  <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 to-white p-5 shadow-sm">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.3em] text-slate-400">Spot Engine · Status</div>
+                    <div className="mt-3 space-y-2.5">
+                      <div className="flex items-center justify-between rounded-xl bg-white border border-slate-100 px-3 py-2">
+                        <span className="text-xs text-slate-600">Engine Mode</span>
+                        <span className="rounded-full bg-emerald-100 text-emerald-700 px-2 py-0.5 text-[10px] font-bold">INTERNAL · NO FEES</span>
+                      </div>
+                      <div className="flex items-center justify-between rounded-xl bg-white border border-slate-100 px-3 py-2">
+                        <span className="text-xs text-slate-600">Price Source</span>
+                        <span className="text-xs font-semibold text-slate-800">CoinGecko · Spot</span>
+                      </div>
+                      <div className="flex items-center justify-between rounded-xl bg-white border border-slate-100 px-3 py-2">
+                        <span className="text-xs text-slate-600">Settlement</span>
+                        <span className="text-xs font-semibold text-emerald-700">Instant · Atomic</span>
+                      </div>
+                      <div className="flex items-center justify-between rounded-xl bg-white border border-slate-100 px-3 py-2">
+                        <span className="text-xs text-slate-600">Ledger</span>
+                        <span className="text-xs font-semibold text-indigo-700">Double-entry · DB Tx</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Asset Grid */}
+                <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                  <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+                    <h3 className="font-bold text-slate-800">Digital Asset Vault</h3>
+                    <span className="text-xs text-slate-400">{cryptoWallets.length} asset{ cryptoWallets.length===1?'':'s'}</span>
+                  </div>
+                  {cryptoWallets.length === 0 ? (
+                    <div className="p-12 text-center">
+                      <div className="mx-auto w-16 h-16 rounded-2xl bg-gradient-to-br from-slate-100 to-slate-50 flex items-center justify-center text-3xl mb-4">🪙</div>
+                      <div className="text-sm font-semibold text-slate-700 mb-1">No assets held</div>
+                      <div className="text-xs text-slate-400 mb-4">Buy BTC, ETH, SOL or 9 other assets directly from your wallet.</div>
+                      <button onClick={()=>{if(isOnline){setF({});setModal('buy-crypto');}}}
+                        className="rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-600 px-5 py-2 text-sm font-bold text-white shadow-sm">
+                        Buy First Asset
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-slate-50">
+                      <div className="grid grid-cols-12 gap-2 px-5 py-2.5 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400 bg-slate-50/50">
+                        <div className="col-span-3">Asset</div>
+                        <div className="col-span-3 text-right">Balance</div>
+                        <div className="col-span-2 text-right">Spot Rate</div>
+                        <div className="col-span-2 text-right">Market Value</div>
+                        <div className="col-span-2 text-right">Actions</div>
+                      </div>
+                      {cryptoWallets.map((w, index) => {
+                        const price = coinPriceMap[w.crypto_coin] || 0;
+                        const value = Number(w.balance) * price;
+                        return (
+                          <div key={w.id || `vault-${index}`} className="grid grid-cols-12 gap-2 px-5 py-3.5 items-center hover:bg-slate-50/50 transition">
+                            <div className="col-span-3 flex items-center gap-3">
+                              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-slate-900 to-slate-700 flex items-center justify-center text-white text-lg shadow-sm">
+                                {COIN_ICONS[w.crypto_coin]||'🪙'}
+                              </div>
+                              <div>
+                                <div className="font-bold text-slate-900 text-sm">{w.crypto_coin}</div>
+                                <div className="text-[11px] text-slate-400">Internal Wallet · {selectedNetworkMap[w.crypto_coin]||'primary'}</div>
+                              </div>
+                            </div>
+                            <div className="col-span-3 text-right">
+                              <div className="font-bold text-slate-900 tabular-nums">{Number(w.balance).toLocaleString(undefined,{maximumFractionDigits:8})}</div>
+                              <div className="text-[11px] text-slate-400">{w.crypto_coin}</div>
+                            </div>
+                            <div className="col-span-2 text-right">
+                              <div className="text-sm font-semibold text-slate-700 tabular-nums">${price.toLocaleString(undefined,{maximumFractionDigits:price>100?2:6})}</div>
+                              <div className="text-[10px] text-slate-400">USD / {w.crypto_coin}</div>
+                            </div>
+                            <div className="col-span-2 text-right">
+                              <div className="font-extrabold text-slate-900 tabular-nums">${value.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+                            </div>
+                            <div className="col-span-2 text-right flex justify-end gap-1.5">
+                              <button onClick={()=>{setSelCoin(w.crypto_coin);setF({});setModal('buy-crypto');}}
+                                className="rounded-lg bg-emerald-50 text-emerald-700 px-3 py-1.5 text-xs font-bold hover:bg-emerald-100 transition">Buy</button>
+                              <button onClick={()=>{setSelCoin(w.crypto_coin);setF({});setModal('sell-crypto');}} disabled={Number(w.balance)<=0}
+                                className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${Number(w.balance)>0?'bg-rose-50 text-rose-700 hover:bg-rose-100':'bg-slate-100 text-slate-400 cursor-not-allowed'}`}>Sell</button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Quick Trade Panel + Transaction History */}
+                <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+                  {/* Quick Buy */}
+                  <div className="lg:col-span-2 rounded-2xl border border-slate-200 bg-gradient-to-br from-emerald-50 via-white to-emerald-50/30 p-5 shadow-sm">
+                    <div className="flex items-center justify-between mb-4">
+                      <div>
+                        <div className="text-[10px] font-bold uppercase tracking-[0.3em] text-emerald-600">Express Buy</div>
+                        <h3 className="mt-1 font-bold text-slate-900">Instant Swap · Fiat → Crypto</h3>
+                      </div>
+                      <div className="w-9 h-9 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-600">↗</div>
+                    </div>
+                    <div className="mb-3">
+                      <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Asset</label>
+                      <select value={selCoin} onChange={async e=>{setSelCoin(e.target.value); if(isOnline){const r=await getCryptoPrice(e.target.value); setCoinPrice(r.price); setCoinPriceMap(p=>({...p,[e.target.value]:r.price}));}}}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500">
+                        {COINS.map(c=><option key={c} value={c}>{COIN_ICONS[c]||'🪙'} {c} · ${(coinPriceMap[c]||0).toLocaleString(undefined,{maximumFractionDigits:coinPriceMap[c]&&coinPriceMap[c]>100?2:6})}</option>)}
+                      </select>
+                    </div>
+                    <div className="mb-2">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">USD Amount</label>
+                        <span className="text-[11px] text-slate-400">Bal: ${Number(balance.balance).toLocaleString(undefined,{maximumFractionDigits:2})}</span>
+                      </div>
+                      <div className="relative">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">$</span>
+                        <input type="number" min="1" step="0.01"
+                          value={f.fiatAmount||''}
+                          onChange={e=>{
+                            const usd = parseFloat(e.target.value||'0');
+                            const price = coinPriceMap[selCoin]||0;
+                            setF(p=>({...p,fiatAmount: isNaN(usd)?'':String(usd), cryptoAmount: price>0 && usd>0 ? (usd/price).toFixed(8) : ''}));
+                          }}
+                          placeholder="0.00" inputMode="decimal"
+                          className="w-full pl-7 pr-3 py-3 rounded-xl border border-slate-200 bg-white text-lg font-bold tabular-nums focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500" />
+                      </div>
+                    </div>
+                    <div className="flex gap-1.5 mb-3">
+                      {[25,100,500,1000].map(amt=>(
+                        <button key={`quick-${amt}`} type="button" onClick={()=>{
+                          const price = coinPriceMap[selCoin]||0;
+                          setF(p=>({...p,fiatAmount:String(amt), cryptoAmount: price>0?(amt/price).toFixed(8):''}));
+                        }} className="flex-1 rounded-lg border border-slate-200 bg-white py-1.5 text-xs font-bold text-slate-600 hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700 transition">
+                          ${amt}
+                        </button>
+                      ))}
+                      <button type="button" onClick={()=>{
+                        const max = Number(balance.balance);
+                        const price = coinPriceMap[selCoin]||0;
+                        setF(p=>({...p,fiatAmount:String(max), cryptoAmount: price>0 && max>0?(max/price).toFixed(8):''}));
+                      }} className="flex-1 rounded-lg border border-emerald-200 bg-emerald-50 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100 transition">Max</button>
+                    </div>
+                    <div className="rounded-xl bg-slate-900 text-white p-3 mb-3">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[10px] uppercase tracking-wider text-emerald-300/80">You receive</span>
+                        <span className="text-[10px] uppercase tracking-wider text-slate-400">≈</span>
+                      </div>
+                      <div className="flex items-baseline gap-2">
+                        <div className="text-2xl font-extrabold tabular-nums">{f.cryptoAmount ? Number(f.cryptoAmount).toLocaleString(undefined,{maximumFractionDigits:8}) : '0.00000000'}</div>
+                        <div className="text-xs font-bold text-emerald-300">{selCoin}</div>
+                      </div>
+                      <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-slate-400">
+                        <span>Rate</span>
+                        <span className="text-slate-200 tabular-nums">${(coinPriceMap[selCoin]||0).toLocaleString(undefined,{maximumFractionDigits:coinPriceMap[selCoin]&&coinPriceMap[selCoin]>100?2:6})} / {selCoin}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] text-slate-400 mt-0.5">
+                        <span>Network</span>
+                        <span className="text-slate-200">{selectedNetworkMap[selCoin]||getNetworkOptions(selCoin)[0]}</span>
+                      </div>
+                    </div>
+                    <button onClick={()=>{if(!f.fiatAmount){addNotification('Enter amount','Enter a USD amount first','info');return;} if(!isOnline){addNotification('Offline','Crypto buys require internet','error');return;} setSelCoin(selCoin); setF({...f, amount:String(f.fiatAmount)}); handleBuyCrypto();}}
+                      className="w-full py-3 rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-600 text-white font-bold shadow-sm hover:from-emerald-400 hover:to-emerald-500 transition-all">
+                      Buy {selCoin} Now
+                    </button>
+                  </div>
+
+                  {/* Tx History */}
+                  <div className="lg:col-span-3 rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                    <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+                      <h3 className="font-bold text-slate-800">Transaction Ledger</h3>
+                      <span className="text-xs text-slate-400">{cryptoTxns.length} records</span>
+                    </div>
+                    {cryptoTxns.length === 0 ? (
+                      <div className="p-10 text-center text-xs text-slate-400">No crypto transactions yet — use the Express Buy panel above.</div>
+                    ) : (
+                      <div className="max-h-96 overflow-y-auto divide-y divide-slate-50">
+                        {cryptoTxns.map((t, index) => {
+                          const isBuy = t.transaction_type === 'buy';
+                          return (
+                            <div key={t.id || `ledger-${index}`} className="px-5 py-3.5 flex items-center gap-3 hover:bg-slate-50/50 transition">
+                              <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-white text-lg font-bold shadow-sm ${isBuy?'bg-gradient-to-br from-emerald-500 to-emerald-600':'bg-gradient-to-br from-rose-500 to-rose-600'}`}>
+                                {isBuy?'↗':'↘'}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm font-bold text-slate-900">{isBuy?'Bought':'Sold'} {t.crypto_coin}</span>
+                                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${t.status==='completed'?'bg-emerald-100 text-emerald-700':'bg-amber-100 text-amber-700'}`}>{String(t.status||'PENDING').toUpperCase()}</span>
+                                </div>
+                                <div className="text-[11px] text-slate-400">{new Date(t.created_at).toLocaleString()} · Rate ${Number(t.exchange_rate).toLocaleString()}</div>
+                              </div>
+                              <div className="text-right">
+                                <div className={`text-sm font-bold tabular-nums ${isBuy?'text-emerald-700':'text-rose-700'}`}>
+                                  {isBuy?'+':'–'}{Number(t.crypto_amount).toLocaleString(undefined,{maximumFractionDigits:8})} {t.crypto_coin}
+                                </div>
+                                <div className="text-[11px] text-slate-500 tabular-nums">{isBuy?'–':'+'}${Number(t.fiat_amount).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -713,16 +1160,16 @@ export const WalletsPage = () => {
               className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-green-500/20 focus:border-green-500" />
           </div>
         </div>
-        <p className="text-sm text-gray-500 mt-3">Enter a real card. Your wallet will be credited after successful processor authorization.</p>
-        <p className="text-xs text-amber-600 mt-2">⚠ Real card details required — topup is processed through the payment network.</p>
+        <p className="text-sm text-gray-500 mt-3">Enter a real card. Your wallet will only be credited after a real authorization response from a configured processor.</p>
+        <p className="text-xs text-amber-600 mt-2">⚠ Card details alone are not enough; the server now requires an authorization signal before crediting the wallet.</p>
       </ModalShell>}
       {modal==='debit' && <ModalShell onClose={closeAll} busy={busy} title="Debit Wallet" onConfirm={handleDebit} confirmLabel="Debit" confirmColor="bg-red-600 hover:bg-red-700"><p className="text-sm text-gray-500">Available: <strong>${Number(balance.balance).toFixed(2)}</strong></p>{inp('amount','Amount','number',true)}</ModalShell>}
       {modal==='transfer' && (
         <ModalShell onClose={closeAll} busy={busy} title="Wallet → Wallet Transfer" onConfirm={handleTransfer} confirmLabel="Send" confirmColor="bg-indigo-600 hover:bg-indigo-700">
-          <p className="text-sm text-gray-500">From: <strong>{sel?.name}</strong></p>
+          <p className="text-sm text-gray-500">From: <strong>{sel?.name?.trim() || '(Unnamed Customer)'}</strong></p>
           <select value={f.receiverId||''} onChange={e=>setF(p=>({...p,receiverId:e.target.value}))} className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm">
             <option value="">Select recipient...</option>
-            {customers.filter(c=>c.id!==selId).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+            {customers.filter(c=>c.id!==selId).map((c, index)=><option key={c.id || `recipient-${index}`} value={c.id}>{c.name?.trim() || '(Unnamed Customer)'}</option>)}
           </select>
           {inp('amount','Amount (USD)','number',true)}{inp('note','Note (optional)')}
         </ModalShell>
@@ -736,8 +1183,13 @@ export const WalletsPage = () => {
         </ModalShell>
       )}
       {modal==='topup-card' && selCard && (
-        <ModalShell onClose={closeAll} busy={busy} title={`Top Up ···· ${selCard.masked_number.slice(-4)}`} onConfirm={handleTopupCard} confirmLabel="Top Up" confirmColor="bg-blue-600 hover:bg-blue-700">
-          <p className="text-sm text-gray-500">Wallet: <strong>${Number(balance.balance).toFixed(2)}</strong> · Card: <strong>${Number(selCard.balance).toFixed(2)}</strong></p>
+        <ModalShell onClose={closeAll} busy={busy} title={`Move Wallet → Card ···· ${selCard.masked_number.slice(-4)}`} onConfirm={handleTopupCard} confirmLabel="Move Funds" confirmColor="bg-blue-600 hover:bg-blue-700">
+          <p className="text-sm text-gray-500">This transfers funds from the customer’s fiat wallet onto the selected virtual card.</p>
+          <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+            <div>Wallet: <strong>{modalBalanceLoading ? 'Loading…' : `$${Number(balance.balance).toFixed(2)}`}</strong></div>
+            <div className="mt-1">Card: <strong>{modalBalanceLoading ? 'Loading…' : `$${Number(selCard.balance ?? 0).toFixed(2)}`}</strong></div>
+          </div>
+          <button type="button" onClick={() => setF(p => ({ ...p, amount: String(Math.max(0, Number(balance.balance) || 0)) }))} className="mt-3 rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-white">Use full wallet balance</button>
           {inp('amount','Amount','number',true)}
         </ModalShell>
       )}
@@ -755,30 +1207,123 @@ export const WalletsPage = () => {
           <p className="text-sm text-gray-500">Available: <strong>${Number(balance.balance).toFixed(2)}</strong></p>
           {bankAccounts.length===0 ? <p className="text-red-500 text-sm">Add a bank account first</p>
             : <select value={selBank} onChange={e=>setSelBank(e.target.value)} className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm">
-                {bankAccounts.map(b=><option key={b.id} value={b.id}>{b.bank_name} •••• {b.account_number.slice(-4)}</option>)}
+                {bankAccounts.map((b, index)=><option key={b.id || `bank-option-${index}`} value={b.id}>{b.bank_name} •••• {b.account_number.slice(-4)}</option>)}
               </select>}
           {inp('amount','Amount','number',true)}
           {f.amount && <p className="text-sm text-green-700">Net: ${(parseFloat(f.amount||'0')*0.995).toFixed(2)} (fee 0.5%)</p>}
         </ModalShell>
       )}
-      {modal==='buy-crypto' && (
-        <ModalShell onClose={closeAll} busy={busy} title="Buy Crypto" onConfirm={handleBuyCrypto} confirmLabel="Buy" confirmColor="bg-orange-500 hover:bg-orange-600">
-          <p className="text-sm text-gray-500">Balance: <strong>${Number(balance.balance).toFixed(2)}</strong></p>
-          <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Asset</label>
-          <select value={selCoin} onChange={e=>setSelCoin(e.target.value)} className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm">
-            {COINS.map(c=><option key={c} value={c}>{COIN_ICONS[c]} {c}</option>)}
-          </select>
-          <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Network</label>
-          <select value={selectedNetwork} onChange={e=>setSelectedNetwork(e.target.value)} className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm">
-            {getNetworkOptions(selCoin).map(net=><option key={net} value={net}>{net}</option>)}
-          </select>
-          {inp('amount','USD amount to spend','number',true)}
-          {coinPrice>0 && f.amount && <div className="rounded-xl border border-orange-100 bg-orange-50 p-3 text-sm">
-            <div className="text-xl font-extrabold text-orange-600">{(parseFloat(f.amount)/coinPrice).toFixed(8)} {selCoin}</div>
-            <div className="mt-1 text-xs text-gray-500">Network: {selectedNetwork} · Spot rate: ${coinPrice.toLocaleString()} / {selCoin}</div>
-          </div>}
-        </ModalShell>
-      )}
+      {modal==='buy-crypto' && (() => {
+        const price = coinPrice > 0 ? coinPrice : coinPriceMap[selCoin] || 0;
+        const usdIn = parseFloat(f.amount || f.fiatAmount || '0') || 0;
+        const coinOut = price > 0 ? usdIn / price : 0;
+        return (
+          <ModalShell onClose={closeAll} busy={busy} title={`Buy ${selCoin}`} onConfirm={handleBuyCrypto} confirmLabel={`Buy ${selCoin}`} confirmColor="bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500">
+            <div className="space-y-4">
+              <div className="rounded-xl bg-gradient-to-br from-emerald-50 via-white to-emerald-50/50 border border-emerald-100 p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-emerald-600">Fiat Wallet</div>
+                    <div className="mt-0.5 text-sm text-slate-500">{sel?.name || 'Customer'}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-[10px] uppercase tracking-wider text-slate-400">Available</div>
+                    <div className="text-sm font-bold text-slate-900 tabular-nums">${Number(balance.balance).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between pt-3 border-t border-emerald-100/60">
+                  <div>
+                    <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-indigo-500">Destination</div>
+                    <div className="mt-0.5 text-sm font-semibold text-slate-800 flex items-center gap-1.5">
+                      <span>{COIN_ICONS[selCoin]||'🪙'}</span> {selCoin} Internal Vault
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-[10px] uppercase tracking-wider text-slate-400">Spot</div>
+                    <div className="text-sm font-bold text-slate-900 tabular-nums">${price.toLocaleString(undefined,{maximumFractionDigits:price>100?2:6})}</div>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500 mb-1.5">Asset</label>
+                <select value={selCoin} onChange={async e=>{setSelCoin(e.target.value); try{const r=await getCryptoPrice(e.target.value); setCoinPrice(r.price); setCoinPriceMap(p=>({...p,[e.target.value]:r.price}));}catch{}}}
+                  className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm font-semibold bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500">
+                  {COINS.map(c=><option key={c} value={c}>{COIN_ICONS[c]||'🪙'} {c} {coinPriceMap[c]?`· $${coinPriceMap[c].toLocaleString(undefined,{maximumFractionDigits:coinPriceMap[c]>100?2:6})}`:''}</option>)}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500 mb-1.5">Network</label>
+                <select value={selectedNetwork} onChange={e=>setSelectedNetwork(e.target.value)}
+                  className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500">
+                  {getNetworkOptions(selCoin).map(net=><option key={net} value={net}>{net}</option>)}
+                </select>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">USD Spend</label>
+                  {usdIn > 0 && usdIn > Number(balance.balance) && <span className="text-[10px] text-rose-600 font-bold">Insufficient balance</span>}
+                </div>
+                <div className="relative">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-extrabold">$</span>
+                  <input type="number" min="1" step="0.01" autoFocus
+                    value={f.amount || f.fiatAmount || ''}
+                    onChange={e=>setF(p=>({...p,amount:e.target.value, fiatAmount:e.target.value}))}
+                    placeholder="0.00" inputMode="decimal"
+                    className="w-full pl-8 pr-4 py-3.5 rounded-xl border border-slate-200 bg-white text-xl font-extrabold tabular-nums focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500" />
+                </div>
+                <div className="flex gap-1.5 mt-2">
+                  {[25,100,250,1000].map(amt=>(
+                    <button key={`quick-buy-${amt}`} type="button" onClick={()=>setF(p=>({...p,amount:String(amt),fiatAmount:String(amt)}))}
+                      className="flex-1 py-1.5 rounded-lg border border-slate-200 bg-white text-[11px] font-bold text-slate-600 hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700 transition">
+                      ${amt}
+                    </button>
+                  ))}
+                  <button type="button" onClick={()=>setF(p=>({...p,amount:String(balance.balance),fiatAmount:String(balance.balance)}))}
+                    className="flex-1 py-1.5 rounded-lg border border-emerald-200 bg-emerald-50 text-[11px] font-bold text-emerald-700 hover:bg-emerald-100 transition">Max</button>
+                </div>
+              </div>
+
+              {(price > 0) && (
+                <div className="rounded-xl bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-white p-4 shadow-lg">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-400/30 to-emerald-500/10 flex items-center justify-center">↗</div>
+                      <div>
+                        <div className="text-[10px] uppercase tracking-[0.2em] text-emerald-300/80 font-bold">You receive</div>
+                        <div className="text-[10px] text-slate-400">Instant · Internal Settlement</div>
+                      </div>
+                    </div>
+                    <span className="rounded-full bg-emerald-400/15 text-emerald-300 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider border border-emerald-400/20">No Fee</span>
+                  </div>
+                  <div className="flex items-baseline gap-2 mt-2">
+                    <div className="text-3xl font-extrabold tabular-nums tracking-tight">
+                      {usdIn>0 ? coinOut.toLocaleString(undefined,{maximumFractionDigits:8}) : '0.00000000'}
+                    </div>
+                    <div className="text-base font-bold text-emerald-300">{selCoin}</div>
+                  </div>
+                  <div className="mt-3 pt-3 border-t border-white/10 space-y-1.5">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-slate-400">Spot Rate</span>
+                      <span className="text-slate-200 tabular-nums font-semibold">${price.toLocaleString(undefined,{maximumFractionDigits:price>100?2:6})} / {selCoin}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-slate-400">Network</span>
+                      <span className="text-slate-200 font-semibold">{selectedNetwork}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-slate-400">Trade Value</span>
+                      <span className="text-slate-200 tabular-nums font-semibold">${usdIn.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </ModalShell>
+        );
+      })()}
       {modal==='merchant-buy' && (
         <ModalShell onClose={closeAll} busy={busy} title="Merchant Buy Crypto" onConfirm={handleMerchantBuy} confirmLabel="Buy" confirmColor="bg-green-600 hover:bg-green-700">
           <p className="text-sm text-gray-500">Merchant: <strong>{f.merchantId||'(not set)'}</strong></p>
@@ -797,23 +1342,124 @@ export const WalletsPage = () => {
           </div>}
         </ModalShell>
       )}
-      {modal==='sell-crypto' && (
-        <ModalShell onClose={closeAll} busy={busy} title="Sell Crypto" onConfirm={handleSellCrypto} confirmLabel="Sell" confirmColor="bg-purple-600 hover:bg-purple-700">
-          <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Asset</label>
-          <select value={selCoin} onChange={e=>setSelCoin(e.target.value)} className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm">
-            {cryptoWallets.map(w=><option key={w.id} value={w.crypto_coin}>{COIN_ICONS[w.crypto_coin]} {w.crypto_coin} — {Number(w.balance).toFixed(8)}</option>)}
-          </select>
-          <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Network</label>
-          <select value={selectedNetwork} onChange={e=>setSelectedNetwork(e.target.value)} className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm">
-            {getNetworkOptions(selCoin).map(net=><option key={net} value={net}>{net}</option>)}
-          </select>
-          {inp('amount','Crypto amount to sell','number',true)}
-          {coinPrice>0 && f.amount && <div className="rounded-xl border border-purple-100 bg-purple-50 p-3 text-sm">
-            <div className="text-xl font-extrabold text-purple-600">${(parseFloat(f.amount)*coinPrice).toFixed(2)} USD</div>
-            <div className="mt-1 text-xs text-gray-500">Network: {selectedNetwork} · Spot rate: ${coinPrice.toLocaleString()} / {selCoin}</div>
-          </div>}
-        </ModalShell>
-      )}
+      {modal==='sell-crypto' && (() => {
+        const price = coinPrice > 0 ? coinPrice : coinPriceMap[selCoin] || 0;
+        const cw = cryptoWallets.find(w => w.crypto_coin === selCoin);
+        const balance = cw ? Number(cw.balance) : 0;
+        const coinIn = parseFloat(f.amount || f.cryptoAmount || '0') || 0;
+        const usdOut = price > 0 ? coinIn * price : 0;
+        return (
+          <ModalShell onClose={closeAll} busy={busy} title={`Sell ${selCoin}`} onConfirm={handleSellCrypto} confirmLabel={`Sell ${selCoin}`} confirmColor="bg-gradient-to-br from-rose-500 to-rose-600 hover:from-rose-400 hover:to-rose-500">
+            <div className="space-y-4">
+              <div className="rounded-xl bg-gradient-to-br from-rose-50 via-white to-rose-50/50 border border-rose-100 p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-rose-600">Crypto Vault</div>
+                    <div className="mt-0.5 text-sm font-semibold text-slate-800 flex items-center gap-1.5">
+                      <span>{COIN_ICONS[selCoin]||'🪙'}</span> {selCoin} Balance
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-[10px] uppercase tracking-wider text-slate-400">Holding</div>
+                    <div className="text-sm font-bold text-slate-900 tabular-nums">{balance.toLocaleString(undefined,{maximumFractionDigits:8})} {selCoin}</div>
+                    <div className="text-[10px] text-slate-400 tabular-nums">≈ ${(balance*price).toLocaleString(undefined,{maximumFractionDigits:2})}</div>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between pt-3 border-t border-rose-100/60">
+                  <div>
+                    <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-emerald-600">Credit</div>
+                    <div className="mt-0.5 text-sm font-semibold text-slate-800">Fiat Wallet · USD</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-[10px] uppercase tracking-wider text-slate-400">Spot</div>
+                    <div className="text-sm font-bold text-slate-900 tabular-nums">${price.toLocaleString(undefined,{maximumFractionDigits:price>100?2:6})}</div>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500 mb-1.5">Asset to Sell</label>
+                <select value={selCoin} onChange={async e=>{setSelCoin(e.target.value); try{const r=await getCryptoPrice(e.target.value); setCoinPrice(r.price); setCoinPriceMap(p=>({...p,[e.target.value]:r.price}));}catch{}}}
+                  className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm font-semibold bg-white focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500">
+                  {cryptoWallets.filter(w=>Number(w.balance)>0).length===0
+                    ? <option value="">No crypto balances available</option>
+                    : cryptoWallets.filter(w=>Number(w.balance)>0).map((w,i)=><option key={w.id||`sell-opt-${i}`} value={w.crypto_coin}>{COIN_ICONS[w.crypto_coin]} {w.crypto_coin} · {Number(w.balance).toLocaleString(undefined,{maximumFractionDigits:6})}</option>)
+                  }
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500 mb-1.5">Network</label>
+                <select value={selectedNetwork} onChange={e=>setSelectedNetwork(e.target.value)}
+                  className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500">
+                  {getNetworkOptions(selCoin).map(net=><option key={net} value={net}>{net}</option>)}
+                </select>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{selCoin} Amount</label>
+                  {coinIn > 0 && coinIn > balance && <span className="text-[10px] text-rose-600 font-bold">Insufficient balance</span>}
+                </div>
+                <div className="relative">
+                  <input type="number" min="0" step="0.00000001" autoFocus
+                    value={f.amount || f.cryptoAmount || ''}
+                    onChange={e=>setF(p=>({...p,amount:e.target.value, cryptoAmount:e.target.value}))}
+                    placeholder="0.00000000" inputMode="decimal"
+                    className="w-full px-4 py-3.5 rounded-xl border border-slate-200 bg-white text-xl font-extrabold tabular-nums focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500" />
+                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-sm">{selCoin}</span>
+                </div>
+                <div className="flex gap-1.5 mt-2">
+                  {[0.25, 0.5, 0.75, 1].map((pct,i)=>(
+                    <button key={`sell-pct-${i}`} type="button" onClick={()=>setF(p=>({...p,amount:String(Number((balance*pct).toFixed(8))),cryptoAmount:String(Number((balance*pct).toFixed(8)))}))}
+                      className="flex-1 py-1.5 rounded-lg border border-slate-200 bg-white text-[11px] font-bold text-slate-600 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 transition">
+                      {Math.round(pct*100)}%
+                    </button>
+                  ))}
+                  <button type="button" onClick={()=>setF(p=>({...p,amount:String(Number(balance.toFixed(8))),cryptoAmount:String(Number(balance.toFixed(8)))}))}
+                    className="flex-1 py-1.5 rounded-lg border border-rose-200 bg-rose-50 text-[11px] font-bold text-rose-700 hover:bg-rose-100 transition">Max</button>
+                </div>
+              </div>
+
+              {(price > 0) && (
+                <div className="rounded-xl bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-white p-4 shadow-lg">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-rose-400/30 to-rose-500/10 flex items-center justify-center">↘</div>
+                      <div>
+                        <div className="text-[10px] uppercase tracking-[0.2em] text-rose-300/80 font-bold">Fiat You Receive</div>
+                        <div className="text-[10px] text-slate-400">Instant · Internal Settlement</div>
+                      </div>
+                    </div>
+                    <span className="rounded-full bg-emerald-400/15 text-emerald-300 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider border border-emerald-400/20">No Fee</span>
+                  </div>
+                  <div className="flex items-baseline gap-2 mt-2">
+                    <div className="text-slate-400 text-base font-bold">$</div>
+                    <div className="text-3xl font-extrabold tabular-nums tracking-tight text-emerald-300">
+                      {coinIn>0 ? usdOut.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}) : '0.00'}
+                    </div>
+                    <div className="text-base font-bold text-slate-300">USD</div>
+                  </div>
+                  <div className="mt-3 pt-3 border-t border-white/10 space-y-1.5">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-slate-400">Spot Rate</span>
+                      <span className="text-slate-200 tabular-nums font-semibold">${price.toLocaleString(undefined,{maximumFractionDigits:price>100?2:6})} / {selCoin}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-slate-400">Network</span>
+                      <span className="text-slate-200 font-semibold">{selectedNetwork}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-slate-400">Tokens Sold</span>
+                      <span className="text-slate-200 tabular-nums font-semibold">{coinIn.toLocaleString(undefined,{maximumFractionDigits:8})} {selCoin}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </ModalShell>
+        );
+      })()}
     </div>
   );
 };
