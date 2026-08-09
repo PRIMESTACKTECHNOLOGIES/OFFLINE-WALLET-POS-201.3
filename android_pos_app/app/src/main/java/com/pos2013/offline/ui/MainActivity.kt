@@ -350,50 +350,152 @@ class MainActivity : AppCompatActivity() {
 
     private fun showCardDetectedDialog(cardData: EmvCardData) {
         val amount = getAmount()
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(16), dp(20), dp(8))
-        }
-        TextView(this).apply {
-            text = "Card Detected"
-            textSize = 18f
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#111827"))
-            gravity = Gravity.CENTER
-        }.also { layout.addView(it) }
-        layout.addView(space(12))
-        TextView(this).apply {
-            text = cardData.pan
-            textSize = 20f
-            typeface = android.graphics.Typeface.MONOSPACE
-            setTextColor(Color.parseColor("#1E3A5F"))
-            gravity = Gravity.CENTER
-        }.also { layout.addView(it) }
-        cardData.cardholderName?.let { name ->
-            layout.addView(space(4))
-            TextView(this).apply {
-                text = name
-                textSize = 14f
-                setTextColor(Color.parseColor("#6B7280"))
-                gravity = Gravity.CENTER
-            }.also { layout.addView(it) }
-        }
-        layout.addView(space(12))
 
-        AlertDialog.Builder(this)
-            .setView(layout)
-            .setPositiveButton("Charge") { _, _ ->
-                if (amount <= 0) {
-                    toast("Enter amount first!")
-                    return@setPositiveButton
-                }
-                val expiry = cardData.expiryDate.let {
-                    if (it.length == 4) "${it.take(2)}/${it.takeLast(2)}" else it
-                }
-                processOfflineQueue(amount, cardData.pan, expiry, "EMV_CHIP")
+        // Auto-format expiry from MMYY → MM/YY
+        val expiry = cardData.expiryDate.let {
+            val digits = it.replace("/", "").trim()
+            if (digits.length >= 4) "${digits.take(2)}/${digits.drop(2).take(2)}" else it
+        }
+
+        // If no amount set — show toast and open keypad focus, don't process
+        if (amount <= 0) {
+            runOnUiThread {
+                tvReaderStatus.text = "📱 Card ready — enter amount then tap again"
+                tvReaderStatus.setBackgroundColor(Color.parseColor("#EFF6FF"))
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+            return
+        }
+
+        // Use the professional card-detected screen
+        val ctx = this
+        val root = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#0F172A"))
+        }
+
+        // Top bar
+        val topBar = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(Color.parseColor("#1E293B"))
+        }
+        TextView(ctx).apply {
+            text = "NFC CARD DETECTED"
+            textSize = 12f
+            setTextColor(Color.parseColor("#94A3B8"))
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            letterSpacing = 0.12f
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }.also { topBar.addView(it) }
+        TextView(ctx).apply {
+            text = "AED ${"%.2f".format(amount)}"
+            textSize = 18f
+            setTextColor(Color.WHITE)
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }.also { topBar.addView(it) }
+        root.addView(topBar)
+
+        // Card info block
+        val cardBlock = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(20), dp(20), dp(20))
+            setBackgroundColor(Color.parseColor("#1E40AF"))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(dp(20), dp(16), dp(20), dp(8)) }
+        }
+
+        // NFC icon
+        TextView(ctx).apply {
+            text = "📡  CONTACTLESS"
+            textSize = 11f
+            setTextColor(Color.parseColor("#BFDBFE"))
+            letterSpacing = 0.1f
+        }.also { cardBlock.addView(it) }
+
+        TextView(ctx).apply {
+            text = cardData.pan.chunked(4).joinToString("   ")
+            textSize = 18f
+            setTextColor(Color.WHITE)
+            typeface = android.graphics.Typeface.MONOSPACE
+            setPadding(0, dp(12), 0, dp(4))
+        }.also { cardBlock.addView(it) }
+
+        val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+        TextView(ctx).apply {
+            text = if (expiry.isNotBlank()) "Expires: $expiry" else ""
+            textSize = 12f
+            setTextColor(Color.parseColor("#BFDBFE"))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }.also { row.addView(it) }
+        TextView(ctx).apply {
+            text = cardData.cardholderName ?: (cardData.applicationLabel ?: "CARD HOLDER")
+            textSize = 12f
+            setTextColor(Color.parseColor("#93C5FD"))
+            gravity = Gravity.END
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }.also { row.addView(it) }
+        cardBlock.addView(row)
+        root.addView(cardBlock)
+
+        // Status
+        val tvStatus2 = TextView(ctx).apply {
+            text = "✅  Card read successful — ready to charge"
+            textSize = 13f
+            setTextColor(Color.parseColor("#4ADE80"))
+            gravity = Gravity.CENTER
+            setPadding(dp(16), dp(16), dp(16), dp(8))
+            setBackgroundColor(Color.parseColor("#0F172A"))
+        }
+        root.addView(tvStatus2)
+
+        // Divider
+        root.addView(View(ctx).apply {
+            setBackgroundColor(Color.parseColor("#1E293B"))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+        })
+
+        // Buttons
+        val btnRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(16), dp(12), dp(16), dp(16))
+            setBackgroundColor(Color.parseColor("#0F172A"))
+        }
+        val btnCancel = Button(ctx).apply {
+            text = "CANCEL"
+            textSize = 14f
+            setTextColor(Color.parseColor("#94A3B8"))
+            setBackgroundColor(Color.parseColor("#1E293B"))
+            setPadding(0, dp(14), 0, dp(14))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                .apply { marginEnd = dp(10) }
+        }
+        val btnCharge2 = Button(ctx).apply {
+            text = "CHARGE AED ${"%.2f".format(amount)}"
+            textSize = 13f
+            setTextColor(Color.WHITE)
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setBackgroundColor(Color.parseColor("#16A34A"))
+            setPadding(0, dp(14), 0, dp(14))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 2f)
+        }
+        btnRow.addView(btnCancel)
+        btnRow.addView(btnCharge2)
+        root.addView(btnRow)
+
+        val dialog = AlertDialog.Builder(ctx, android.R.style.Theme_Material_Dialog_NoActionBar)
+            .setView(root)
+            .create()
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+
+        btnCancel.setOnClickListener { dialog.dismiss() }
+        btnCharge2.setOnClickListener {
+            dialog.dismiss()
+            processOfflineQueue(amount, cardData.pan, expiry, cardData.readerSource)
+        }
+
+        runOnUiThread { dialog.show() }
     }
 
     private fun showWalletTopupDialog() {
