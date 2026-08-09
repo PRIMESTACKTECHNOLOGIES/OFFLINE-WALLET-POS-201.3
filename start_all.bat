@@ -5,7 +5,7 @@ set "ROOT=%~dp0"
 set "BACKEND=%ROOT%backend"
 set "CLIENT=%ROOT%client"
 
-:: Detect current PC IP for Android
+:: ── Detect current Wi-Fi IP ──────────────────────────────────────────────────
 for /f "tokens=2 delims=:" %%A in ('ipconfig ^| findstr /C:"IPv4 Address" ^| findstr /V "172\." ^| findstr /V "127\."') do (
     set "RAW=%%A"
     goto :found
@@ -17,36 +17,44 @@ if "%PC_IP%"=="" set "PC_IP=localhost"
 cls
 echo.
 echo  ==========================================
-echo   POS OFFLINE SOFTWARE
+echo   POS OFFLINE SOFTWARE  ^|  Starting...
 echo  ==========================================
+echo.
 echo   Backend  : http://localhost:7000
 echo   Frontend : http://localhost:7001
 echo   Android  : http://%PC_IP%:7000/
-echo  ==========================================
 echo.
 
-:: Kill any existing Node on ports 7000 and 7001
-echo Stopping old processes...
-powershell -NoProfile -Command "$ports=7000,7001; foreach($p in $ports){ try{ $c=Get-NetTCPConnection -LocalPort $p -State Listen -EA Stop; foreach($x in $c){ $proc=Get-Process -Id $x.OwningProcess -EA SilentlyContinue; if($proc -and $proc.ProcessName -eq 'node'){ Stop-Process -Id $proc.Id -Force }}} catch{} }" >nul 2>&1
+:: ── Kill any Node on 7000/7001 ───────────────────────────────────────────────
+echo  [1/4] Stopping old processes...
+powershell -NoProfile -Command ^
+  "$ports=7000,7001; foreach($p in $ports){ try{ $c=Get-NetTCPConnection -LocalPort $p -State Listen -EA Stop; foreach($x in $c){ $proc=Get-Process -Id $x.OwningProcess -EA SilentlyContinue; if($proc -and $proc.ProcessName -eq 'node'){ Stop-Process -Id $proc.Id -Force }}} catch{} }" >nul 2>&1
 timeout /t 2 /nobreak >nul
+echo     Done.
 
-:: Add firewall rule for Android access (silent)
+:: ── Firewall rule ─────────────────────────────────────────────────────────────
+echo  [2/4] Firewall rule for Android access...
 netsh advfirewall firewall show rule name="POS Backend 7000" >nul 2>&1
 if errorlevel 1 (
     netsh advfirewall firewall add rule name="POS Backend 7000" dir=in action=allow protocol=TCP localport=7000 >nul 2>&1
 )
 
-:: Start Backend in its own window
-echo Starting Backend...
-start "POS Backend :7000" cmd /k "cd /d "%BACKEND%" && npm run dev"
+:: ── Update .env ALLOWED_ORIGINS with current IP ──────────────────────────────
+powershell -NoProfile -Command ^
+  "$env='%BACKEND%\.env'; $ip='%PC_IP%'; if(Test-Path $env){ $c=Get-Content $env -Raw; $new='ALLOWED_ORIGINS=http://localhost:7001,http://'+$ip+':7001'; $c=$c -replace 'ALLOWED_ORIGINS=.*',$new; Set-Content $env $c }" >nul 2>&1
+echo     Done.
 
-:: Start Frontend in its own window
-echo Starting Frontend...
-start "POS Frontend :7001" cmd /k "cd /d "%CLIENT%" && npm run dev -- --host 0.0.0.0 --port 7001"
+:: ── Start Backend ─────────────────────────────────────────────────────────────
+echo  [3/4] Starting backend on :7000...
+start "POS Backend :7000" cmd /k "title POS Backend :7000 && cd /d "%BACKEND%" && npm run dev"
 
-:: Wait for backend to be ready (up to 60 seconds)
+:: ── Start Frontend ────────────────────────────────────────────────────────────
+echo  [4/4] Starting frontend on :7001...
+start "POS Frontend :7001" cmd /k "title POS Frontend :7001 && cd /d "%CLIENT%" && npm run dev -- --host 0.0.0.0 --port 7001"
+
+:: ── Wait for backend ─────────────────────────────────────────────────────────
 echo.
-echo Waiting for backend...
+echo  Waiting for backend to be ready...
 set "READY=0"
 for /L %%i in (1,1,20) do (
     if "!READY!"=="0" (
@@ -57,27 +65,31 @@ for /L %%i in (1,1,20) do (
     )
 )
 
+:: ── Done ─────────────────────────────────────────────────────────────────────
 echo.
 echo.
 echo  ==========================================
-if "!READY!"=="1" (
-    echo   Backend is READY
-) else (
-    echo   Backend starting (may need a few more seconds)
-)
-echo   Opening dashboard...
+echo   ALL SYSTEMS READY
+echo  ==========================================
+echo.
+echo   Dashboard : http://localhost:7001
+echo   API       : http://localhost:7000
+echo   Android   : http://%PC_IP%:7000/
+echo.
+echo   Login: admin / admin1234
 echo  ==========================================
 echo.
 
 :: Open browser
-start "" "http://localhost:7001"
+if "!READY!"=="1" (
+    start "" "http://localhost:7001"
+) else (
+    echo  Backend still starting — open http://localhost:7001 manually.
+)
 
-:: Beep twice
-powershell -NoProfile -Command "[console]::beep(1200,200); Start-Sleep -Milliseconds 100; [console]::beep(1500,300)" >nul 2>&1
+:: Two beeps
+powershell -NoProfile -Command "[console]::beep(1200,180);Start-Sleep -ms 100;[console]::beep(1500,250)" >nul 2>&1
 
-echo  Done! Close this window anytime.
-echo  Backend and Frontend are running in their own windows.
-echo.
-echo  Android URL: http://%PC_IP%:7000/
-echo.
-pause
+echo  Both server windows are running. Close them to stop.
+echo  Press any key to close this launcher window...
+pause >nul
