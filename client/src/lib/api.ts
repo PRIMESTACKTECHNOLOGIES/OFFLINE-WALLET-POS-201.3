@@ -744,6 +744,15 @@ export async function sellCrypto(customerId: string, cryptoCoin: string, cryptoA
   if (!res.ok) { const e = await res.json().catch(() => ({} as ApiErrorPayload)); throw new Error(e.error || 'Sell failed'); }
   return res.json();
 }
+
+export async function withdrawCrypto(customerId: string, cryptoCoin: string, amount: number, address: string, network: string) {
+  const res = await fetchWithAuth(`${BASE_URL}/wallet/crypto-withdraw`, {
+    method: 'POST',
+    body: JSON.stringify({ customerId, cryptoCoin, amount, address, network })
+  });
+  if (!res.ok) { const e = await res.json().catch(() => ({} as ApiErrorPayload)); throw new Error(e.error || 'Withdrawal failed'); }
+  return res.json();
+}
 export async function getCryptoTransactions(customerId: string): Promise<CryptoTransaction[]> {
   const res = await fetchWithAuth(`${BASE_URL}/wallet/crypto-transactions/${customerId}`);
   if (!res.ok) return [];

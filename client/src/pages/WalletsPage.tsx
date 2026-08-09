@@ -7,7 +7,7 @@ import {
   walletTransfer,
   getVirtualCards, issueVirtualCard, topupVirtualCard, freezeCard, unfreezeCard,
   getBankAccounts, addBankAccount, bankPayout, getBankPayouts,
-  getCryptoWallets, getCryptoPrice, buyCryptoWithWallet, sellCrypto, getCryptoTransactions,
+  getCryptoWallets, getCryptoPrice, buyCryptoWithWallet, sellCrypto, getCryptoTransactions, withdrawCrypto,
   getMerchantBalance, getMerchantTransactions, buyCryptoWithMerchant,
   type Customer, type WalletBalance, type WalletTransaction,
   type VirtualCard, type BankAccount, type BankPayout,
@@ -24,7 +24,7 @@ type Tab = 'wallet' | 'virtual-cards' | 'bank' | 'crypto';
 type Modal =
   | 'create-customer' | 'topup' | 'debit' | 'transfer'
   | 'issue-card' | 'topup-card' | 'add-bank' | 'bank-payout'
-  | 'buy-crypto' | 'sell-crypto' | 'merchant-buy' | null;
+  | 'buy-crypto' | 'sell-crypto' | 'withdraw-crypto' | 'merchant-buy' | null;
 
 const COINS = ['BTC','ETH','USDT','SOL','DOGE','BNB','XRP','ADA','AVAX','LINK','MATIC'];
 const COIN_ICONS: Record<string,string> = {
@@ -519,18 +519,30 @@ export const WalletsPage = () => {
   }, 'Merchant buy executed');
 
   const handleSellCrypto = () => act(async () => {
-    // ── Snapshot ALL state into local constants BEFORE any await.
     const snapF = { ...f };
     const snapSelId = selId;
     const snapSelCoin = selCoin;
     const snapSelectedNetwork = selectedNetwork;
     const snapIsOnline = isOnline;
-
     if (!snapSelId) throw new Error('No customer');
     if (!snapIsOnline) throw new Error('Crypto sell requires internet');
     await sellCrypto(snapSelId, snapSelCoin, parseFloat(snapF.amount), snapSelectedNetwork);
     await refreshWallet(); await refreshCrypto();
   }, 'Crypto sale complete');
+
+  const handleWithdrawCrypto = () => act(async () => {
+    const snapF = { ...f };
+    const snapSelId = selId;
+    const snapSelCoin = selCoin;
+    const snapSelectedNetwork = selectedNetwork;
+    if (!snapSelId) throw new Error('No customer selected');
+    const amt = parseFloat(snapF.amount);
+    if (!amt || amt <= 0) throw new Error('Enter a valid amount');
+    if (!snapF.address || snapF.address.trim().length < 10) throw new Error('Enter a valid wallet address');
+    const result = await withdrawCrypto(snapSelId, snapSelCoin, amt, snapF.address.trim(), snapSelectedNetwork);
+    await refreshCrypto();
+    return result;
+  }, `${selCoin} withdrawal submitted`);
 
 
   return (
@@ -1000,6 +1012,8 @@ export const WalletsPage = () => {
                                 className="rounded-lg bg-emerald-50 text-emerald-700 px-3 py-1.5 text-xs font-bold hover:bg-emerald-100 transition">Buy</button>
                               <button onClick={()=>{setSelCoin(w.crypto_coin);setF({});setModal('sell-crypto');}} disabled={Number(w.balance)<=0}
                                 className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${Number(w.balance)>0?'bg-rose-50 text-rose-700 hover:bg-rose-100':'bg-slate-100 text-slate-400 cursor-not-allowed'}`}>Sell</button>
+                              <button onClick={()=>{setSelCoin(w.crypto_coin);setSelectedNetwork(getNetworkOptions(w.crypto_coin)[0]);setF({});setModal('withdraw-crypto');}} disabled={Number(w.balance)<=0}
+                                className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${Number(w.balance)>0?'bg-orange-50 text-orange-700 hover:bg-orange-100':'bg-slate-100 text-slate-400 cursor-not-allowed'}`}>Withdraw</button>
                             </div>
                           </div>
                         );
@@ -1460,6 +1474,69 @@ export const WalletsPage = () => {
           </ModalShell>
         );
       })()}
+
+      {modal==='withdraw-crypto' && (
+        <ModalShell
+          onClose={() => { setModal(null); setF({}); }}
+          busy={busy}
+          title={`Withdraw ${selCoin}`}
+          onConfirm={handleWithdrawCrypto}
+          confirmLabel={`Send ${selCoin}`}
+          confirmColor="bg-gradient-to-br from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500"
+        >
+          <div className="space-y-4">
+            {/* Crypto selection */}
+            <div>
+              <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Asset</label>
+              <select value={selCoin} onChange={e => { setSelCoin(e.target.value); setSelectedNetwork(getNetworkOptions(e.target.value)[0]); }}
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-orange-500/20">
+                {cryptoWallets.filter(w => Number(w.balance) > 0).map((w, i) => (
+                  <option key={w.id || i} value={w.crypto_coin}>
+                    {COIN_ICONS[w.crypto_coin]} {w.crypto_coin} · Balance: {Number(w.balance).toFixed(6)}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Network */}
+            <div>
+              <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Network</label>
+              <select value={selectedNetwork} onChange={e => setSelectedNetwork(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-orange-500/20">
+                {getNetworkOptions(selCoin).map(net => <option key={net} value={net}>{net.toUpperCase()}</option>)}
+              </select>
+              {selCoin === 'USDT' && selectedNetwork === 'tron' && (
+                <p className="text-xs text-emerald-600 mt-1 font-medium">✅ TRC-20 network selected (low fees)</p>
+              )}
+            </div>
+
+            {/* Destination address */}
+            <div>
+              <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Destination Address</label>
+              <input type="text" placeholder={selCoin === 'USDT' && selectedNetwork === 'tron' ? 'TRC-20 address (starts with T...)' : 'Wallet address'}
+                value={f.address || ''} onChange={e => setF(p => ({ ...p, address: e.target.value }))}
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-orange-500/20" />
+            </div>
+
+            {/* Amount */}
+            <div>
+              <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Amount</label>
+              <div className="relative">
+                <input type="number" min="0" step="0.000001" placeholder="0.000000"
+                  value={f.amount || ''} onChange={e => setF(p => ({ ...p, amount: e.target.value }))}
+                  className="w-full px-4 py-3.5 rounded-xl border border-slate-200 bg-white text-xl font-extrabold focus:outline-none focus:ring-2 focus:ring-orange-500/20" />
+                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-sm">{selCoin}</span>
+              </div>
+            </div>
+
+            {/* Warning */}
+            <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">
+              ⚠️ Crypto withdrawals are <strong>irreversible</strong>. Double-check the address and network before confirming.
+              Withdrawal will be sent via Binance.
+            </div>
+          </div>
+        </ModalShell>
+      )}
     </div>
   );
 };
