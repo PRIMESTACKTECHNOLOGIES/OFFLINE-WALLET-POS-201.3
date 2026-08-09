@@ -515,51 +515,258 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showCardDialog(amount: Double) {
-        val layout = LinearLayout(this).apply {
+        // ── Full-screen professional card entry ─────────────────────────────
+        val ctx = this
+        val root = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#0F172A"))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            )
+        }
+
+        // ── Top bar ──────────────────────────────────────────────────────────
+        val topBar = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(Color.parseColor("#1E293B"))
+        }
+        val tvTitle = TextView(ctx).apply {
+            text = "CARD PAYMENT"
+            textSize = 13f
+            setTextColor(Color.parseColor("#94A3B8"))
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            letterSpacing = 0.15f
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val tvAmt = TextView(ctx).apply {
+            text = "AED ${"%.2f".format(amount)}"
+            textSize = 18f
+            setTextColor(Color.WHITE)
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }
+        topBar.addView(tvTitle); topBar.addView(tvAmt)
+        root.addView(topBar)
+
+        // ── Card preview graphic ──────────────────────────────────────────────
+        val cardPreview = FrameLayout(ctx).apply {
             setPadding(dp(20), dp(16), dp(20), dp(8))
+            setBackgroundColor(Color.parseColor("#0F172A"))
+        }
+        val cardBg = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#1E40AF"))
+            setPadding(dp(20), dp(18), dp(20), dp(18))
+            elevation = 8f
+        }
+        val tvCardLabel = TextView(ctx).apply {
+            text = "● ● ● ●   ● ● ● ●   ● ● ● ●   ● ● ● ●"
+            textSize = 14f
+            setTextColor(Color.parseColor("#93C5FD"))
+            typeface = android.graphics.Typeface.MONOSPACE
+        }
+        val tvCardExpiry = TextView(ctx).apply {
+            text = "MM/YY"
+            textSize = 12f
+            setTextColor(Color.parseColor("#BFDBFE"))
+            setPadding(0, dp(8), 0, 0)
+        }
+        val tvCardType = TextView(ctx).apply {
+            text = "VISA / MASTERCARD"
+            textSize = 11f
+            setTextColor(Color.parseColor("#93C5FD"))
+            gravity = Gravity.END
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        cardBg.addView(tvCardLabel)
+        cardBg.addView(tvCardExpiry)
+        cardBg.addView(tvCardType)
+        cardPreview.addView(cardBg)
+        root.addView(cardPreview)
+
+        // ── Input section ────────────────────────────────────────────────────
+        val inputSection = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(12))
+            setBackgroundColor(Color.parseColor("#0F172A"))
         }
 
-        val etPan = EditText(this).apply {
-            hint = "Card Number (13-19 digits)"
-            inputType = InputType.TYPE_CLASS_NUMBER
-            keyListener = DigitsKeyListener.getInstance("0123456789")
-            filters = arrayOf(InputFilter.LengthFilter(19))
-            textSize = 16f
-        }
-        val etExpiry = EditText(this).apply {
-            hint = "Expiry MM/YY"
-            inputType = InputType.TYPE_CLASS_NUMBER
-            keyListener = DigitsKeyListener.getInstance("0123456789")
-            filters = arrayOf(InputFilter.LengthFilter(4))
-            textSize = 16f
-        }
-        val etCvv = EditText(this).apply {
-            hint = "CVV"
-            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
-            keyListener = DigitsKeyListener.getInstance("0123456789")
-            filters = arrayOf(InputFilter.LengthFilter(4))
-            textSize = 16f
+        fun fieldLabel(text: String) = TextView(ctx).apply {
+            this.text = text
+            textSize = 10f
+            setTextColor(Color.parseColor("#64748B"))
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            letterSpacing = 0.12f
+            setPadding(0, 0, 0, dp(4))
         }
 
-        layout.addView(label("Card Number")); layout.addView(etPan); layout.addView(space(6))
-        layout.addView(label("Expiry (MM/YY)")); layout.addView(etExpiry); layout.addView(space(6))
-        layout.addView(label("CVV")); layout.addView(etCvv)
+        fun styledInput(hint: String, isPassword: Boolean = false) = EditText(ctx).apply {
+            this.hint = hint
+            this.setHintTextColor(Color.parseColor("#475569"))
+            textSize = 18f
+            setTextColor(Color.WHITE)
+            typeface = android.graphics.Typeface.MONOSPACE
+            setBackgroundColor(Color.parseColor("#1E293B"))
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            if (isPassword) inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            else inputType = InputType.TYPE_CLASS_NUMBER
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(12) }
+        }
 
-        AlertDialog.Builder(this)
-            .setTitle("Pay AED ${"%.2f".format(amount)}")
-            .setView(layout)
-            .setPositiveButton("Queue & Process") { _, _ ->
-                val pan = etPan.text.toString().trim().replace(" ", "")
-                val expiry = etExpiry.text.toString().trim()
-                if (!pan.matches(Regex("^\\d+$"))) { toast("Enter numbers only"); return@setPositiveButton }
-                if (pan.length < 13) { toast("Invalid card number"); return@setPositiveButton }
-                val last4 = pan.takeLast(4)
-                val panMasked = "*".repeat(pan.length - 4) + last4
-                processOfflineQueue(amount, panMasked, expiry)
+        val etPan = styledInput("•••• •••• •••• ••••")
+        etPan.filters = arrayOf(InputFilter.LengthFilter(19))
+        etPan.keyListener = DigitsKeyListener.getInstance("0123456789")
+
+        // Auto-format PAN with spaces
+        etPan.addTextChangedListener(object : android.text.TextWatcher {
+            var editing = false
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                if (editing) return
+                editing = true
+                val digits = s.toString().replace(" ", "")
+                val formatted = digits.chunked(4).joinToString(" ")
+                etPan.setText(formatted)
+                etPan.setSelection(formatted.length)
+                // Update card preview
+                tvCardLabel.text = if (digits.isNotEmpty())
+                    digits.chunked(4).joinToString("   ").padEnd(19, '●').replace("0123456789".toRegex(), "$0")
+                else "● ● ● ●   ● ● ● ●   ● ● ● ●   ● ● ● ●"
+                editing = false
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+        })
+
+        val expiryRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+
+        val etExpiry = styledInput("MM/YY")
+        etExpiry.filters = arrayOf(InputFilter.LengthFilter(5))
+        etExpiry.keyListener = DigitsKeyListener.getInstance("0123456789/")
+        etExpiry.addTextChangedListener(object : android.text.TextWatcher {
+            var editing = false
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                if (editing) return
+                editing = true
+                val digits = s.toString().replace("/", "")
+                val fmt = if (digits.length >= 3) "${digits.take(2)}/${digits.drop(2)}"
+                          else if (digits.length == 2) "$digits/"
+                          else digits
+                etExpiry.setText(fmt)
+                etExpiry.setSelection(fmt.length)
+                tvCardExpiry.text = if (fmt.length >= 5) "Expires: $fmt" else "MM/YY"
+                editing = false
+            }
+        })
+        etExpiry.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            .apply { marginEnd = dp(10) }
+
+        val etCvv = styledInput("CVV", isPassword = true)
+        etCvv.filters = arrayOf(InputFilter.LengthFilter(4))
+        etCvv.keyListener = DigitsKeyListener.getInstance("0123456789")
+        etCvv.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+
+        val expiryWrap = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                .apply { marginEnd = dp(10) }
+        }
+        val cvvWrap = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+
+        expiryWrap.addView(fieldLabel("EXPIRY DATE"))
+        expiryWrap.addView(etExpiry)
+        cvvWrap.addView(fieldLabel("SECURITY CODE"))
+        cvvWrap.addView(etCvv)
+        expiryRow.addView(expiryWrap)
+        expiryRow.addView(cvvWrap)
+
+        inputSection.addView(fieldLabel("CARD NUMBER"))
+        inputSection.addView(etPan)
+        inputSection.addView(expiryRow)
+        root.addView(inputSection)
+
+        // ── Divider ───────────────────────────────────────────────────────────
+        root.addView(View(ctx).apply {
+            setBackgroundColor(Color.parseColor("#1E293B"))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+        })
+
+        // ── Buttons ───────────────────────────────────────────────────────────
+        val btnRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(16), dp(12), dp(16), dp(16))
+            setBackgroundColor(Color.parseColor("#0F172A"))
+        }
+
+        val btnCancel = Button(ctx).apply {
+            text = "CANCEL"
+            textSize = 14f
+            setTextColor(Color.parseColor("#94A3B8"))
+            setBackgroundColor(Color.parseColor("#1E293B"))
+            setPadding(0, dp(14), 0, dp(14))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                .apply { marginEnd = dp(10) }
+        }
+
+        val btnPay = Button(ctx).apply {
+            text = "PROCESS PAYMENT"
+            textSize = 14f
+            setTextColor(Color.WHITE)
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setBackgroundColor(Color.parseColor("#1D4ED8"))
+            setPadding(0, dp(14), 0, dp(14))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 2f)
+        }
+
+        btnRow.addView(btnCancel)
+        btnRow.addView(btnPay)
+        root.addView(btnRow)
+
+        // ── Show as dialog covering most of screen ───────────────────────────
+        val dialog = AlertDialog.Builder(ctx, android.R.style.Theme_Material_Dialog_NoActionBar)
+            .setView(root)
+            .create()
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+        dialog.window?.setLayout(
+            android.view.WindowManager.LayoutParams.MATCH_PARENT,
+            android.view.WindowManager.LayoutParams.WRAP_CONTENT
+        )
+
+        btnCancel.setOnClickListener { dialog.dismiss() }
+
+        btnPay.setOnClickListener {
+            val rawPan = etPan.text.toString().replace(" ", "").trim()
+            val expiry = etExpiry.text.toString().trim()
+            val cvv = etCvv.text.toString().trim()
+
+            if (rawPan.length < 13) { toast("Invalid card number"); return@setOnClickListener }
+            if (!expiry.matches(Regex("\\d{2}/\\d{2}"))) { toast("Enter expiry MM/YY"); return@setOnClickListener }
+            if (cvv.length < 3) { toast("Enter CVV"); return@setOnClickListener }
+
+            val panMasked = "*".repeat(rawPan.length - 4) + rawPan.takeLast(4)
+            dialog.dismiss()
+            processOfflineQueue(amount, panMasked, expiry)
+        }
+
+        dialog.show()
+        dialog.window?.setLayout(
+            android.view.WindowManager.LayoutParams.MATCH_PARENT,
+            android.view.WindowManager.LayoutParams.WRAP_CONTENT
+        )
     }
 
     // ── Store offline transaction in Room ─────────────────────────────────────
