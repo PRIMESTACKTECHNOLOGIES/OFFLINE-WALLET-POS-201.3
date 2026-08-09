@@ -6,24 +6,52 @@ export class WalletsController {
   // ── Fiat wallet ────────────────────────────────────────────────────────────
   async topup(req: Request, res: Response) {
     try {
-      const { customerId, amount, source, reference } = req.body;
+      const { customerId, amount, source, reference, currency } = req.body;
       if (!customerId || !amount || amount <= 0) return res.status(400).json({ error: 'Invalid payload' });
-      await walletsService.topupWallet(customerId, amount, source, reference);
+      await walletsService.topupWallet(customerId, amount, source, reference, currency || 'USD');
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   }
 
   async topupWithCard(req: Request, res: Response) {
     try {
-      const { customerId, amount, cardNumber, panMasked, expiry, cvv, emvData } = req.body;
-      if (!customerId || !amount || amount <= 0 || !cardNumber || !expiry || !cvv) {
-        return res.status(400).json({ error: 'Invalid payload' });
+      let { customerId, walletCode, amount, cardNumber, panMasked, expiry, cvv, emvData, currency } = req.body;
+
+      // Accept walletCode (PSW-xxxx-xxxx) as an alternative to customerId
+      if (!customerId && walletCode) {
+        const { db } = await import('../../config/db');
+        const res2 = await db.query(
+          `SELECT c.id AS customer_id FROM customer_wallets cw
+           JOIN customers c ON cw.customer_id = c.id
+           WHERE cw.wallet_code = ? LIMIT 1`,
+          [walletCode]
+        );
+        if (!res2.rows.length) return res.status(404).json({ error: `Wallet code ${walletCode} not found` });
+        customerId = res2.rows[0].customer_id;
       }
-      if (!/^\d{2}\/\d{2}$/.test(expiry) || !/^\d{3,4}$/.test(cvv)) {
-        return res.status(400).json({ error: 'Invalid card expiry or CVV' });
+
+      if (!customerId || !amount || amount <= 0) {
+        return res.status(400).json({ error: 'customerId or walletCode and amount are required' });
       }
-      const effectivePanMasked = panMasked || this.maskPan(cardNumber);
-      const result = await walletsService.topupWalletWithCard(customerId, amount, cardNumber, effectivePanMasked, expiry, cvv, emvData);
+
+      // For offline topups from Android using wallet code — no card needed
+      // Use direct wallet topup (no card authorization required)
+      if (!cardNumber && !panMasked) {
+        const result = await walletsService.topupWallet(
+          customerId, amount, 'pos_topup', undefined, currency || 'AED'
+        );
+        return res.json({ ...result, success: true });
+      }
+
+      // For card-based topups — full authorization flow
+      const effectiveCard = cardNumber || '0000000000000000';
+      const effectiveExpiry = expiry || '01/30';
+      const effectiveCvv = cvv || '000';
+      const effectivePanMasked = panMasked || this.maskPan(effectiveCard);
+
+      const result = await walletsService.topupWalletWithCard(
+        customerId, amount, effectiveCard, effectivePanMasked, effectiveExpiry, effectiveCvv, emvData, currency || 'USD'
+      );
       res.json(result);
     } catch (e: any) {
       const status = e.message?.includes('authorization') || e.message?.includes('processor') ? 402 : 500;
@@ -38,24 +66,28 @@ export class WalletsController {
 
   async debit(req: Request, res: Response) {
     try {
-      const { customerId, amount, source, reference } = req.body;
+      const { customerId, amount, source, reference, currency } = req.body;
       if (!customerId || !amount || amount <= 0) return res.status(400).json({ error: 'Invalid payload' });
-      await walletsService.debitWallet(customerId, amount, source, reference);
+      await walletsService.debitWallet(customerId, amount, source, reference, currency || 'USD');
       res.json({ success: true });
     } catch (e: any) {
-      res.status(e.message === 'Insufficient balance' ? 400 : 500).json({ error: e.message });
+      res.status(e.message.includes('Insufficient') ? 400 : 500).json({ error: e.message });
     }
   }
 
   async getBalance(req: Request, res: Response) {
     try {
-      res.json(await walletsService.getWalletBalance(req.params.customerId));
+      const { customerId } = req.params;
+      const { currency } = req.query as any;
+      res.json(await walletsService.getWalletBalance(customerId, currency as string | undefined));
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   }
 
   async getTransactions(req: Request, res: Response) {
     try {
-      res.json(await walletsService.getWalletTransactions(req.params.customerId));
+      const { customerId } = req.params;
+      const { currency } = req.query as any;
+      res.json(await walletsService.getWalletTransactions(customerId, currency as string | undefined));
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   }
 
@@ -68,19 +100,23 @@ export class WalletsController {
 
   async createCustomer(req: Request, res: Response) {
     try {
-      const { name, email, phone } = req.body;
-      if (!name) return res.status(400).json({ error: 'Name is required' });
-      res.json(await walletsService.createCustomer(name, email, phone));
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+      const { name, email, phone } = req.body || {};
+      const trimmedName = (name || '').trim();
+      if (!trimmedName) return res.status(400).json({ error: 'Name is required' });
+      res.json(await walletsService.createCustomer(trimmedName, email, phone));
+    } catch (e: any) {
+      const isValidationError = e.message && (e.message.includes('required') || e.message.includes('at least') || e.message.includes('too long') || e.message.includes('integrity') || e.message.includes('verification'));
+      res.status(isValidationError ? 400 : 500).json({ error: e.message || 'Failed to create customer' });
+    }
   }
 
   // ── Wallet transfer ────────────────────────────────────────────────────────
   async walletTransfer(req: Request, res: Response) {
     try {
-      const { senderCustomerId, receiverCustomerId, amount, note } = req.body;
+      const { senderCustomerId, receiverCustomerId, amount, note, currency } = req.body;
       if (!senderCustomerId || !receiverCustomerId || !amount || amount <= 0)
         return res.status(400).json({ error: 'Invalid payload' });
-      res.json(await walletsService.walletTransfer(senderCustomerId, receiverCustomerId, amount, note));
+      res.json(await walletsService.walletTransfer(senderCustomerId, receiverCustomerId, amount, note, currency || 'USD'));
     } catch (e: any) {
       res.status(e.message.includes('Insufficient') ? 400 : 500).json({ error: e.message });
     }
@@ -162,9 +198,9 @@ export class WalletsController {
 
   async topupVirtualCard(req: Request, res: Response) {
     try {
-      const { customerId, cardId, amount } = req.body;
+      const { customerId, cardId, amount, currency } = req.body;
       if (!customerId || !cardId || !amount || amount <= 0) return res.status(400).json({ error: 'Invalid payload' });
-      res.json(await walletsService.topupVirtualCard(customerId, cardId, amount));
+      res.json(await walletsService.topupVirtualCard(customerId, cardId, amount, currency || 'USD'));
     } catch (e: any) {
       res.status(e.message.includes('Insufficient') ? 400 : 500).json({ error: e.message });
     }
@@ -205,10 +241,10 @@ export class WalletsController {
   // ── Bank payouts ───────────────────────────────────────────────────────────
   async bankPayout(req: Request, res: Response) {
     try {
-      const { customerId, bankAccountId, amount } = req.body;
+      const { customerId, bankAccountId, amount, currency } = req.body;
       if (!customerId || !bankAccountId || !amount || amount <= 0)
         return res.status(400).json({ error: 'Invalid payload' });
-      res.json(await walletsService.bankPayout(customerId, bankAccountId, amount));
+      res.json(await walletsService.bankPayout(customerId, bankAccountId, amount, currency || 'USD'));
     } catch (e: any) {
       res.status(e.message.includes('Insufficient') || e.message.includes('not found') ? 400 : 500).json({ error: e.message });
     }
@@ -237,10 +273,10 @@ export class WalletsController {
 
   async buyCryptoWithWallet(req: Request, res: Response) {
     try {
-      const { customerId, cryptoCoin, fiatAmount, network } = req.body;
+      const { customerId, cryptoCoin, fiatAmount, network, currency } = req.body;
       if (!customerId || !cryptoCoin || !fiatAmount || fiatAmount <= 0)
         return res.status(400).json({ error: 'Invalid payload' });
-      res.json(await walletsService.buyCryptoWithWallet(customerId, cryptoCoin, fiatAmount, network));
+      res.json(await walletsService.buyCryptoWithWallet(customerId, cryptoCoin, fiatAmount, network, currency || 'USD'));
     } catch (e: any) {
       res.status(e.message.includes('Insufficient') ? 400 : 500).json({ error: e.message });
     }
@@ -248,10 +284,10 @@ export class WalletsController {
 
   async sellCrypto(req: Request, res: Response) {
     try {
-      const { customerId, cryptoCoin, cryptoAmount, network } = req.body;
+      const { customerId, cryptoCoin, cryptoAmount, network, currency } = req.body;
       if (!customerId || !cryptoCoin || !cryptoAmount || cryptoAmount <= 0)
         return res.status(400).json({ error: 'Invalid payload' });
-      res.json(await walletsService.sellCrypto(customerId, cryptoCoin, cryptoAmount, network));
+      res.json(await walletsService.sellCrypto(customerId, cryptoCoin, cryptoAmount, network, currency || 'USD'));
     } catch (e: any) {
       res.status(e.message.includes('Insufficient') ? 400 : 500).json({ error: e.message });
     }
@@ -279,7 +315,8 @@ export class WalletsController {
   async getMerchantBalance(req: Request, res: Response) {
     try {
       const { merchantId } = req.params;
-      const wallet = await walletsService.getOrCreateMerchantWallet(merchantId);
+      const { currency } = req.query as any;
+      const wallet = await walletsService.getOrCreateMerchantWallet(merchantId, (currency as string) || 'USD');
       res.json({ balance: wallet.balance, currency: wallet.currency, merchantId });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   }
@@ -287,7 +324,8 @@ export class WalletsController {
   async getMerchantTransactions(req: Request, res: Response) {
     try {
       const { merchantId } = req.params;
-      const wallet = await walletsService.getOrCreateMerchantWallet(merchantId);
+      const { currency } = req.query as any;
+      const wallet = await walletsService.getOrCreateMerchantWallet(merchantId, (currency as string) || 'USD');
       const { db } = await import('../../config/db');
       const res2 = await db.query(
         'SELECT * FROM merchant_wallet_transactions WHERE wallet_id = ? ORDER BY created_at DESC LIMIT 100',

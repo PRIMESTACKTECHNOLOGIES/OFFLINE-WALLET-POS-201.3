@@ -402,68 +402,67 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(20), dp(16), dp(20), dp(8))
         }
 
-        val etCustomerId = EditText(this).apply {
-            hint = "Customer ID"
-            inputType = InputType.TYPE_CLASS_TEXT; textSize = 16f
+        val etWalletCode = EditText(this).apply {
+            hint = "PSW-XXXX-XXXX"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+            textSize = 20f
+            typeface = android.graphics.Typeface.MONOSPACE
+            gravity = Gravity.CENTER
+            setTextColor(Color.parseColor("#1E3A5F"))
         }
         val etTopupAmount = EditText(this).apply {
             hint = "Topup Amount (AED)"
-            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; textSize = 16f
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            textSize = 16f
         }
         val infoBox = TextView(this).apply {
-            text = "Tap card on reader to auto-fill details"
+            text = "💡 Find the Wallet Code on the customer's profile in the dashboard\n   Example: PSW-8604-2781"
             textSize = 11f
             setTextColor(Color.parseColor("#6B7280"))
-            setPadding(0, dp(8), 0, 0)
+            setBackgroundColor(Color.parseColor("#F0FDF4"))
+            setPadding(dp(8), dp(6), dp(8), dp(6))
         }
 
-        layout.addView(label("Customer ID")); layout.addView(etCustomerId); layout.addView(space(6))
-        layout.addView(label("Topup Amount")); layout.addView(etTopupAmount); layout.addView(infoBox)
+        layout.addView(infoBox)
+        layout.addView(space(8))
+        layout.addView(label("Wallet Code"))
+        layout.addView(etWalletCode)
+        layout.addView(space(6))
+        layout.addView(label("Topup Amount"))
+        layout.addView(etTopupAmount)
 
-        val dialog = AlertDialog.Builder(this)
+        AlertDialog.Builder(this)
             .setTitle("💳 Wallet Topup")
             .setView(layout)
             .setPositiveButton("Queue Topup") { _, _ ->
-                val customerId = etCustomerId.text.toString().trim()
+                val walletCode = etWalletCode.text.toString().trim().uppercase()
                 val topupAmount = etTopupAmount.text.toString().toDoubleOrNull() ?: 0.0
-                if (customerId.isEmpty()) {
-                    toast("Enter customer ID")
+                if (walletCode.isEmpty() || !walletCode.startsWith("PSW-")) {
+                    toast("Enter a valid Wallet Code (PSW-XXXX-XXXX)")
                     return@setPositiveButton
                 }
                 if (topupAmount <= 0) {
                     toast("Enter valid amount")
                     return@setPositiveButton
                 }
-                // Check if we have a recent card
                 acsReaderManager.cardData.value?.let { cardData ->
-                    queueWalletTopup(customerId, topupAmount, cardData)
+                    queueWalletTopupByCode(walletCode, topupAmount, cardData)
                 } ?: run {
-                    // Fallback: no card, just queue placeholder
-                    queueWalletTopup(customerId, topupAmount, null)
+                    queueWalletTopupByCode(walletCode, topupAmount, null)
                 }
             }
             .setNegativeButton("Cancel", null)
             .show()
-
-        // Observe card data while dialog is open
-        lifecycleScope.launch {
-            acsReaderManager.cardData.collectLatest { cardData ->
-                cardData?.let {
-                    dialog.setTitle("💳 Card Ready for Topup")
-                    dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.text = "Topup with ${it.pan}"
-                }
-            }
-        }
     }
 
-    private fun queueWalletTopup(customerId: String, amount: Double, cardData: EmvCardData?) {
+    private fun queueWalletTopupByCode(walletCode: String, amount: Double, cardData: EmvCardData?) {
         setResult("⏳ Queueing wallet topup...")
         lifecycleScope.launch {
             try {
                 val amountMinor = (amount * 100).toLong()
                 val topup = WalletTopupEntity(
                     id = UUID.randomUUID().toString(),
-                    customerId = customerId,
+                    customerId = walletCode,   // store walletCode here — backend resolves it
                     amountMinor = amountMinor,
                     currency = "AED",
                     panMasked = cardData?.pan ?: "MANUAL_ENTRY",
@@ -473,9 +472,10 @@ class MainActivity : AppCompatActivity() {
                     emvData = cardData?.emvData
                 )
                 getRepo().createOfflineWalletTopup(topup)
-                setResult("💾 Wallet topup queued: AED ${"%.2f".format(amount)} for $customerId", "#FEF3C7")
-                toast("Queued wallet topup")
+                setResult("💾 Queued topup: AED ${"%.2f".format(amount)} → $walletCode", "#FEF3C7")
+                toast("Queued — tap Sync ↑ to process")
                 refreshPendingCount()
+                if (isNetworkAvailable()) onSyncClick()
             } catch (e: Exception) {
                 setResult("❌ Error: ${e.message}", "#FEE2E2")
             }

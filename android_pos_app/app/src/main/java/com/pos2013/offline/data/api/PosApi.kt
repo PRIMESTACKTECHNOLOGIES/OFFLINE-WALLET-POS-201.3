@@ -42,7 +42,8 @@ data class LoginResponse(val token: String)
 
 // ── Wallet models ─────────────────────────────────────────────────────────────
 data class WalletTopupRequest(
-    val customerId: String,
+    val customerId: String? = null,
+    val walletCode: String? = null,   // PSW-xxxx-xxxx — easier for cashier to enter
     val amount: Double,
     val panMasked: String? = null,
     val expiry: String? = null,

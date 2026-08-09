@@ -1,204 +1,192 @@
 package com.pos2013.offline.data
 
-import android.content.Context
-import android.content.SharedPreferences
-import com.pos2013.offline.config.GatewayConfig
-import com.pos2013.offline.data.api.RetrofitClient
-import com.pos2013.offline.data.model.*
-import com.pos2013.offline.utils.HmacUtil
-import com.pos2013.offline.utils.IdGenerator
-import com.pos2013.offline.utils.PanEncryptor
+import com.pos2013.offline.data.api.Payment2013Api
+import com.pos2013.offline.data.api.RedeemRequest
+import com.pos2013.offline.data.api.WalletsApi
+import com.pos2013.offline.data.api.WalletTopupRequest
+import com.pos2013.offline.data.dao.TransactionDao
+import com.pos2013.offline.data.dao.WalletTopupDao
+import com.pos2013.offline.data.model.OfflineSaleRequest
+import com.pos2013.offline.data.model.TransactionEntity
+import com.pos2013.offline.data.model.WalletTopupEntity
+import com.pos2013.offline.data.model.toOfflineSaleTransaction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.text.SimpleDateFormat
-import java.util.*
+import java.util.UUID
 
 /**
- * Repository for transaction operations
+ * Sync result returned from [syncPendingTransactions].
+ * @param success        true if all transactions were uploaded
+ * @param settlementCode the 6-digit code returned by the server (if batch was accepted)
+ * @param count          number of transactions synced
+ * @param errorMessage   human-readable error if success == false
  */
+data class SyncResult(
+    val success: Boolean,
+    val count: Int = 0,
+    val walletTopupsSynced: Int = 0,
+    val errorMessage: String? = null
+)
+
 class TransactionRepository(
-    private val context: Context,
-    private val transactionDao: OfflineTransactionDao
+    private val dao: TransactionDao,
+    private val walletTopupDao: WalletTopupDao,
+    private val api: Payment2013Api,
+    private val walletsApi: WalletsApi,
+    private val merchantId: String,
+    private val terminalId: String
 ) {
 
-    private val prefs: SharedPreferences = context.getSharedPreferences("pos_prefs", Context.MODE_PRIVATE)
+    /**
+     * Save a new offline transaction to the local Room database.
+     */
+    suspend fun createOfflineTransaction(
+        amountMinor: Long,
+        currency: String,
+        panMasked: String,
+        expiry: String,
+        stan: String,
+        entryMode: String = "MANUAL",
+        txnType: String = "SALE",
+        authMode: String = "OFFLINE_APPROVED",
+        timestamp: Long = System.currentTimeMillis()
+    ) = withContext(Dispatchers.IO) {
+        val tx = TransactionEntity(
+            merchantId = merchantId,
+            terminalId = terminalId,
+            localTxnId = UUID.randomUUID().toString(),
+            amountMinor = amountMinor,
+            currency = currency,
+            panMasked = panMasked,
+            stan = stan,
+            expiry = expiry,
+            txnType = txnType,
+            authMode = authMode,
+            entryMode = entryMode,
+            txnTimestamp = timestamp,
+            status = "PENDING"
+        )
+        dao.insert(tx)
+    }
 
     /**
-     * Process a new payment
+     * Save a new wallet topup to the local Room database.
      */
-    suspend fun processPayment(
-        cardNumber: String,
-        expiry: String,
-        amountDollars: Double
-    ): PaymentResult = withContext(Dispatchers.IO) {
-        try {
-            val localTxnId = IdGenerator.generateLocalTxnId()
-            val stan = IdGenerator.generateStan(context)
-            
-            val amountMinor = try {
-                java.math.BigDecimal.valueOf(amountDollars)
-                    .multiply(java.math.BigDecimal.valueOf(100))
-                    .setScale(0, java.math.RoundingMode.HALF_UP)
-                    .intValueExact()
-            } catch (e: Exception) {
-                0
-            }
-            
-            val timestamp = System.currentTimeMillis()
-
-            val transaction = OfflineTransaction(
-                localTxnId = localTxnId,
-                stan = stan,
-                amountMinor = amountMinor,
-                currency = "USD",
-                cardLast4 = if (cardNumber.length >= 4) cardNumber.takeLast(4) else cardNumber,
-                encryptedPan = try {
-                    PanEncryptor.encrypt(context, cardNumber)
-                } catch (e: Exception) {
-                    null
-                },
-                cardExpiry = expiry,
-                syncStatus = "PENDING",
-                timestamp = timestamp
-            )
-
-            transactionDao.insert(transaction)
-
-            if (isOnline()) {
-                val result = syncTransaction(transaction)
-                if (result is SyncResult.Success) {
-                    PaymentResult.Success(
-                        localTxnId = localTxnId,
-                        stan = stan,
-                        amount = amountDollars,
-                        settlementCode = result.settlementCode,
-                        message = "Payment processed successfully"
-                    )
-                } else {
-                    PaymentResult.Pending(
-                        localTxnId = localTxnId,
-                        stan = stan,
-                        amount = amountDollars,
-                        message = "Saved offline - will sync when online"
-                    )
-                }
-            } else {
-                PaymentResult.Pending(
-                    localTxnId = localTxnId,
-                    stan = stan,
-                    amount = amountDollars,
-                    message = "Saved offline - will sync when online"
-                )
-            }
-        } catch (e: Exception) {
-            PaymentResult.Error("Failed to process: ${e.message}")
-        }
+    suspend fun createOfflineWalletTopup(topup: WalletTopupEntity) = withContext(Dispatchers.IO) {
+        walletTopupDao.insert(topup)
     }
 
-    private suspend fun syncTransaction(transaction: OfflineTransaction): SyncResult {
-        return try {
-            val batchId = IdGenerator.generateBatchId()
-            val nonce = HmacUtil.generateNonce()
-            val timestamp = System.currentTimeMillis()
-
-            val txnRequest = TransactionRequest(
-                localTxnId = transaction.localTxnId,
-                stan = transaction.stan,
-                amountMinor = transaction.amountMinor,
-                currency = transaction.currency,
-                encryptedPan = transaction.encryptedPan,
-                cardLast4 = transaction.cardLast4,
-                expiry = transaction.cardExpiry,
-                txnTimestamp = formatTimestamp(transaction.timestamp)
-            )
-
-            val signature = HmacUtil.generateSignature(
-                protocolVersion = "201.3",
-                merchantId = GatewayConfig.MERCHANT_ID,
-                terminalId = GatewayConfig.TERMINAL_ID,
-                batchId = batchId,
-                timestamp = timestamp,
-                nonce = nonce,
-                transactionCount = 1
-            )
-
-            val request = BatchUploadRequest(
-                protocolVersion = "201.3",
-                merchantId = GatewayConfig.MERCHANT_ID,
-                terminalId = GatewayConfig.TERMINAL_ID,
-                batchId = batchId,
-                timestamp = timestamp,
-                nonce = nonce,
-                transactions = listOf(txnRequest),
-                signature = signature
-            )
-
-            val apiService = RetrofitClient.getApiService()
-            val response = apiService.uploadBatch(signature, request)
-
-            if (response.isSuccessful) {
-                val body = response.body()
-                if (body?.success == true) {
-                    transactionDao.markAsSynced(transaction.localTxnId, body.settlementCode ?: "BATCH-$batchId", System.currentTimeMillis())
-                    SyncResult.Success(settlementCode = body.settlementCode ?: "BATCH-$batchId")
-                } else {
-                    SyncResult.Failed(body?.error ?: "Transaction rejected")
-                }
-            } else {
-                SyncResult.Failed("Server error: ${response.code()}")
-            }
-        } catch (e: Exception) {
-            SyncResult.Failed(e.message ?: "Network error")
-        }
-    }
-
-    suspend fun syncAllPending(): SyncSummary = withContext(Dispatchers.IO) {
-        val pending = transactionDao.getPendingTransactions()
-        var successCount = 0
-        var failedCount = 0
-        val settlementCodes = mutableListOf<String>()
-
-        for (transaction in pending) {
-            val result = syncTransaction(transaction)
-            if (result is SyncResult.Success) {
-                successCount++
-                result.settlementCode?.let { settlementCodes.add(it) }
-            } else {
-                failedCount++
-            }
+    /**
+     * Upload all PENDING transactions and wallet topups to the server.
+     * Returns a [SyncResult] with the 6-digit settlement code on success.
+     */
+    suspend fun syncPendingTransactions(): SyncResult = withContext(Dispatchers.IO) {
+        // First sync transactions
+        val transactionSyncResult = syncTransactions()
+        if (!transactionSyncResult.success) {
+            return@withContext transactionSyncResult
         }
 
-        SyncSummary(
-            total = pending.size,
-            synced = successCount,
-            failed = failedCount,
-            settlementCodes = settlementCodes
+        // Then sync wallet topups
+        val walletTopupsSynced = syncWalletTopups()
+
+        return@withContext transactionSyncResult.copy(
+            walletTopupsSynced = walletTopupsSynced
         )
     }
 
-    suspend fun getPendingTransactions(): List<OfflineTransaction> {
-        return transactionDao.getPendingTransactions()
+    private suspend fun syncTransactions(): SyncResult = withContext(Dispatchers.IO) {
+        val pending = dao.getByStatus("PENDING")
+        if (pending.isEmpty()) {
+            return@withContext SyncResult(success = true, count = 0)
+        }
+
+        val request = OfflineSaleRequest(
+            merchant_id = merchantId,
+            terminal_id = terminalId,
+            transactions = pending.map { it.toOfflineSaleTransaction() }
+        )
+
+        return@withContext try {
+            val response = api.submitOfflineSale(request)
+            if (response.isSuccessful && response.body() != null) {
+                val body = response.body()!!
+                if (body.ok) {
+                    val ids = pending.map { it.id }
+                    ids.forEach { dao.markSynced(it) }
+                    SyncResult(success = true, count = body.count ?: pending.size)
+                } else {
+                    SyncResult(success = false, errorMessage = body.message ?: "Server rejected transaction sync")
+                }
+            } else {
+                val code = response.code()
+                val errBody = response.errorBody()?.string() ?: "Unknown error"
+                SyncResult(success = false, errorMessage = "HTTP $code: $errBody")
+            }
+        } catch (e: Exception) {
+            SyncResult(success = false, errorMessage = e.message)
+        }
     }
 
-    suspend fun getPendingCount(): Int {
-        return transactionDao.getPendingCount()
+    private suspend fun syncWalletTopups(): Int = withContext(Dispatchers.IO) {
+        val pendingTopups = walletTopupDao.getPendingTopups()
+        var syncedCount = 0
+
+        pendingTopups.forEach { topup ->
+            try {
+                // topup.customerId may hold either a real UUID or a wallet code (PSW-xxxx-xxxx)
+                val isWalletCode = topup.customerId.startsWith("PSW-", ignoreCase = true)
+                val request = WalletTopupRequest(
+                    customerId = if (!isWalletCode) topup.customerId else null,
+                    walletCode = if (isWalletCode) topup.customerId.uppercase() else null,
+                    amount = topup.amountMinor / 100.0,
+                    panMasked = topup.panMasked,
+                    expiry = topup.expiry,
+                    emvData = topup.emvData,
+                    source = "card_offline"
+                )
+
+                val response = walletsApi.topupWithCard(request)
+                if (response.isSuccessful && response.body()?.success == true) {
+                    val body = response.body()!!
+                    walletTopupDao.markSynced(topup.id, body.authCode)
+                    syncedCount++
+                } else {
+                    walletTopupDao.markFailed(topup.id, response.errorBody()?.string() ?: "Failed to sync")
+                }
+            } catch (e: Exception) {
+                walletTopupDao.markFailed(topup.id, e.message ?: "Network error")
+            }
+        }
+
+        syncedCount
     }
 
-    suspend fun clearSyncedTransactions() {
-        val cutoff = System.currentTimeMillis() - (24 * 60 * 60 * 1000)
-        transactionDao.deleteOldSynced(cutoff)
-    }
+    /**
+     * Redeem a 6-digit payment code at the terminal.
+     * Returns (success, message, reference).
+     */
+    suspend fun redeemCode(code: String, amount: Double): Triple<Boolean, String, String?> =
+        withContext(Dispatchers.IO) {
+            return@withContext try {
+                val response = api.redeemCode(
+                    RedeemRequest(code = code, amount = amount, merchantId = merchantId)
+                )
+                if (response.isSuccessful && response.body()?.success == true) {
+                    val body = response.body()!!
+                    Triple(true, body.message ?: "Payment successful", body.reference)
+                } else {
+                    val msg = response.body()?.message
+                        ?: response.body()?.error
+                        ?: "Code rejected (HTTP ${response.code()})"
+                    Triple(false, msg, null)
+                }
+            } catch (e: Exception) {
+                Triple(false, "Network error: ${e.message}", null)
+            }
+        }
 
-    private fun isOnline(): Boolean {
-        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE)
-            as android.net.ConnectivityManager
-        val networkInfo = connectivityManager.activeNetworkInfo
-        return networkInfo != null && networkInfo.isConnected
-    }
-
-    private fun formatTimestamp(timestamp: Long): String {
-        val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
-        sdf.timeZone = TimeZone.getTimeZone("UTC")
-        return sdf.format(Date(timestamp))
+    suspend fun getPendingCount(): Int = withContext(Dispatchers.IO) {
+        dao.countByStatus("PENDING")
     }
 }
