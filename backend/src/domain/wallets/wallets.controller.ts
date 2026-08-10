@@ -329,6 +329,7 @@ export class WalletsController {
       // Call Binance withdrawal API
       let withdrawalRef = '';
       let status = 'pending';
+      let binanceError = '';
       try {
         const { withdrawAsset } = await import('../../exchange/binance.service');
         const result = await withdrawAsset(coin, address, network, withdrawAmt);
@@ -336,12 +337,23 @@ export class WalletsController {
         status = 'submitted';
         console.log(`[Withdrawal] ${withdrawAmt} ${coin} → ${address} (${network}) ref=${withdrawalRef}`);
       } catch (ex: any) {
-        // Binance failed — restore balance
-        await db.query(
-          'UPDATE customer_crypto_wallets SET balance = balance + ? WHERE customer_id = ? AND crypto_coin = ?',
-          [withdrawAmt, customerId, coin]
-        );
-        return res.status(500).json({ error: `Withdrawal failed: ${ex?.message || ex}` });
+        binanceError = ex?.message || String(ex);
+        // If Binance fails with auth/permission error — record as pending_manual
+        // instead of reverting. Operator can process manually.
+        if (binanceError.includes('401') || binanceError.includes('-1002') ||
+            binanceError.includes('Unauthorized') || binanceError.includes('not authorized') ||
+            binanceError.includes('enableWithdrawals')) {
+          status = 'pending_manual';
+          withdrawalRef = `MANUAL-${Date.now()}`;
+          console.warn(`[Withdrawal] Binance API key lacks withdrawal permission. Recorded as pending_manual. Error: ${binanceError}`);
+        } else {
+          // Other errors (bad address, network error) — restore balance
+          await db.query(
+            'UPDATE customer_crypto_wallets SET balance = balance + ? WHERE customer_id = ? AND crypto_coin = ?',
+            [withdrawAmt, customerId, coin]
+          );
+          return res.status(500).json({ error: `Withdrawal failed: ${binanceError}` });
+        }
       }
 
       // Record in crypto_transactions
@@ -359,7 +371,10 @@ export class WalletsController {
         address,
         network,
         withdrawalRef,
-        status
+        status,
+        message: status === 'pending_manual'
+          ? `Withdrawal of ${withdrawAmt} ${coin} recorded. Update your Binance API key with withdrawal permission to process automatically.`
+          : `${withdrawAmt} ${coin} withdrawal submitted to Binance. Ref: ${withdrawalRef}`
       });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
