@@ -3,9 +3,21 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
 import { ToastProvider } from "./components/ui/Toast";
+import { registerAutoSync } from "./lib/offline-sync";
 import "./index.css";
 
-console.log("[main.tsx] Starting app...");
+// Apply saved theme before first paint (no flash)
+const savedTheme = localStorage.getItem('pos_theme');
+if (savedTheme === 'dark' || (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+  document.documentElement.classList.add('dark');
+}
+
+// Register offline-to-online sync at startup
+registerAutoSync((result) => {
+  if (result.synced > 0) {
+    console.log(`[AutoSync] ✅ ${result.synced} offline operation(s) synced on reconnect`);
+  }
+});
 // alert("Dashboard is starting...");
 const rootElement = document.getElementById("root");
 console.log("[main.tsx] Root element:", rootElement);

@@ -1,4 +1,5 @@
 import { NavLink, useNavigate } from "react-router-dom";
+import { useDarkMode } from "../hooks/useDarkMode";
 
 const Icons = {
   POS: () => (
@@ -9,6 +10,11 @@ const Icons = {
   Overview: () => (
     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
+    </svg>
+  ),
+  Wallet: () => (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 18.75a60.07 60.07 0 0115.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M4.5 6.75h15.75m-15.75 3h15.75m-15.75 3h15.75m-15.75 3h15.75M16.5 9.75v-3h-3v3h3z" />
     </svg>
   ),
   Terminals: () => (
@@ -77,6 +83,8 @@ const Icons = {
 
 export const Sidebar = ({ isOpen = false, onClose }: { isOpen?: boolean; onClose?: () => void }) => {
   const navigate = useNavigate();
+  const { dark, toggle } = useDarkMode();
+
   const linkClass = ({ isActive }: { isActive: boolean }) =>
     "nav-link" + (isActive ? " active" : "");
 
@@ -147,6 +155,10 @@ export const Sidebar = ({ isOpen = false, onClose }: { isOpen?: boolean; onClose
           <Icons.Settlements />
           Settlement Reports
         </NavLink>
+        <NavLink to="/wallets" className={linkClass} onClick={() => onClose?.()}>
+          <Icons.Wallet />
+          Customer Wallets
+        </NavLink>
 
         <div style={{ height: '1px', background: 'var(--border-subtle)', margin: '8px 16px' }}></div>
 
@@ -177,6 +189,39 @@ export const Sidebar = ({ isOpen = false, onClose }: { isOpen?: boolean; onClose
       </nav>
       
       <div style={{ marginTop: 'auto', padding: '0 16px 16px' }}>
+        {/* Dark / Light Mode Toggle */}
+        <button
+          onClick={toggle}
+          className="nav-link"
+          style={{ width: '100%', border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text-secondary)', marginBottom: '4px' }}
+        >
+          <span style={{ fontSize: '18px', lineHeight: 1 }}>{dark ? '☀️' : '🌙'}</span>
+          <span style={{ flex: 1, textAlign: 'left' }}>{dark ? 'Light Mode' : 'Dark Mode'}</span>
+          {/* Toggle pill */}
+          <span style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            width: '40px',
+            height: '22px',
+            borderRadius: '11px',
+            background: dark ? '#3B82F6' : '#D1D5DB',
+            padding: '2px',
+            transition: 'background 0.25s',
+            flexShrink: 0,
+          }}>
+            <span style={{
+              display: 'block',
+              width: '18px',
+              height: '18px',
+              borderRadius: '50%',
+              background: 'white',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+              transform: dark ? 'translateX(18px)' : 'translateX(0)',
+              transition: 'transform 0.25s',
+            }} />
+          </span>
+        </button>
+
         <button 
           onClick={handleLogout}
           className="nav-link" 

@@ -102,15 +102,41 @@ export async function buyAssetWithUsd(asset: string, amountUsd: number) {
 }
 
 export async function withdrawAsset(asset: string, address: string, network: string, amount: number) {
-  const params = {
+  const { apiKey, apiSecret, baseUrl } = getBinanceConfig();
+
+  const timestamp = Date.now();
+  const params: Record<string, string> = {
     coin: asset,
     address,
     network,
     amount: amount.toString(),
-  } as Record<string, any>;
+    timestamp: String(timestamp),
+  };
 
-  const result = await binanceRequest('/sapi/v1/capital/withdraw/apply', params);
-  return result;
+  // Withdrawal requires POST with body (not query string)
+  const body = new URLSearchParams(params);
+  const signature = crypto.createHmac('sha256', apiSecret)
+    .update(body.toString())
+    .digest('hex');
+  body.append('signature', signature);
+
+  const res = await axios.post(
+    `${baseUrl}/sapi/v1/capital/withdraw/apply`,
+    body.toString(),
+    {
+      headers: {
+        'X-MBX-APIKEY': apiKey,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      timeout: 15000,
+    }
+  );
+
+  if (res.data?.code) {
+    throw new Error(`Binance withdrawal error ${res.data.code}: ${res.data.msg}`);
+  }
+
+  return { id: res.data?.id, withdrawId: res.data?.id, ...res.data };
 }
 
 export default { buyAssetWithUsd, withdrawAsset };
