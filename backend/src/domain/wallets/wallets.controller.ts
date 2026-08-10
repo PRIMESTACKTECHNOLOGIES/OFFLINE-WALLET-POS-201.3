@@ -326,56 +326,51 @@ export class WalletsController {
         [withdrawAmt, customerId, coin]
       );
 
-      // Call Binance withdrawal API
+      // Call withdrawal — TronWeb for TRX, Binance for other networks
       let withdrawalRef = '';
       let status = 'pending';
       let binanceError = '';
-      try {
-        const { withdrawAsset } = await import('../../exchange/binance.service');
-        const result = await withdrawAsset(coin, address, network, withdrawAmt);
-        withdrawalRef = result?.id || result?.withdrawId || '';
-        status = 'submitted';
-        console.log(`[Withdrawal] ${withdrawAmt} ${coin} → ${address} (${network}) ref=${withdrawalRef}`);
-      } catch (ex: any) {
-        binanceError = ex?.message || String(ex);
-        const binanceMsg = ex?.response?.data?.msg || binanceError;
-        const binanceCode = ex?.response?.data?.code;
 
-        // Auth/IP issues → record as pending_manual
-        if (binanceError.includes('401') || binanceError.includes('-1002') ||
-            binanceError.includes('Unauthorized') || binanceError.includes('not authorized') ||
-            binanceError.includes('enableWithdrawals')) {
-          status = 'pending_manual';
-          withdrawalRef = `MANUAL-${Date.now()}`;
-          console.warn(`[Withdrawal] Binance API key lacks withdrawal permission. Recorded as pending_manual.`);
+      const isTronNetwork = ['TRX', 'TRC20', 'TRON', 'tron', 'trx'].includes(network);
 
-        // Travel Rule / KYC restriction (-4104) → inform user clearly
-        } else if (binanceCode === -4104 || binanceMsg.includes('travel rule') || binanceMsg.includes('Travel Rule')) {
+      if (isTronNetwork && coin === 'USDT') {
+        // ── Use TronWeb direct blockchain transfer (no exchange restrictions) ──
+        try {
+          const { sendUsdt } = await import('../../exchange/tronweb.service');
+          const result = await sendUsdt(address, withdrawAmt);
+          withdrawalRef = result.txId;
+          status = 'submitted';
+          console.log(`[TronWeb] Sent ${withdrawAmt} USDT → ${address} txId=${withdrawalRef}`);
+        } catch (tronErr: any) {
+          // Restore balance on failure
           await db.query(
             'UPDATE customer_crypto_wallets SET balance = balance + ? WHERE customer_id = ? AND crypto_coin = ?',
             [withdrawAmt, customerId, coin]
           );
-          return res.status(400).json({
-            error: `Binance Travel Rule restriction: Please complete Travel Rule verification on Binance for this destination address, then retry. (Binance code: ${binanceCode})`
-          });
+          return res.status(400).json({ error: `TronWeb withdrawal failed: ${tronErr?.message || tronErr}` });
+        }
+      } else {
+        // ── Use Binance for other networks (ETH, BSC, SOL etc.) ──
+        try {
+          const { withdrawAsset } = await import('../../exchange/binance.service');
+          const result = await withdrawAsset(coin, address, network, withdrawAmt);
+          withdrawalRef = result?.id || result?.withdrawId || '';
+          status = 'submitted';
+        } catch (ex: any) {
+          binanceError = ex?.message || String(ex);
+          const binanceMsg = ex?.response?.data?.msg || binanceError;
+          const binanceCode = ex?.response?.data?.code;
 
-        // Invalid address or other 4xx → restore balance and inform
-        } else if (ex?.response?.status === 400) {
-          await db.query(
-            'UPDATE customer_crypto_wallets SET balance = balance + ? WHERE customer_id = ? AND crypto_coin = ?',
-            [withdrawAmt, customerId, coin]
-          );
-          return res.status(400).json({
-            error: `Binance rejected withdrawal: ${binanceMsg} (code: ${binanceCode || 'unknown'})`
-          });
-
-        // Other errors → restore balance
-        } else {
-          await db.query(
-            'UPDATE customer_crypto_wallets SET balance = balance + ? WHERE customer_id = ? AND crypto_coin = ?',
-            [withdrawAmt, customerId, coin]
-          );
-          return res.status(500).json({ error: `Withdrawal failed: ${binanceMsg}` });
+          if (binanceError.includes('401') || binanceError.includes('-1002')) {
+            status = 'pending_manual';
+            withdrawalRef = `MANUAL-${Date.now()}`;
+          } else if (binanceCode === -4104 || binanceMsg.includes('travel rule') || binanceMsg.includes('Travel Rule')) {
+            await db.query('UPDATE customer_crypto_wallets SET balance = balance + ? WHERE customer_id = ? AND crypto_coin = ?', [withdrawAmt, customerId, coin]);
+            return res.status(400).json({ error: `Binance Travel Rule restriction: Verify address on Binance first. (code: ${binanceCode})` });
+          } else {
+            await db.query('UPDATE customer_crypto_wallets SET balance = balance + ? WHERE customer_id = ? AND crypto_coin = ?', [withdrawAmt, customerId, coin]);
+            return res.status(400).json({ error: `Binance: ${binanceMsg} (code: ${binanceCode || 'unknown'})` });
+          }
         }
       }
 
@@ -395,9 +390,13 @@ export class WalletsController {
         network,
         withdrawalRef,
         status,
-        message: status === 'pending_manual'
-          ? `Withdrawal of ${withdrawAmt} ${coin} recorded. Update your Binance API key with withdrawal permission to process automatically.`
-          : `${withdrawAmt} ${coin} withdrawal submitted to Binance. Ref: ${withdrawalRef}`
+        provider: isTronNetwork && coin === 'USDT' ? 'tronweb' : 'binance',
+        txUrl: (isTronNetwork && withdrawalRef && !withdrawalRef.startsWith('MANUAL'))
+          ? `https://tronscan.org/#/transaction/${withdrawalRef}`
+          : null,
+        message: status === 'submitted'
+          ? `${withdrawAmt} ${coin} sent successfully. TxID: ${withdrawalRef}`
+          : `Withdrawal of ${withdrawAmt} ${coin} recorded as pending.`
       });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
