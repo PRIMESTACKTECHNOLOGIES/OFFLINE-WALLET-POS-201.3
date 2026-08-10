@@ -338,21 +338,44 @@ export class WalletsController {
         console.log(`[Withdrawal] ${withdrawAmt} ${coin} → ${address} (${network}) ref=${withdrawalRef}`);
       } catch (ex: any) {
         binanceError = ex?.message || String(ex);
-        // If Binance fails with auth/permission error — record as pending_manual
-        // instead of reverting. Operator can process manually.
+        const binanceMsg = ex?.response?.data?.msg || binanceError;
+        const binanceCode = ex?.response?.data?.code;
+
+        // Auth/IP issues → record as pending_manual
         if (binanceError.includes('401') || binanceError.includes('-1002') ||
             binanceError.includes('Unauthorized') || binanceError.includes('not authorized') ||
             binanceError.includes('enableWithdrawals')) {
           status = 'pending_manual';
           withdrawalRef = `MANUAL-${Date.now()}`;
-          console.warn(`[Withdrawal] Binance API key lacks withdrawal permission. Recorded as pending_manual. Error: ${binanceError}`);
-        } else {
-          // Other errors (bad address, network error) — restore balance
+          console.warn(`[Withdrawal] Binance API key lacks withdrawal permission. Recorded as pending_manual.`);
+
+        // Travel Rule / KYC restriction (-4104) → inform user clearly
+        } else if (binanceCode === -4104 || binanceMsg.includes('travel rule') || binanceMsg.includes('Travel Rule')) {
           await db.query(
             'UPDATE customer_crypto_wallets SET balance = balance + ? WHERE customer_id = ? AND crypto_coin = ?',
             [withdrawAmt, customerId, coin]
           );
-          return res.status(500).json({ error: `Withdrawal failed: ${binanceError}` });
+          return res.status(400).json({
+            error: `Binance Travel Rule restriction: Please complete Travel Rule verification on Binance for this destination address, then retry. (Binance code: ${binanceCode})`
+          });
+
+        // Invalid address or other 4xx → restore balance and inform
+        } else if (ex?.response?.status === 400) {
+          await db.query(
+            'UPDATE customer_crypto_wallets SET balance = balance + ? WHERE customer_id = ? AND crypto_coin = ?',
+            [withdrawAmt, customerId, coin]
+          );
+          return res.status(400).json({
+            error: `Binance rejected withdrawal: ${binanceMsg} (code: ${binanceCode || 'unknown'})`
+          });
+
+        // Other errors → restore balance
+        } else {
+          await db.query(
+            'UPDATE customer_crypto_wallets SET balance = balance + ? WHERE customer_id = ? AND crypto_coin = ?',
+            [withdrawAmt, customerId, coin]
+          );
+          return res.status(500).json({ error: `Withdrawal failed: ${binanceMsg}` });
         }
       }
 
