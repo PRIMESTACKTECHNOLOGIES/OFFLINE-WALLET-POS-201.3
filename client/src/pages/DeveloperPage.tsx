@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { regenerateApiKey, getProfile } from "../lib/api";
+import { useToast } from "../components/ui/Toast";
 
 interface ApiKey {
   id: string;
@@ -35,6 +36,7 @@ const StatusBadge = ({ status }: { status: string }) => {
 };
 
 export const DeveloperPage = () => {
+  const { showToast } = useToast();
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -143,26 +145,26 @@ export const DeveloperPage = () => {
           <div className="text-2xl font-bold text-gray-900 mt-1">{keys.filter(k => k.status === 'ACTIVE').length}</div>
         </div>
 
-        <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
+        <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm opacity-60">
           <div className="flex items-center justify-between mb-4">
             <div className="p-2 bg-purple-50 rounded-lg text-purple-600">
               <svg width="24" height="24" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
             </div>
-            <span className="text-xs font-semibold text-green-600 bg-green-50 px-2 py-1 rounded-full">Normal</span>
+            <span className="text-xs font-semibold text-gray-400 bg-gray-100 px-2 py-1 rounded-full">Pending Metrics</span>
           </div>
           <div className="text-sm font-medium text-gray-500">API Requests (24h)</div>
-          <div className="text-2xl font-bold text-gray-900 mt-1">142.5k</div>
+          <div className="text-sm font-medium text-gray-400 mt-2 italic">Monitoring integration required</div>
         </div>
 
-        <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
+        <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm opacity-60">
           <div className="flex items-center justify-between mb-4">
             <div className="p-2 bg-green-50 rounded-lg text-green-600">
               <svg width="24" height="24" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
             </div>
-            <span className="text-xs font-semibold text-green-600 bg-green-50 px-2 py-1 rounded-full">99.99% Uptime</span>
+            <span className="text-xs font-semibold text-gray-400 bg-gray-100 px-2 py-1 rounded-full">Pending Metrics</span>
           </div>
-          <div className="text-sm font-medium text-gray-500">Error Rate</div>
-          <div className="text-2xl font-bold text-gray-900 mt-1">0.02%</div>
+          <div className="text-sm font-medium text-gray-500">Error Rate / Uptime</div>
+          <div className="text-sm font-medium text-gray-400 mt-2 italic">Monitoring integration required</div>
         </div>
       </div>
 
@@ -265,28 +267,27 @@ export const DeveloperPage = () => {
 
       {/* Webhooks Section */}
       <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
-        <div className="p-6 border-b border-gray-100 bg-gray-50/50">
-          <h3 className="text-lg font-bold text-gray-900">Webhooks</h3>
-          <p className="text-sm text-gray-500 mt-1">Listen for events on your account</p>
+        <div className="p-6 border-b border-gray-100 bg-gray-50/50 flex items-center justify-between">
+          <div>
+            <h3 className="text-lg font-bold text-gray-900">Webhooks</h3>
+            <p className="text-sm text-gray-500 mt-1">Listen for events on your account</p>
+          </div>
+          <button
+            onClick={() => showToast("Webhook management coming soon — configure via Settings > Merchant Integration", "info")}
+            className="px-3 py-1.5 text-xs font-semibold bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+          >
+            + Add Webhook
+          </button>
         </div>
         <div className="p-6">
-          <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-               <div className="p-2 bg-white border border-gray-200 rounded shadow-sm">
-                  <svg width="20" height="20" className="text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-               </div>
-               <div>
-                  <div className="text-sm font-bold text-gray-900">https://api.merchant.com/webhooks/pos</div>
-                  <div className="text-xs text-gray-500">Listening for <span className="font-mono bg-gray-200 px-1 rounded">payment.success</span>, <span className="font-mono bg-gray-200 px-1 rounded">batch.closed</span></div>
-               </div>
+          <div className="border-2 border-dashed border-gray-200 rounded-lg p-8 text-center">
+            <div className="mx-auto w-12 h-12 bg-gray-50 rounded-full flex items-center justify-center mb-3">
+              <svg width="24" height="24" className="text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
             </div>
-            <div className="flex items-center gap-2">
-               <span className="flex h-2 w-2 relative">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
-               </span>
-               <span className="text-xs font-medium text-green-700">Active</span>
-               <button className="ml-4 text-sm font-medium text-blue-600 hover:text-blue-800">Edit</button>
+            <div className="text-sm font-medium text-gray-500">No webhooks configured</div>
+            <div className="text-xs text-gray-400 mt-1">
+              Configure a webhook endpoint URL to receive <span className="font-mono bg-gray-50 px-1">payment.success</span>,{' '}
+              <span className="font-mono bg-gray-50 px-1">batch.closed</span>, and settlement events.
             </div>
           </div>
         </div>

@@ -7,6 +7,9 @@ client/node_modules
 !.env.example
 !.env.production.example
 *.env
+# Never commit .npmrc — contains real NPM_TOKEN via env expansion at install time
+# (a committed .npmrc with hardcoded tokens is a security breach)
+.npmrc
 *.sqlite
 *.sqlite-journal
 .vscode
@@ -39,3 +42,62 @@ flutter_pos_2013/.pub/
 *.dll
 *.pdb
 *.tsbuildinfo
+
+# ----- Database & backups (never commit real customer/PII data or backups) -----
+*.sqlite-shm
+*.sqlite-wal
+*.bak
+*.backup
+*.sav
+*.dump
+*.sql
+*.db
+
+# ----- Build outputs & prebuilt packages / extracts -----
+*.apk
+*.aab
+*.apkm
+*.jar
+*.zip
+*.tar
+*.gz
+*.tgz
+*.7z
+*.rar
+*.msi
+*.rpm
+*.deb
+java-1.8.0-openjdk-*/
+java-17-openjdk-*/
+jdk*/
+jre*/
+
+# ----- Gradle/Android cached downloads (gradle-wrapper.properties regenerates) -----
+**/.gradle/**
+**/gradle/caches/**
+**/gradle/wrapper/dists/**
+**/gradle/native/**
+**/gradle/android/**
+
+# ----- Local scratch/temp notes, misc debug md/txt -----
+tmp_*
+_*.js
+_*.json
+_*.csv
+search_*.txt
+wallet*address*.txt
+debug-*.md
+debug-*.txt
+deploy_raw.txt
+render_health.ps1
+Untitled-*
+*.tmp
+*.temp
+
+# ----- Large output / artifacts dirs (rebuild locally or server-side) -----
+.artifacts/
+.kotlin/
+.cache/
+coverage/
+__pycache__/
+*.pyc

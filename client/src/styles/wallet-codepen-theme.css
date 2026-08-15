@@ -1,0 +1,543 @@
+/* ════════════════════════════════════════════════════════════════════════════
+ * Wallet Card — Codepen theme (Muhammed Erdem credit-card-form inspired)
+ * Scope: EVERY selector is prefixed with `.wp-card-*` so this file cannot
+ *        leak styles into Sidebar, Overview, Transactions, Batches, etc.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@200;300;400;500;600;700;800;900&family=Rajdhani:wght@300;400;500;600;700&family=Raleway:wght@300;400;500;600;700;800&display=swap');
+
+:root {
+  --wp-card-c1: #FAFAFA;  /* white */
+  --wp-card-c2: #F5F5F5;
+  --wp-card-c3: #EDEDED;
+  --wp-card-c4: #D7D7D7;
+  --wp-card-c5: #BFBFBF;
+  --wp-card-c6: #2F2F2F;  /* ink */
+  --wp-card-c7: #4E4E4E;
+  --wp-card-c8: #7f7f7f;
+  --wp-card-c9: #202020;
+  --wp-card-blue: #2255AA;
+  --wp-card-accent: #3A3462;
+
+  --wp-card-padV: 1.5em;
+  --wp-card-padH: 1.8em;
+  --wp-card-radius: 0.8em;
+}
+
+/* ─── Container ──────────────────────────────────────────────────────────── */
+/* Default (used by fiat balance hero card): full-width, no aspect lock. */
+.wp-card-wrap {
+  position: relative;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  perspective: 1200px;
+}
+
+/* Balance hero: full-width, locked to ISO 7810 ID-1 aspect ratio (85.60 x 53.98 mm). */
+.wp-card-wrap.wp-card-balance-hero {
+  max-width: 480px;           /* readable cap on large screens */
+  aspect-ratio: 85.60 / 53.98; /* exact bank-card ratio */
+  margin: 0;
+}
+.wp-card-wrap.wp-card-balance-hero > .wp-card {
+  position: absolute;
+  inset: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+/* ISO 7810 ID-1 modifier — applied only to virtual cards.
+   85.60 x 53.98 mm, aspect ≈ 1.5858 */
+.wp-card-wrap.wp-card-id1 {
+  max-width: 380px;            /* ~100mm wide — readable real-card cap */
+  aspect-ratio: 85.60 / 53.98;
+  margin: 0;
+}
+
+.wp-card {
+  position: relative;
+  width: 100%;
+  min-height: clamp(200px, calc(100vw / 1.5858), 300px);
+  height: auto;
+  padding: clamp(0.95rem, 2.5vw, 1.4rem) clamp(1rem, 2.7vw, 1.2rem);
+  border-radius: clamp(0.8rem, 1.4vw, 1.15rem);
+  overflow: hidden;
+  color: var(--wp-card-c6);
+  background: linear-gradient(135deg, #2a2a2a 0%, #0f0f10 42%, #050505 100%);
+  background-image:
+    radial-gradient(circle at 10% 0%, rgba(255, 215, 0, 0.16) 0%, transparent 28%),
+    radial-gradient(circle at 90% 100%, rgba(255, 255, 255, 0.08) 0%, transparent 45%),
+    linear-gradient(135deg, #2f2f2f 0%, #111111 55%, #050505 100%);
+  box-shadow:
+    inset 0.18em 0.18em 0.3em 0 rgba(255, 255, 255, 0.08),
+    inset -0.18em -0.2em 0.45em 0 rgba(0, 0, 0, 0.35),
+    0 0.8em 1.2em -0.35em rgba(0, 0, 0, 0.38),
+    0 1.25em 3.8em 0 rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(12px);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 0.55em;
+  transform-style: preserve-3d;
+  transition: transform 0.9s cubic-bezier(1, -0.09, 0.01, 1.09);
+  font-family: 'Poppins', 'Inter', system-ui, sans-serif;
+}
+
+/* When the wrap has the ID-1 lock, stretch card to fill the ratio box.
+   overflow:visible allows action buttons placed below the card face to show. */
+.wp-card-wrap.wp-card-id1 > .wp-card {
+  position: absolute;
+  inset: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: visible;
+}
+
+/* Dark variant (used for virtual cards / frozen cards) */
+.wp-card.wp-card-dark {
+  color: var(--wp-card-c1);
+  background: var(--wp-card-c6);
+  background-image:
+    linear-gradient(135deg, rgba(255,255,255,0.16) 0%, rgba(255,255,255,0.04) 35%, rgba(255,255,255,0.01) 100%),
+    linear-gradient(125deg, #2f2f2f 0%, #1f1f1f 55%, #0f0f0f 100%);
+  box-shadow:
+    inset 0.2em 0.2em 0.35em 0 rgba(255, 255, 255, 0.1),
+    inset -0.18em -0.2em 0.45em 0 rgba(0, 0, 0, 0.35),
+    0 0.9em 1.2em -0.3em rgba(0, 0, 0, 0.38),
+    0 1.25em 4em 0 rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+
+/* Frozen variant */
+.wp-card.wp-card-frozen {
+  filter: saturate(0.35) brightness(0.92);
+}
+
+/* Balance (blue) variant mirrors the original hero gradient */
+.wp-card.wp-card-balance {
+  color: #FFFFFF;
+  background: var(--wp-card-blue);
+  background-image: linear-gradient(135deg, #2255AA 0%, #3A3462 100%);
+  box-shadow:
+    inset 0.15em 0.15em 0 0 rgba(255, 255, 255, 0.18),
+    inset -0.15em -0.15em 0 0 rgba(0, 0, 0, 0.25),
+    0 1em 0.15em -0.6em rgba(34, 85, 170, 0.4),
+    0 1em 4em 0 rgba(58, 52, 98, 0.25);
+}
+
+/* ─── Engraving texture overlays (::before/::after) ──────────────────────── */
+.wp-card::before,
+.wp-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.wp-card::before {
+  z-index: 0;
+  opacity: 0.1;
+  background-color: #EDEDED;
+  background:
+    radial-gradient(circle, transparent 20%, #EDEDED 20%, #EDEDED 80%, transparent 80%, transparent) 0 0 / 70px 70px,
+    radial-gradient(circle, transparent 20%, #EDEDED 20%, #EDEDED 80%, transparent 80%, transparent) 35px 35px / 70px 70px,
+    linear-gradient(#7f7f7f 2.8px, transparent 2.8px) 0 -1.4px / 35px 35px,
+    linear-gradient(90deg, #7f7f7f 2.8px, #EDEDED 2.8px) -1.4px 0 / 35px 35px;
+}
+.wp-card::after {
+  z-index: 0;
+  opacity: 0.08;
+  background-color: #EDEDED;
+  background-image:
+    repeating-radial-gradient(circle at 0 0, transparent 0, #EDEDED 4px),
+    repeating-linear-gradient(#7f7f7f55, #7f7f7f);
+}
+.wp-card-balance::before,
+.wp-card-balance::after,
+.wp-card-dark::before,
+.wp-card-dark::after {
+  opacity: 0.05;
+}
+.wp-card > * { position: relative; z-index: 1; }
+
+/* ─── Top row: chip + wifi + bank label ───────────────────────────────────── */
+.wp-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.8rem;
+}
+.wp-card-brand-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.wp-card-issuer {
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #f9f3d0;
+}
+.wp-card-chip {
+  width: 3.2em;
+  height: 2.4em;
+  border-radius: 0.45em;
+  overflow: hidden;
+  background: linear-gradient(135deg, #e6cf74 0%, #f7e3a0 45%, #b7932f 100%);
+  box-shadow:
+    inset 0.05em 0.05em 0 0 rgba(255, 255, 255, 0.7),
+    inset -0.05em -0.06em 0 0 rgba(0, 0, 0, 0.35),
+    0 0.25em 0.45em rgba(0,0,0,0.18);
+  position: relative;
+  border: 1px solid rgba(80, 60, 20, 0.35);
+}
+.wp-card-chip::before,
+.wp-card-chip::after {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  border-radius: 6px;
+  border: 1px solid rgba(80, 60, 20, 0.7);
+}
+.wp-card-chip-lines {
+  position: absolute;
+  inset: 0.55em;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2px;
+}
+.wp-card-chip-lines span {
+  border-radius: 999px;
+  border: 1px solid rgba(80, 60, 20, 0.7);
+}
+
+.wp-card-label {
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  opacity: 0.92;
+  color: #f9f3d0;
+}
+.wp-card.wp-card-dark .wp-card-label,
+.wp-card.wp-card-balance .wp-card-label { opacity: 0.85; }
+
+.wp-card-sub {
+  font-size: 0.78rem;
+  opacity: 0.82;
+  margin-top: 0.15em;
+  letter-spacing: 0.03em;
+}
+
+.wp-card-wifi {
+  width: 2.2em;
+  height: 2.2em;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.wp-card-wifi > * {
+  position: absolute;
+  border-radius: 50%;
+  border: 0.18em solid currentColor;
+  opacity: 0.9;
+}
+.wp-card-wifi span:nth-child(1) { width: 2.2em; height: 2.2em; }
+.wp-card-wifi span:nth-child(2) { width: 1.65em; height: 1.65em; }
+.wp-card-wifi span:nth-child(3) { width: 1.1em;  height: 1.1em;  }
+.wp-card-wifi span:nth-child(4) { width: 0.55em; height: 0.55em; background: currentColor; border: none; }
+
+.wp-card-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  padding: 0.22em 0.65em;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: rgba(255, 255, 255, 0.1);
+  color: #f8f7e7;
+  backdrop-filter: blur(6px);
+  width: fit-content;
+}
+.wp-card.wp-card-dark .wp-card-pill,
+.wp-card.wp-card-balance .wp-card-pill {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* ─── Number row ─────────────────────────────────────────────────────────── */
+.wp-card-strip {
+  width: 100%;
+  height: 0.6rem;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #0f172a 0%, #1f2937 45%, #111827 100%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.14);
+  margin: 0.1rem 0 0.35rem;
+}
+.wp-card-front-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 0.75rem;
+  margin-top: auto;
+  width: 100%;
+}
+.wp-card-number {
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 0.95em;
+  font-family: 'Rajdhani', 'JetBrains Mono', ui-monospace, monospace;
+  font-size: clamp(1.05rem, 3.8vw, 1.65rem);
+  letter-spacing: 0.22em;
+  font-weight: 600;
+  color: #f5f1d9;
+  text-shadow:
+    0.04em 0.02em 0.06em rgba(0, 0, 0, 0.4),
+    -0.04em -0.02em 0.05em rgba(255, 255, 255, 0.08);
+  margin-top: 0.35rem;
+}
+.wp-card-number span { display: inline-block; }
+
+/* Balance hero number (large single figure) */
+.wp-card-amount {
+  font-family: 'Rajdhani', 'Inter', sans-serif;
+  font-weight: 700;
+  font-size: clamp(2rem, 7vw, 3.5rem);
+  letter-spacing: -0.01em;
+  text-shadow:
+    0.05em 0.04em 0.12em rgba(0, 0, 0, 0.35);
+  line-height: 1.05;
+}
+
+/* ─── Foot row: expiry / holder / brand ──────────────────────────────────── */
+.wp-card-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 1em;
+  margin-top: 0.35rem;
+}
+.wp-card-block-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  opacity: 0.7;
+  margin-bottom: 0.2em;
+  color: #d5cfaa;
+}
+.wp-card-block-value {
+  font-family: 'Rajdhani', 'Inter', sans-serif;
+  font-size: 1rem;
+  letter-spacing: 0.12em;
+  font-weight: 600;
+  text-transform: uppercase;
+  max-width: 22ch;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #f8f7e7;
+}
+.wp-card-expiry .wp-card-block-value { font-size: 1.1rem; }
+
+.wp-card-brand {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 72px;
+  height: 28px;
+  font-weight: 800;
+  font-family: 'Raleway', sans-serif;
+  font-style: italic;
+  letter-spacing: -0.03em;
+  font-size: 1.4rem;
+  color: #f9f3d0;
+}
+.wp-card-brand.wp-brand-visa {
+  color: #f9f3d0;
+  background: linear-gradient(180deg, transparent 62%, rgba(247, 182, 0, 0.75) 62% 74%, transparent 74%);
+}
+.wp-card.wp-card-dark .wp-card-brand.wp-brand-visa { color: #FFFFFF; text-shadow: 0 0 1px rgba(0,0,0,0.3); }
+.wp-card.wp-card-balance .wp-card-brand.wp-brand-visa { color: #FFFFFF; }
+
+.wp-card-brand.wp-brand-mastercard {
+  position: relative;
+  width: 52px; height: 34px;
+}
+.wp-card-brand.wp-brand-mastercard::before,
+.wp-card-brand.wp-brand-mastercard::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  transform: translateY(-50%);
+}
+.wp-card-brand.wp-brand-mastercard::before { left: 0; background: #EB001B; }
+.wp-card-brand.wp-brand-mastercard::after { right: 0; background: #F79E1B; mix-blend-mode: multiply; }
+.wp-card.wp-card-dark .wp-card-brand.wp-brand-mastercard::after,
+.wp-card.wp-card-balance .wp-card-brand.wp-brand-mastercard::after { mix-blend-mode: screen; opacity: 0.9; }
+
+/* Back-of-card: mag stripe + signature + CVV */
+.wp-card-back {
+  padding: 0 !important;
+}
+.wp-card-magstripe {
+  margin-top: 0.25em;
+  width: 100%;
+  height: 3.3em;
+  border-radius: 0.35rem;
+  background: linear-gradient(90deg, #111 0%, #2b2b2b 45%, #111 100%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+}
+.wp-card-sig-cvv {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  margin-top: 0.8em;
+}
+.wp-card-signature {
+  flex: 1;
+  height: 2.7em;
+  border-radius: 0.35rem;
+  background:
+    repeating-linear-gradient(45deg, rgba(255,255,255,0.12) 0 2px, transparent 2px 6px),
+    repeating-linear-gradient(-45deg, rgba(255,255,255,0.08) 0 2px, transparent 2px 6px),
+    #f8fafc;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.12);
+}
+.wp-card-cvv {
+  min-width: 3.4em;
+  height: 2.4em;
+  padding: 0 0.6em;
+  background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Rajdhani', monospace;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: #0f172a;
+  border-radius: 0.35rem;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.12), 0 2px 4px rgba(15, 23, 42, 0.18);
+}
+.hologram-strip {
+  margin-top: 0.2rem;
+  height: 2.8rem;
+  border-radius: 0.7rem;
+  background: linear-gradient(
+    120deg,
+    rgba(255, 255, 255, 0.1),
+    rgba(255, 215, 0, 0.35),
+    rgba(0, 200, 255, 0.3),
+    rgba(255, 0, 180, 0.25),
+    rgba(255, 255, 255, 0.1)
+  );
+  background-size: 200% 200%;
+  box-shadow: 0 0 12px rgba(0, 0, 0, 0.35);
+  animation: wp-holo 4s linear infinite;
+}
+@keyframes wp-holo {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+.wp-card-back .wp-card-brand {
+  margin: auto var(--wp-card-padH) var(--wp-card-padV) auto;
+}
+.wp-card-face-back {
+  background: linear-gradient(125deg, #111827 0%, #1f2937 45%, #030712 100%);
+  position: absolute;
+  inset: 0;
+  transform: rotateY(180deg);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  color: #f8fafc;
+  padding: 1rem 1rem 1.1rem;
+  gap: 0.7rem;
+  border-radius: inherit;
+}
+.wp-card-face-back .wp-card-magstripe {
+  margin-top: 0.35rem;
+  background: linear-gradient(90deg, #000 0%, #222 45%, #000 100%);
+}
+.wp-card-face-back .wp-card-sig-cvv {
+  margin-top: 0.8rem;
+  justify-content: flex-end;
+}
+
+/* Flip (CVV focus) */
+.wp-card.wp-card-flipped { transform: perspective(1200px) rotateY(180deg); }
+.wp-card .wp-card-face { backface-visibility: hidden; width: 100%; height: 100%; }
+.wp-card .wp-card-face-back {
+  position: absolute;
+  inset: 0;
+  transform: rotateY(180deg);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  background: linear-gradient(125deg, #111827 0%, #1f2937 45%, #030712 100%);
+  color: #f8fafc;
+  padding: 1rem 1rem 1.1rem;
+  gap: 0.7rem;
+}
+.wp-card-wrap:hover .wp-card:not(.wp-card-flipped)::after {
+  opacity: 0.22;
+}
+.wp-card-wrap::after {
+  content: "Tap to flip";
+  position: absolute;
+  bottom: -1.75rem;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 0.7rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #64748b;
+  opacity: 0.75;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+}
+.wp-card-wrap:hover::after {
+  opacity: 0.95;
+}
+
+/* Status dot + tag alignment */
+.wp-card-tags {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+/* Selection ring (selection state) */
+.wp-card-selected {
+  outline: 2px solid #3b82f6;
+  outline-offset: 3px;
+}
+
+/* Focus pulse for inputs (scoped to wallet card area) */
+.wp-card-wrap .wp-card-focus::after {
+  content: "";
+  position: absolute;
+  inset: -0.25em;
+  border-radius: calc(var(--wp-card-radius) + 0.1em);
+  border: 2px solid #3b82f6;
+  opacity: 0.5;
+  pointer-events: none;
+  animation: wp-card-focus-pulse 1.4s ease-out infinite;
+}
+@keyframes wp-card-focus-pulse {
+  0%   { opacity: 0.6; transform: scale(1); }
+  60%  { opacity: 0;   transform: scale(1.015); }
+  100% { opacity: 0;   transform: scale(1.015); }
+}

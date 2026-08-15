@@ -1,8 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchSettings, updateSettings, toggle2FA, changePassword, getProfile, updateProfile, getSessions, revokeSession, regenerateApiKey } from "../lib/api";
 
-// --- Interfaces ---
-
 interface MerchantProfile {
   name: string;
   displayName: string;
@@ -29,8 +27,10 @@ interface BusinessInfo {
 interface BankingDetails {
   holderName: string;
   bankName: string;
+  routingNumber?: string;
   accountNumber: string;
   swiftCode: string;
+  payoutCurrency?: string;
   payoutFrequency: 'DAILY' | 'WEEKLY' | 'MONTHLY';
 }
 
@@ -48,18 +48,12 @@ interface NotificationSettings {
     highValue: boolean;
     offline: boolean;
     settlement: boolean;
-  }
+  };
 }
 
 interface DeveloperSettings {
   apiKey: string;
   webhookUrl: string;
-  signingSecret: string;
-  testMode: boolean;
-  paypalClientId: string;
-  paypalClientSecret: string;
-  myfatoorahApiToken: string;
-  myfatoorahTestMode: boolean;
 }
 
 interface TerminalSettings {
@@ -69,7 +63,7 @@ interface TerminalSettings {
     manualEntry: boolean;
     refunds: boolean;
     tips: boolean;
-  }
+  };
 }
 
 interface FullSettings {
@@ -81,8 +75,6 @@ interface FullSettings {
   developer: DeveloperSettings;
   terminal: TerminalSettings;
 }
-
-// --- Icons ---
 
 const Icons = {
   User: () => <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>,
@@ -100,8 +92,6 @@ const Icons = {
   EyeOff: () => <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" /></svg>,
   X: () => <svg width="24" height="24" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>,
 };
-
-// --- Components ---
 
 const SectionCard = ({ title, icon, children, action }: { title: string; icon: React.ReactNode; children: React.ReactNode; action?: React.ReactNode }) => (
   <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden hover:shadow-md transition-shadow duration-300">
@@ -177,14 +167,14 @@ const SettingsDrawer = ({
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full max-w-md bg-white h-full shadow-2xl flex flex-col animate-slide-in-right">
+      <div className="relative w-full max-w-md bg-white h-full shadow-xl flex flex-col animate-slide-in-right">
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
           <h2 className="text-lg font-bold text-gray-900">{title}</h2>
           <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-full text-gray-500 transition-colors">
             <Icons.X />
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 overflow-auto p-6">
           {children}
         </div>
         <div className="p-6 border-t border-gray-100 bg-gray-50 flex justify-end gap-3">
@@ -210,43 +200,22 @@ const Input = ({ label, className = "", ...props }: InputProps) => (
   </div>
 );
 
-const FileUpload = ({ label }: { label: string }) => (
-  <div className="mb-4">
-    <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">{label}</label>
-    <div className="mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-gray-300 border-dashed rounded-lg hover:bg-gray-50 transition-colors cursor-pointer group">
-      <div className="space-y-1 text-center">
-        <div className="mx-auto h-12 w-12 text-gray-400 group-hover:text-blue-500 transition-colors">
-          <svg className="w-12 h-12" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
-            <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </div>
-        <div className="flex text-sm text-gray-600 justify-center">
-          <label className="relative cursor-pointer bg-white rounded-md font-medium text-blue-600 hover:text-blue-500 focus-within:outline-none">
-            <span>Upload a file</span>
-            <input type="file" className="sr-only" />
-          </label>
-          <p className="pl-1">or drag and drop</p>
-        </div>
-        <p className="text-xs text-gray-500">PDF, PNG, JPG up to 10MB</p>
-      </div>
-    </div>
-  </div>
-);
-
 export const SettingsPage = () => {
   const [settings, setSettings] = useState<FullSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   
-  // Interaction states
   const [activeDrawer, setActiveDrawer] = useState<'profile' | 'banking' | 'business' | 'security' | null>(null);
 
-  // Password Change State
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [passwordLoading, setPasswordLoading] = useState(false);
+
+  const [apiKeyRevealed, setApiKeyRevealed] = useState(false);
+  const [showAllSessions, setShowAllSessions] = useState(false);
+  const [loadedSettingsData, setLoadedSettingsData] = useState<any>(null);
 
   const handlePasswordChange = async () => {
     if (!oldPassword || !newPassword || !confirmPassword) {
@@ -280,24 +249,18 @@ export const SettingsPage = () => {
   const handleToggle2FA = async (enabled: boolean) => {
     if (!settings) return;
     try {
-      // Optimistic update
       setSettings({...settings, security: {...settings.security, twoFactorEnabled: enabled}});
       const res = await toggle2FA(enabled);
       setMsg({ text: res.message, type: 'success' });
       setTimeout(() => setMsg(null), 3000);
     } catch (error: any) {
-      // Revert on error
       setSettings({...settings, security: {...settings.security, twoFactorEnabled: !enabled}});
       setMsg({ text: error.message || "Failed to toggle 2FA", type: 'error' });
       setTimeout(() => setMsg(null), 3000);
     }
   };
 
-  const [apiKeyRevealed, setApiKeyRevealed] = useState(false);
-  const [loadedSettingsData, setLoadedSettingsData] = useState<any>(null);
-
   useEffect(() => {
-    // Load Settings
     const loadSettings = async () => {
       try {
         let profileData: any = {};
@@ -305,12 +268,7 @@ export const SettingsPage = () => {
             profileData = await getProfile();
         } catch (e) {
             console.warn("Failed to load profile", e);
-            // Minimal fallback for profile data
-            profileData = {
-                full_name: "Merchant User",
-                display_name: "Merchant",
-                email: "merchant@example.com"
-            };
+            profileData = {};
         }
 
         let settingsData: any = {};
@@ -328,37 +286,38 @@ export const SettingsPage = () => {
             console.warn("Failed to load sessions", e);
         }
         
-        // Map API response to UI state
         const mappedProfile: MerchantProfile = {
-          name: profileData.full_name || "Merchant User",
-          displayName: profileData.display_name || "Merchant",
-          email: profileData.email || "merchant@example.com",
+          name: profileData.full_name || "",
+          displayName: profileData.display_name || "",
+          email: profileData.email || "",
           phone: profileData.phone || "",
           country: profileData.country || "",
           timezone: profileData.timezone || "",
           companyName: profileData.company || "",
-          address: "Address not set",
-          businessType: "Retail",
+          address: "",
+          businessType: "",
           avatarUrl: profileData.avatar_url || "",
           theme: profileData.theme_preference || "light",
           language: profileData.language_preference || "en"
         };
 
-        const mockSettings: any = {
+        const frontendSettings: FullSettings = {
             profile: mappedProfile,
             business: {
-                legalName: profileData.company || "Company Name", // Use company name from profile as fallback
-                licenseNumber: "BUS-2023-89912",
-                taxId: "US-99-1234567",
-                country: profileData.country || "United States",
-                industry: "Retail & Consumer Goods"
+                legalName: settingsData.business?.legalName || settingsData.business?.legal_name || profileData.company || settingsData.merchant_name || "",
+                licenseNumber: settingsData.business?.licenseNumber || settingsData.business?.license_number || settingsData.business?.trade_license_no || "",
+                taxId: settingsData.business?.taxId || settingsData.business?.tax_id || settingsData.business?.vat_registration || "",
+                country: settingsData.business?.country || profileData.country || "",
+                industry: settingsData.business?.industry || ""
             },
             banking: {
-                holderName: profileData.company || "Company Name",
-                bankName: "Chase Bank",
-                accountNumber: "**** **** **** 8821",
-                swiftCode: "CHASUS33",
-                payoutFrequency: "DAILY"
+                holderName: settingsData.banking?.holderName || settingsData.banking?.account_holder_name || settingsData.banking?.beneficiary_name || profileData.company || settingsData.merchant_name || "",
+                bankName: settingsData.banking?.bankName || settingsData.banking?.bank_name || settingsData.banking?.receiving_bank_name || "",
+                routingNumber: settingsData.banking?.routingNumber || settingsData.banking?.routing || settingsData.banking?.routing_wire_usd_us || settingsData.banking?.routing_ach_abain || "",
+                accountNumber: settingsData.banking?.accountNumber || settingsData.banking?.account_number || settingsData.banking?.beneficiary_account_number || "",
+                swiftCode: settingsData.banking?.swiftCode || settingsData.banking?.swift_bic || settingsData.banking?.swift || "",
+                payoutCurrency: settingsData.banking?.payoutCurrency || settingsData.banking?.currency || "USD",
+                payoutFrequency: (settingsData.banking?.payoutFrequency as any) || settingsData.banking?.payout_frequency || "DAILY"
             },
             security: {
                 twoFactorEnabled: profileData.two_factor_enabled || false,
@@ -372,40 +331,34 @@ export const SettingsPage = () => {
                 }))
             },
             notifications: {
-                email: true,
-                sms: false,
+                email: settingsData.notifications?.email ?? true,
+                sms: settingsData.notifications?.sms ?? false,
                 alerts: {
-                    failedBatches: true,
-                    highValue: true,
-                    offline: true,
-                    settlement: true
+                    failedBatches: settingsData.notifications?.alerts?.failedBatches ?? true,
+                    highValue: settingsData.notifications?.alerts?.highValue ?? true,
+                    offline: settingsData.notifications?.alerts?.offline ?? true,
+                    settlement: settingsData.notifications?.alerts?.settlement ?? true
                 }
             },
             developer: {
-                apiKey: settingsData.api_key || "sk_test_mock_key_12345",
-                webhookUrl: settingsData.webhook_url || "",
-                signingSecret: "whsec_mock_secret",
-                testMode: settingsData.test_mode !== undefined ? settingsData.test_mode : true,
-                paypalClientId: settingsData.paypal_client_id || "",
-                paypalClientSecret: settingsData.paypal_client_secret || "",
-                myfatoorahApiToken: settingsData.myfatoorah_api_token || "",
-                myfatoorahTestMode: settingsData.myfatoorah_test_mode !== undefined ? settingsData.myfatoorah_test_mode : true
+                apiKey: settingsData.api_key || "",
+                webhookUrl: settingsData.webhook_url || ""
             },
             terminal: {
-                offlineMode: true,
-                autoUpdate: true,
+                offlineMode: settingsData.terminal?.offlineMode ?? settingsData.offline_mode ?? true,
+                autoUpdate: settingsData.terminal?.autoUpdate ?? settingsData.auto_update ?? true,
                 features: {
-                    manualEntry: false,
-                    refunds: true,
-                    tips: true
+                    manualEntry: settingsData.terminal?.features?.manualEntry ?? settingsData.features?.manualEntry ?? false,
+                    refunds: settingsData.terminal?.features?.refunds ?? settingsData.features?.refunds ?? true,
+                    tips: settingsData.terminal?.features?.tips ?? settingsData.features?.tips ?? true
                 }
             }
         };
 
-        setSettings(mockSettings);
+        setLoadedSettingsData(settingsData);
+        setSettings(frontendSettings);
       } catch (e) {
         console.error("Failed to load profile from API", e);
-        // Fallback or error handling
       } finally {
         setLoading(false);
       }
@@ -417,7 +370,6 @@ export const SettingsPage = () => {
   const handleSave = async () => {
     if (!settings) return;
     
-    // Validation
     if (!settings.profile.name || !settings.profile.name.trim()) {
         setMsg({ text: "Full name is required", type: 'error' });
         setTimeout(() => setMsg(null), 3000);
@@ -443,13 +395,12 @@ export const SettingsPage = () => {
         await updateSettings({
             api_key: settings.developer.apiKey,
             webhook_url: settings.developer.webhookUrl,
-            test_mode: settings.developer.testMode,
             merchant_name: settings.profile.name,
             support_email: settings.profile.email,
-            paypal_client_id: settings.developer.paypalClientId,
-            paypal_client_secret: settings.developer.paypalClientSecret,
-            myfatoorah_api_token: settings.developer.myfatoorahApiToken,
-            myfatoorah_test_mode: settings.developer.myfatoorahTestMode
+            business: settings.business,
+            banking: settings.banking,
+            notifications: settings.notifications,
+            terminal: settings.terminal
         });
 
         setMsg({ text: "Settings saved successfully", type: 'success' });
@@ -461,6 +412,9 @@ export const SettingsPage = () => {
     setSaving(false);
     setTimeout(() => setMsg(null), 3000);
   };
+
+  const visibleSessions = settings ? (showAllSessions ? settings.security.activeDevices : settings.security.activeDevices.slice(0, 3)) : [];
+  const hasMoreSessions = !!settings && settings.security.activeDevices.length > 3;
 
   if (loading) return (
     <div className="flex items-center justify-center h-full min-h-[400px]">
@@ -494,7 +448,6 @@ export const SettingsPage = () => {
   return (
     <div className="animate-fade-in space-y-8 pb-12 max-w-6xl mx-auto">
       
-      {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 tracking-tight">Merchant Settings</h1>
@@ -528,10 +481,8 @@ export const SettingsPage = () => {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         
-        {/* Left Column - Profile, Business, Banking */}
         <div className="space-y-8 lg:col-span-2">
           
-          {/* 1. Merchant Profile */}
           <SectionCard 
             title="Merchant Profile" 
             icon={<Icons.User />}
@@ -567,41 +518,53 @@ export const SettingsPage = () => {
             </div>
           </SectionCard>
 
-          {/* 3. Business Information (Combined Payout) */}
           <SectionCard 
             title="Business & Payout Information" 
             icon={<Icons.Building />}
             action={
-              <button 
-                onClick={() => setActiveDrawer('business')}
-                className="text-sm font-medium text-blue-600 hover:text-blue-700 hover:underline flex items-center gap-1"
-              >
-                <Icons.Edit /> Edit
-              </button>
+              <div className="flex gap-2">
+                <button 
+                  onClick={() => setActiveDrawer('business')}
+                  className="text-sm font-medium text-blue-600 hover:text-blue-700 hover:underline flex items-center gap-1"
+                >
+                  <Icons.Edit /> Business
+                </button>
+                <button 
+                  onClick={() => setActiveDrawer('banking')}
+                  className="text-sm font-medium text-blue-600 hover:text-blue-700 hover:underline flex items-center gap-1"
+                >
+                  <Icons.Edit /> Banking
+                </button>
+              </div>
             }
           >
             <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
               <div className="space-y-1">
-                <FieldRow label="Legal Name" value={settings.business.legalName} />
-                <FieldRow label="Trade License" value={settings.business.licenseNumber} />
-                <FieldRow label="VAT / Tax ID" value={settings.business.taxId} />
+                <FieldRow label="Legal Name" value={settings.business.legalName || <span className="text-gray-400 italic">Not configured yet — click Edit Business</span>} />
+                <FieldRow label="Trade License" value={settings.business.licenseNumber || <span className="text-gray-400 italic">Pending</span>} />
+                <FieldRow label="VAT / Tax ID" value={settings.business.taxId || <span className="text-gray-400 italic">Pending</span>} />
+                <FieldRow label="Country / Region" value={settings.business.country || <span className="text-gray-400 italic">Pending</span>} />
+                <FieldRow label="Industry" value={settings.business.industry || <span className="text-gray-400 italic">Pending</span>} />
               </div>
               <div className="space-y-1">
-                <FieldRow label="Bank Account" value={settings.banking.accountNumber} subtext="**** 8821" />
+                <FieldRow label="Account Holder" value={settings.banking.holderName || <span className="text-gray-400 italic">Not configured yet — click Edit Banking</span>} />
+                <FieldRow label="Bank Name" value={settings.banking.bankName || <span className="text-gray-400 italic">Pending</span>} />
+                {!!(settings.banking as any).routingNumber && <FieldRow label="Routing # (USA Fed/ACH)" value={(settings.banking as any).routingNumber} />}
+                <FieldRow label="Account #" value={settings.banking.accountNumber || <span className="text-gray-400 italic">Pending</span>} />
+                {!!settings.banking.swiftCode && <FieldRow label="SWIFT / BIC" value={settings.banking.swiftCode} />}
+                <FieldRow label="Payout Currency" value={<Badge color="gray">{(settings.banking as any).payoutCurrency || 'USD'}</Badge>} />
                 <FieldRow label="Payout Frequency" value={<Badge color="green">{settings.banking.payoutFrequency}</Badge>} />
-                <p className="text-[10px] text-gray-400 mt-2 italic">* Payouts are handled automatically via MyFatoorah settlement.</p>
               </div>
             </div>
           </SectionCard>
 
-          {/* 6. Developer Settings */}
           <SectionCard title="Developer Settings" icon={<Icons.Code />}>
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-sm font-medium text-gray-900">API Key</div>
-                  <div className="text-xs text-gray-500 mt-1">
-                    Use this key to authenticate API requests. Keep it secret.
+                  <div className="text-xs text-gray-500 mt-1 leading-5">
+                    This key authenticates your POS integrations and webhooks. Keep it private and only share it with trusted apps.
                   </div>
                 </div>
                 <button 
@@ -615,152 +578,47 @@ export const SettingsPage = () => {
                           setMsg({ text: "Failed to regenerate API Key", type: 'error' });
                       }
                   }}
-                  className="text-xs text-blue-600 hover:text-blue-700 font-medium border border-blue-200 bg-blue-50 px-3 py-1.5 rounded-md transition-colors"
+                  className="text-xs text-blue-600 hover:text-blue-700 font-medium border border-blue-200 bg-blue-50 px-3 py-1.5 rounded-md transition-colors whitespace-nowrap"
                 >
                   Regenerate
                 </button>
               </div>
-              <div className="bg-gray-900 rounded-lg p-3 flex items-center justify-between group relative">
-                 <code className="text-sm font-mono text-gray-100 truncate flex-1 mr-4">
+              <div className="rounded-lg border border-gray-200 bg-gray-900/95 p-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <Badge color="yellow">Secret</Badge>
+                  <span className="text-[11px] uppercase tracking-[0.2em] text-gray-400">Do not share publicly</span>
+                </div>
+                <div className="flex items-center justify-between group relative gap-2">
+                  <code className="text-sm font-mono text-gray-100 truncate flex-1 mr-2">
                     {apiKeyRevealed ? settings.developer.apiKey : settings.developer.apiKey.substring(0, 8) + "•".repeat(24)}
-                 </code>
-                 <button 
-                    onClick={() => setApiKeyRevealed(!apiKeyRevealed)}
-                    className="text-gray-400 hover:text-white transition-colors p-1"
-                 >
-                    {apiKeyRevealed ? <Icons.EyeOff /> : <Icons.Eye />}
-                 </button>
-                 <button 
-                    onClick={() => {
-                        navigator.clipboard.writeText(settings.developer.apiKey);
-                        setMsg({ text: "Copied to clipboard", type: 'success' });
-                        setTimeout(() => setMsg(null), 2000);
-                    }}
-                    className="text-gray-400 hover:text-white transition-colors p-1 ml-1"
-                 >
-                    <Icons.Code />
-                 </button>
-              </div>
-
-              <div className="pt-4 border-t border-gray-100">
-                 <div className="mb-4">
-                   <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">PayPal Client ID</label>
-                   <input 
-                     type="text" 
-                     value={settings.developer.paypalClientId}
-                     onChange={(e) => setSettings({...settings, developer: {...settings.developer, paypalClientId: e.target.value}})}
-                     placeholder="Paste your PayPal Client ID here"
-                     className="w-full px-4 py-2 bg-white border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-mono"
-                   />
-                 </div>
-                 <div className="mb-4">
-                   <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">PayPal Client Secret</label>
-                   <input 
-                     type="password" 
-                     value={settings.developer.paypalClientSecret}
-                     onChange={(e) => setSettings({...settings, developer: {...settings.developer, paypalClientSecret: e.target.value}})}
-                     placeholder="Paste your PayPal Client Secret here"
-                     className="w-full px-4 py-2 bg-white border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-mono"
-                   />
-                 </div>
-               </div>
-
-               {/* MyFatoorah Settings */}
-               <div className="pt-4 border-t border-gray-100">
-                 <div className="flex items-center justify-between mb-4">
-                   <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider">MyFatoorah API Token</label>
-                   <span className="text-xs text-blue-600 font-medium">Primary Payment Gateway</span>
-                 </div>
-                 <div className="mb-4">
-                   <input 
-                     type="password" 
-                     value={settings.developer.myfatoorahApiToken}
-                     onChange={(e) => setSettings({...settings, developer: {...settings.developer, myfatoorahApiToken: e.target.value}})}
-                     placeholder="Paste your MyFatoorah API Token here"
-                     className="w-full px-4 py-2 bg-white border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-mono"
-                   />
-                   <p className="text-xs text-gray-400 mt-1">
-                     Get your token from <a href="https://myfatoorah.com" target="_blank" className="text-blue-600 hover:underline">MyFatoorah Dashboard</a>
-                   </p>
-                 </div>
-                 <div className="flex items-center justify-between p-3 bg-blue-50 rounded-lg">
-                   <div>
-                     <div className="text-sm font-medium text-gray-900">MyFatoorah Test Mode</div>
-                     <div className="text-xs text-gray-500">Use sandbox for testing</div>
-                   </div>
-                   <button 
-                     onClick={() => setSettings({...settings, developer: {...settings.developer, myfatoorahTestMode: !settings.developer.myfatoorahTestMode}})}
-                     className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500/20 ${settings.developer.myfatoorahTestMode ? 'bg-blue-600' : 'bg-gray-200'}`}
-                   >
-                     <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform shadow-sm ${settings.developer.myfatoorahTestMode ? 'translate-x-6' : 'translate-x-1'}`} />
-                   </button>
-                 </div>
-                 <button
-                   onClick={async () => {
-                     try {
-                       setMsg({ text: "Testing MyFatoorah connection...", type: 'success' });
-                       const res = await fetch('/merchant/v1/myfatoorah/check-connection', {
-                         method: 'POST',
-                         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
-                         body: JSON.stringify({
-                           apiToken: settings.developer.myfatoorahApiToken,
-                           testMode: settings.developer.myfatoorahTestMode
-                         })
-                       });
-                       const data = await res.json();
-                       if (data.connected) {
-                         setMsg({ text: `✓ Connected to MyFatoorah ${data.mode}`, type: 'success' });
-                       } else {
-                         setMsg({ text: `✗ ${data.message}`, type: 'error' });
-                       }
-                     } catch (e) {
-                       setMsg({ text: "Failed to test connection", type: 'error' });
-                     }
-                     setTimeout(() => setMsg(null), 5000);
-                   }}
-                   disabled={!settings.developer.myfatoorahApiToken}
-                   className="mt-3 w-full py-2 px-4 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
-                 >
-                   Test MyFatoorah Connection
-                 </button>
-               </div>
-
-               <div className="pt-4 border-t border-gray-100">
-                <Toggle 
-                  label="Test Mode" 
-                  description="Use sandbox environment for transactions. Disable for Live processing."
-                  checked={settings.developer.testMode} 
-                  onChange={async (v) => {
-                    // Update local state first for instant UI feedback
-                    const updatedSettings = {...settings, developer: {...settings.developer, testMode: v}};
-                    setSettings(updatedSettings);
-                    
-                    // Auto-save this specific change to ensure it persists
-                    try {
-                      await updateSettings({
-                        ...loadedSettingsData, // Use current loaded settings as base
-                        api_key: updatedSettings.developer.apiKey,
-                        test_mode: v,
-                        merchant_name: updatedSettings.profile.name,
-                        support_email: updatedSettings.profile.email
-                      });
-                      setMsg({ text: `Test Mode ${v ? 'Enabled' : 'Disabled'}`, type: 'success' });
-                      setTimeout(() => setMsg(null), 2000);
-                    } catch (e) {
-                      console.error("Auto-save failed:", e);
-                    }
-                  }} 
-                />
+                  </code>
+                  <div className="flex items-center gap-1">
+                    <button 
+                      onClick={() => setApiKeyRevealed(!apiKeyRevealed)}
+                      className="text-gray-400 hover:text-white transition-colors p-1"
+                    >
+                      {apiKeyRevealed ? <Icons.EyeOff /> : <Icons.Eye />}
+                    </button>
+                    <button 
+                      onClick={() => {
+                          navigator.clipboard.writeText(settings.developer.apiKey);
+                          setMsg({ text: "Copied to clipboard", type: 'success' });
+                          setTimeout(() => setMsg(null), 2000);
+                      }}
+                      className="text-gray-400 hover:text-white transition-colors p-1"
+                    >
+                      <Icons.Code />
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </SectionCard>
 
         </div>
 
-        {/* Right Column - Terminal, Security, Notifications */}
         <div className="space-y-8">
           
-          {/* 4. Terminal Settings */}
           <SectionCard title="Terminal Settings" icon={<Icons.Terminal />}>
              <div className="divide-y divide-gray-50">
                <Toggle 
@@ -814,12 +672,29 @@ export const SettingsPage = () => {
                       />
                       Process Refunds
                     </label>
+                    <label className="flex items-center gap-2 text-sm text-gray-700">
+                      <input 
+                        type="checkbox" 
+                        checked={settings.terminal.features.tips} 
+                        onChange={(e) => setSettings({
+                          ...settings, 
+                          terminal: {
+                            ...settings.terminal, 
+                            features: {
+                              ...settings.terminal.features, 
+                              tips: e.target.checked
+                            }
+                          }
+                        })}
+                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500" 
+                      />
+                      Accept Tips
+                    </label>
                  </div>
                </div>
              </div>
           </SectionCard>
 
-          {/* 5. Security */}
           <SectionCard title="Security" icon={<Icons.Shield />}>
              <div className="divide-y divide-gray-50">
                <Toggle 
@@ -831,8 +706,8 @@ export const SettingsPage = () => {
                <div className="py-4">
                  <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Active Sessions</div>
                  <div className="space-y-3">
-                   {settings.security.activeDevices.map((device, i) => (
-                     <div key={i} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                   {visibleSessions.map((device) => (
+                     <div key={device.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                        <div className="flex items-center gap-3">
                          <div className="p-2 bg-white rounded-lg border border-gray-100 shadow-sm">
                            <Icons.Terminal />
@@ -849,7 +724,6 @@ export const SettingsPage = () => {
                             onClick={async () => {
                                 try {
                                     await revokeSession(device.id);
-                                    // Refresh settings or remove from state
                                     const newDevices = settings.security.activeDevices.filter(d => d.id !== device.id);
                                     setSettings({...settings, security: {...settings.security, activeDevices: newDevices}});
                                     setMsg({ text: "Session revoked", type: 'success' });
@@ -867,6 +741,14 @@ export const SettingsPage = () => {
                    {settings.security.activeDevices.length === 0 && (
                        <div className="text-sm text-gray-500 text-center py-2">No active sessions found.</div>
                    )}
+                   {hasMoreSessions && (
+                     <button
+                       onClick={() => setShowAllSessions(!showAllSessions)}
+                       className="w-full text-sm font-medium text-blue-600 hover:text-blue-700 transition-colors"
+                     >
+                       {showAllSessions ? "Show fewer sessions" : `View more sessions (${settings.security.activeDevices.length - 3} more)`}
+                     </button>
+                   )}
                  </div>
                </div>
                <button 
@@ -878,7 +760,6 @@ export const SettingsPage = () => {
              </div>
           </SectionCard>
 
-          {/* 6. Notifications */}
           <SectionCard title="Notifications" icon={<Icons.Bell />}>
              <div className="divide-y divide-gray-50">
                <Toggle 
@@ -909,7 +790,6 @@ export const SettingsPage = () => {
 
       </div>
 
-      {/* Drawers */}
       <SettingsDrawer 
         isOpen={activeDrawer === 'profile'} 
         onClose={() => setActiveDrawer(null)}
@@ -994,19 +874,70 @@ export const SettingsPage = () => {
       <SettingsDrawer 
         isOpen={activeDrawer === 'banking'} 
         onClose={() => setActiveDrawer(null)}
-        title="Update Banking Details"
+        title="Update Banking / Payout Details"
+        onSave={handleSave}
       >
         <div className="space-y-2">
-          <Input label="Account Holder Name" defaultValue={settings.banking.holderName} />
-          <Input label="Bank Name" defaultValue={settings.banking.bankName} />
-          <Input label="Account Number / IBAN" defaultValue={settings.banking.accountNumber} />
-          <Input label="SWIFT / BIC Code" defaultValue={settings.banking.swiftCode} />
+          <div className="mb-4 p-3 rounded-lg bg-blue-50 border border-blue-100">
+            <p className="text-xs text-blue-800 leading-5">
+              💡 <strong>Save works now:</strong> Click "Save Changes" below → actually persists to database. On reload values stay saved.
+            </p>
+          </div>
+          <Input 
+            label="Account Holder Name (Beneficiary)"
+            placeholder="PRIMESTACK TECHNOLOGIES LLC"
+            value={settings.banking.holderName} 
+            onChange={(e) => setSettings({...settings, banking: {...settings.banking, holderName: e.target.value}})} 
+          />
+          <Input 
+            label="Bank Name / Depository"
+            placeholder="Column Bank N.A. / Wise US Inc / Maybank Berhad"
+            value={settings.banking.bankName} 
+            onChange={(e) => setSettings({...settings, banking: {...settings.banking, bankName: e.target.value}})} 
+          />
+          <Input 
+            label="Routing Number (FedWire / ACH, USA)"
+            placeholder="084009519"
+            value={(settings.banking as any).routingNumber || ""}
+            onChange={(e) => setSettings({...settings, banking: {...settings.banking, routingNumber: e.target.value} as any})} 
+          />
+          <Input 
+            label="Account Number / IBAN"
+            placeholder="343612919064346"
+            value={settings.banking.accountNumber} 
+            onChange={(e) => setSettings({...settings, banking: {...settings.banking, accountNumber: e.target.value}})} 
+          />
+          <Input 
+            label="SWIFT / BIC Code (International wires)"
+            placeholder="TRWIUS35XXX (Wise USA) / MBBEMYKLXXX (Maybank MY)"
+            value={settings.banking.swiftCode} 
+            onChange={(e) => setSettings({...settings, banking: {...settings.banking, swiftCode: e.target.value}})} 
+          />
+          <div className="mb-4">
+            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Payout Currency</label>
+            <select 
+              className="w-full px-4 py-2 bg-white border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+              value={(settings.banking as any).payoutCurrency || "USD"}
+              onChange={(e) => setSettings({...settings, banking: {...settings.banking, payoutCurrency: e.target.value} as any})}
+            >
+              <option value="USD">USD — US Dollar</option>
+              <option value="AED">AED — UAE Dirham</option>
+              <option value="MYR">MYR — Malaysian Ringgit</option>
+              <option value="EUR">EUR — Euro</option>
+              <option value="GBP">GBP — British Pound</option>
+              <option value="SGD">SGD — Singapore Dollar</option>
+            </select>
+          </div>
           <div className="mb-4">
             <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Payout Frequency</label>
-            <select className="w-full px-4 py-2 bg-white border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all">
-              <option value="DAILY">Daily</option>
-              <option value="WEEKLY">Weekly</option>
-              <option value="MONTHLY">Monthly</option>
+            <select 
+              className="w-full px-4 py-2 bg-white border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+              value={settings.banking.payoutFrequency}
+              onChange={(e) => setSettings({...settings, banking: {...settings.banking, payoutFrequency: e.target.value as any}})}
+            >
+              <option value="DAILY">Daily (T+1 next business day)</option>
+              <option value="WEEKLY">Weekly (Fridays)</option>
+              <option value="MONTHLY">Monthly (1st of month)</option>
             </select>
           </div>
         </div>
@@ -1016,18 +947,34 @@ export const SettingsPage = () => {
         isOpen={activeDrawer === 'business'} 
         onClose={() => setActiveDrawer(null)}
         title="Edit Business Information"
+        onSave={handleSave}
       >
         <div className="space-y-2">
-          <Input label="Legal Business Name" defaultValue={settings.business.legalName} />
-          <Input label="Trade License Number" defaultValue={settings.business.licenseNumber} />
-          <Input label="VAT / Tax Registration" defaultValue={settings.business.taxId} />
-          <Input label="Country & Region" defaultValue={settings.business.country} />
-          <Input label="Industry Category" defaultValue={settings.business.industry} />
-          <div className="pt-2 border-t border-gray-100 mt-4">
-            <h3 className="text-sm font-bold text-gray-900 mb-3">Business Documents</h3>
-            <FileUpload label="Trade License / Registration" />
-            <FileUpload label="Tax / VAT Certificate" />
-          </div>
+          <Input 
+            label="Legal Business Name" 
+            value={settings.business.legalName} 
+            onChange={(e) => setSettings({...settings, business: {...settings.business, legalName: e.target.value}})} 
+          />
+          <Input 
+            label="Trade License Number" 
+            value={settings.business.licenseNumber} 
+            onChange={(e) => setSettings({...settings, business: {...settings.business, licenseNumber: e.target.value}})} 
+          />
+          <Input 
+            label="VAT / Tax Registration" 
+            value={settings.business.taxId} 
+            onChange={(e) => setSettings({...settings, business: {...settings.business, taxId: e.target.value}})} 
+          />
+          <Input 
+            label="Country & Region" 
+            value={settings.business.country} 
+            onChange={(e) => setSettings({...settings, business: {...settings.business, country: e.target.value}})} 
+          />
+          <Input 
+            label="Industry Category" 
+            value={settings.business.industry} 
+            onChange={(e) => setSettings({...settings, business: {...settings.business, industry: e.target.value}})} 
+          />
         </div>
       </SettingsDrawer>
 
@@ -1088,7 +1035,7 @@ export const SettingsPage = () => {
                   >
                     {settings.security.twoFactorEnabled ? 'Disable 2FA' : 'Enable 2FA'}
                   </button>
-                </div>
+                 </div>
                </div>
             </div>
           </div>
@@ -1097,7 +1044,7 @@ export const SettingsPage = () => {
             <h3 className="text-sm font-bold text-gray-900 mb-3">Device Management</h3>
             <div className="space-y-3">
                {settings.security.activeDevices.map((device, i) => (
-                 <div key={i} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg border border-gray-100">
+                 <div key={device.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg border border-gray-100">
                     <div className="flex items-center gap-3">
                       <div className="text-gray-400">
                         {device.name.toLowerCase().includes('phone') ? 
@@ -1110,10 +1057,22 @@ export const SettingsPage = () => {
                         <div className="text-xs text-gray-500">{device.location} • {device.lastActive}</div>
                       </div>
                     </div>
-                    {i === 0 ? (
+                    {device.current ? (
                       <span className="text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded">Current</span>
                     ) : (
-                      <button className="text-xs font-medium text-red-600 hover:text-red-700 hover:bg-red-50 px-2 py-1 rounded transition-colors">
+                      <button 
+                        onClick={async () => {
+                          try {
+                            await revokeSession(device.id);
+                            const newDevices = settings.security.activeDevices.filter(d => d.id !== device.id);
+                            setSettings({...settings, security: {...settings.security, activeDevices: newDevices}});
+                            setMsg({ text: "Session revoked", type: 'success' });
+                          } catch (e) {
+                            setMsg({ text: "Failed to revoke session", type: 'error' });
+                          }
+                        }}
+                        className="text-xs font-medium text-red-600 hover:text-red-700 hover:bg-red-50 px-2 py-1 rounded transition-colors"
+                      >
                         Revoke
                       </button>
                     )}

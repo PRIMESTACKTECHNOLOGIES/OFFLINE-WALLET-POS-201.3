@@ -4,10 +4,10 @@ services:
   pos-app:
     build: .
     ports:
-      - "3000:3000"
+      - "7000:7000"
     volumes:
       - ./data:/app/data
     environment:
-      - PORT=3000
+      - PORT=7000
       - DATABASE_URL=./data/pos_offline.sqlite
     restart: unless-stopped

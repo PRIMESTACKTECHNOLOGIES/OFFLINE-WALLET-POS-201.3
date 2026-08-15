@@ -85,7 +85,6 @@ export interface OfflineWalletPayment {
 // New wallet system interfaces
 export interface CryptoWallet { id: string; customer_id: string; crypto_coin: string; balance: number; status: string; created_at: string; }
 export interface CryptoTransaction { id: string; customer_id: string; crypto_coin: string; transaction_type: string; fiat_amount: number; crypto_amount: number; fiat_currency: string; exchange_rate: number; status: string; created_at: string; }
-export interface VirtualCard { id: string; masked_number: string; expiry_month: number; expiry_year: number; cardholder_name: string; card_type: string; status: string; balance: number; currency: string; daily_limit: number; daily_spent: number; created_at: string; }
 export interface BankAccount { id: string; customer_id: string; bank_name: string; account_holder: string; account_number: string; routing_number?: string; iban?: string; swift_code?: string; currency: string; is_default: number; created_at: string; }
 export interface BankPayout { id: string; amount: number; fee: number; net_amount: number; status: string; reference: string; bank_name: string; account_number: string; created_at: string; }
 export interface WalletTransfer { success: boolean; transferId: string; reference: string; amount: number; }
@@ -233,7 +232,33 @@ export async function login(username: string, password: string) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || "Login failed");
   }
-  return res.json();
+  const data = await res.json();
+  if (data?.token) localStorage.setItem("jwt_token", data.token);
+  return data;
+}
+
+/**
+ * Public, NO-AUTH health check. Use this for the dashboard "online indicator" dot.
+ * Returns `{ status: 'ok', timestamp }` on success. Throws if server DOWN or
+ * network unreachable. Never triggers 401 "Missing token" because it hits the
+ * public `/api/health` endpoint BEFORE the `authenticateToken` middleware.
+ */
+export async function checkBackendHealth(timeoutMs = 3000): Promise<{ status: string; timestamp: string; }> {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${BASE_URL}/api/health`, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json' },
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`Health HTTP ${res.status}`);
+    const body = await res.json() as any;
+    if (!body || body.status !== 'ok') throw new Error('Health status not ok');
+    return { status: String(body.status), timestamp: String(body.timestamp || new Date().toISOString()) };
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 export async function fetchTerminals(): Promise<Terminal[]> {
@@ -679,31 +704,6 @@ export async function walletTransfer(senderCustomerId: string, receiverCustomerI
   if (!res.ok) { const e = await res.json().catch(() => ({} as ApiErrorPayload)); throw new Error(e.error || 'Transfer failed'); }
   return res.json();
 }
-export async function getVirtualCards(customerId: string): Promise<VirtualCard[]> {
-  const res = await fetchWithAuth(`${BASE_URL}/wallet/virtual-cards/${customerId}`);
-  if (!res.ok) return [];
-  return res.json();
-}
-export async function issueVirtualCard(customerId: string, cardholderName: string, currency = 'USD'): Promise<VirtualCard & { cardNumber: string; cvv: string }> {
-  const res = await fetchWithAuth(`${BASE_URL}/wallet/virtual-cards/issue`, { method: 'POST', body: JSON.stringify({ customerId, cardholderName, currency }) });
-  if (!res.ok) throw new Error('Failed to issue card');
-  return res.json();
-}
-export async function topupVirtualCard(customerId: string, cardId: string, amount: number) {
-  const res = await fetchWithAuth(`${BASE_URL}/wallet/virtual-cards/topup`, { method: 'POST', body: JSON.stringify({ customerId, cardId, amount }) });
-  if (!res.ok) { const e = await res.json().catch(() => ({} as ApiErrorPayload)); throw new Error(e.error || 'Card topup failed'); }
-  return res.json();
-}
-export async function freezeCard(customerId: string, cardId: string) {
-  const res = await fetchWithAuth(`${BASE_URL}/wallet/virtual-cards/freeze`, { method: 'POST', body: JSON.stringify({ customerId, cardId }) });
-  if (!res.ok) throw new Error('Failed to freeze card');
-  return res.json();
-}
-export async function unfreezeCard(customerId: string, cardId: string) {
-  const res = await fetchWithAuth(`${BASE_URL}/wallet/virtual-cards/unfreeze`, { method: 'POST', body: JSON.stringify({ customerId, cardId }) });
-  if (!res.ok) throw new Error('Failed to unfreeze card');
-  return res.json();
-}
 export async function getBankAccounts(customerId: string): Promise<BankAccount[]> {
   const res = await fetchWithAuth(`${BASE_URL}/wallet/bank-accounts/${customerId}`);
   if (!res.ok) return [];
@@ -838,14 +838,44 @@ export async function exportTransactionsToCSV(transactions: Transaction[]) {
   URL.revokeObjectURL(url);
 }
 
-export async function buyCryptoWithMerchant(merchantId: string, cryptoCoin: string, fiatAmount: number, network?: string) {
+export async function buyCryptoWithMerchant(
+  merchantId: string,
+  cryptoCoin: string,
+  fiatAmount: number,
+  network?: string,
+  opts?: { allow_simulation?: boolean }
+) {
   const res = await fetchWithAuth(`${BASE_URL}/wallet/merchant/buy-crypto`, {
     method: 'POST',
-    body: JSON.stringify({ merchantId, cryptoCoin, fiatAmount, ...(network ? { network } : {}) })
+    body: JSON.stringify({
+      merchantId, cryptoCoin, fiatAmount,
+      ...(network ? { network } : {}),
+      ...(opts?.allow_simulation === true ? { allow_simulation: true } : {}),
+    })
   });
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({} as ApiErrorPayload));
-    throw new Error(errorData.error || 'Merchant crypto purchase failed');
+    const err = new Error(errorData.error || 'Merchant crypto purchase failed');
+    (err as any).hint = (errorData as any)?.hint;
+    throw err;
+  }
+  return res.json();
+}
+
+export async function merchantToCustomerTransfer(
+  merchantId: string,
+  customerId: string,
+  amount: number,
+  note?: string,
+  currency = 'USD'
+): Promise<{ success: boolean; transferId: string; reference: string; amount: number; currency: string; customerName: string }> {
+  const res = await fetchWithAuth(`${BASE_URL}/wallet/merchant/transfer-to-customer`, {
+    method: 'POST',
+    body: JSON.stringify({ merchantId, customerId, amount, note, currency }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({} as ApiErrorPayload));
+    throw new Error(err.error || 'Transfer failed');
   }
   return res.json();
 }

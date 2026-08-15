@@ -3,7 +3,9 @@ import { open, Database } from 'sqlite';
 import path from 'path';
 import fs from 'fs';
 
-// Enable verbose mode for debugging
+import dotenv from 'dotenv';
+dotenv.config();
+
 sqlite3.verbose();
 
 const DB_PATH = process.env.DATABASE_PATH || path.join(process.cwd(), 'data', 'database.sqlite');
@@ -30,7 +32,7 @@ class DbAdapter {
     const sqliteText = text.replace(/\$\d+/g, '?');
 
     // Check if it's a SELECT or INSERT/UPDATE/DELETE
-    const command = text.trim().toUpperCase().split(' ')[0];
+    const command = text.trim().toUpperCase().split(/\s+/)[0];
 
     try {
       if (command === 'SELECT' || text.includes('RETURNING')) {

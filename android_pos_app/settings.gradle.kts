@@ -17,5 +17,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "POS 201.3"
+rootProject.name = "POS_Offline_App"
 include(":app")

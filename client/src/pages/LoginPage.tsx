@@ -1,13 +1,52 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useState, useEffect, useMemo } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 import { login } from "../lib/api";
+
+const SESSION_KEY = "pos_session_remember";
+
+function evaluatePasswordStrength(pw: string): { score: 0 | 1 | 2 | 3 | 4; label: string; color: string } {
+  if (!pw) return { score: 0, label: "None", color: "bg-gray-200" };
+  let score = 0;
+  if (pw.length >= 8) score++;
+  if (pw.length >= 12) score++;
+  if (/[A-Z]/.test(pw) && /[a-z]/.test(pw)) score++;
+  if (/\d/.test(pw)) score++;
+  if (/[^A-Za-z0-9]/.test(pw)) score++;
+  score = Math.min(score, 4) as 0 | 1 | 2 | 3 | 4;
+  const labels = ["Very Weak", "Weak", "Fair", "Strong", "Excellent"];
+  const colors = [
+    "bg-red-400",
+    "bg-orange-400",
+    "bg-yellow-400",
+    "bg-lime-500",
+    "bg-emerald-500",
+  ];
+  return { score, label: labels[score], color: colors[score] };
+}
 
 export const LoginPage = () => {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation() as any;
+  const from = location.state?.from?.pathname || "/";
+
+  const passwordStrength = useMemo(() => evaluatePasswordStrength(password), [password]);
+
+  useEffect(() => {
+    try {
+      const remembered = localStorage.getItem(SESSION_KEY);
+      if (remembered) {
+        const data = JSON.parse(remembered);
+        if (data?.username) setUsername(data.username);
+        if (data?.remember) setRememberMe(true);
+      }
+    } catch {}
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -15,18 +54,19 @@ export const LoginPage = () => {
     setLoading(true);
 
     try {
-      // Add a small artificial delay for better UX
       await new Promise(resolve => setTimeout(resolve, 800));
       
       const data = await login(username, password);
       localStorage.setItem("token", data.token);
       localStorage.setItem("user", JSON.stringify(data.user));
-      
-      // Check if user needs onboarding (mock check)
-      // For demo purposes, we'll just redirect to dashboard, 
-      // but in a real app, we'd check a flag.
-      // navigate("/onboarding"); 
-      navigate("/");
+
+      if (rememberMe) {
+        localStorage.setItem(SESSION_KEY, JSON.stringify({ username, remember: true, savedAt: Date.now() }));
+      } else {
+        localStorage.removeItem(SESSION_KEY);
+      }
+
+      navigate(from, { replace: true });
     } catch (err: any) {
       setError(err.message || "Invalid credentials");
     } finally {
@@ -128,22 +168,64 @@ export const LoginPage = () => {
 
               <div>
                 <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1.5">Password</label>
-                <input
-                  type="password"
-                  inputMode="text"
-                  autoComplete="current-password"
-                  required
-                  className="w-full px-4 py-2.5 bg-white border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all shadow-sm"
-                  placeholder="Enter your password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                />
+                <div className="relative">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    inputMode="text"
+                    autoComplete="current-password"
+                    required
+                    className="w-full px-4 py-2.5 pr-11 bg-white border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all shadow-sm"
+                    placeholder="Enter your password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(v => !v)}
+                    tabIndex={-1}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 transition-colors rounded-md hover:bg-gray-100"
+                    title={showPassword ? "Hide password" : "Show password"}
+                  >
+                    {showPassword ? (
+                      <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"/></svg>
+                    ) : (
+                      <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                    )}
+                  </button>
+                </div>
+                {password && (
+                  <div className="mt-2 space-y-1 animate-fade-in">
+                    <div className="flex gap-1">
+                      {[0, 1, 2, 3].map(i => (
+                        <div
+                          key={i}
+                          className={`h-1.5 flex-1 rounded-full transition-all duration-300 ${
+                            i < passwordStrength.score ? passwordStrength.color : "bg-gray-100"
+                          }`}
+                        />
+                      ))}
+                    </div>
+                    <div className="flex justify-between text-[10px] font-medium">
+                      <span className="text-gray-400 uppercase tracking-wider">Strength</span>
+                      <span className={`${passwordStrength.score >= 3 ? "text-emerald-600" : passwordStrength.score >= 1 ? "text-yellow-600" : "text-red-500"}`}>
+                        {passwordStrength.label}
+                      </span>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center justify-between">
                 <div className="flex items-center">
-                  <input id="remember-me" name="remember-me" type="checkbox" className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded" />
-                  <label htmlFor="remember-me" className="ml-2 block text-sm text-gray-700">Remember me</label>
+                  <input
+                    id="remember-me"
+                    name="remember-me"
+                    type="checkbox"
+                    checked={rememberMe}
+                    onChange={(e) => setRememberMe(e.target.checked)}
+                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded cursor-pointer"
+                  />
+                  <label htmlFor="remember-me" className="ml-2 block text-sm text-gray-700 cursor-pointer select-none">Remember me</label>
                 </div>
                 <div className="text-sm">
                   <a href="#" className="font-medium text-blue-600 hover:text-blue-500 transition-colors">Forgot password?</a>

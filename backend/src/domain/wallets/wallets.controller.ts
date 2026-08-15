@@ -122,106 +122,6 @@ export class WalletsController {
     }
   }
 
-  // ── Virtual cards ──────────────────────────────────────────────────────────
-  async issueVirtualCard(req: Request, res: Response) {
-    try {
-      const {
-        customerId,
-        cardholderName,
-        cardNumber,
-        maskedNumber,
-        expiryMonth,
-        expiryYear,
-        cvv,
-        cardType,
-        currency,
-        dailyLimit,
-      } = req.body;
-
-      if (!customerId) return res.status(400).json({ error: 'customerId is required' });
-      if (!cardholderName) return res.status(400).json({ error: 'cardholderName is required' });
-
-      const requiredCardFields = [cardNumber, maskedNumber, expiryMonth, expiryYear, cvv];
-      const hasExternalCardDetails = requiredCardFields.every(f => f !== undefined && f !== null && f !== '');
-
-      let finalCardNumber = cardNumber;
-      let finalMaskedNumber = maskedNumber;
-      let finalExpiryMonth = expiryMonth;
-      let finalExpiryYear = expiryYear;
-      let finalCvv = cvv;
-
-      if (!hasExternalCardDetails) {
-        const generated = await walletsService.generateCardCredentials(cardType || 'VISA');
-        finalCardNumber = generated.cardNumber;
-        finalMaskedNumber = generated.maskedNumber;
-        finalExpiryMonth = generated.expiryMonth;
-        finalExpiryYear = generated.expiryYear;
-        finalCvv = generated.cvv;
-      }
-
-      if (typeof finalExpiryMonth !== 'number') {
-        finalExpiryMonth = Number(finalExpiryMonth);
-      }
-      if (typeof finalExpiryYear !== 'number') {
-        finalExpiryYear = Number(finalExpiryYear);
-      }
-      if (typeof finalExpiryMonth !== 'number' || typeof finalExpiryYear !== 'number' ||
-          isNaN(finalExpiryMonth) || isNaN(finalExpiryYear)) {
-        return res.status(400).json({ error: 'expiryMonth and expiryYear must be numbers' });
-      }
-
-      const result = await walletsService.issueVirtualCard(customerId, {
-        cardNumber: finalCardNumber,
-        maskedNumber: finalMaskedNumber,
-        expiryMonth: finalExpiryMonth,
-        expiryYear: finalExpiryYear,
-        cvv: finalCvv,
-        cardholderName,
-        cardType,
-        currency,
-        dailyLimit,
-      });
-
-      res.json({
-        ...result,
-        cardNumber: finalCardNumber,
-        cvv: finalCvv,
-      });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
-  }
-
-  async getVirtualCards(req: Request, res: Response) {
-    try {
-      res.json(await walletsService.getVirtualCards(req.params.customerId));
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
-  }
-
-  async topupVirtualCard(req: Request, res: Response) {
-    try {
-      const { customerId, cardId, amount, currency } = req.body;
-      if (!customerId || !cardId || !amount || amount <= 0) return res.status(400).json({ error: 'Invalid payload' });
-      res.json(await walletsService.topupVirtualCard(customerId, cardId, amount, currency || 'USD'));
-    } catch (e: any) {
-      res.status(e.message.includes('Insufficient') ? 400 : 500).json({ error: e.message });
-    }
-  }
-
-  async freezeVirtualCard(req: Request, res: Response) {
-    try {
-      const { customerId, cardId } = req.body;
-      if (!customerId || !cardId) return res.status(400).json({ error: 'customerId and cardId required' });
-      res.json(await walletsService.freezeVirtualCard(customerId, cardId));
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
-  }
-
-  async unfreezeVirtualCard(req: Request, res: Response) {
-    try {
-      const { customerId, cardId } = req.body;
-      if (!customerId || !cardId) return res.status(400).json({ error: 'customerId and cardId required' });
-      res.json(await walletsService.unfreezeVirtualCard(customerId, cardId));
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
-  }
-
   // ── Bank accounts ──────────────────────────────────────────────────────────
   async addBankAccount(req: Request, res: Response) {
     try {
@@ -257,6 +157,12 @@ export class WalletsController {
   }
 
   // ── Crypto ─────────────────────────────────────────────────────────────────
+  async getAllCustomersCryptoWallets(req: Request, res: Response) {
+    try {
+      res.json(await walletsService.getAllCustomersCryptoWallets());
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  }
+
   async getCryptoWallets(req: Request, res: Response) {
     try {
       res.json(await walletsService.getCustomerCryptoWallets(req.params.customerId));
@@ -299,10 +205,102 @@ export class WalletsController {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   }
 
-  // ── Crypto withdrawal to external wallet ──────────────────────────────────
+  async swapCrypto(req: Request, res: Response) {
+    try {
+      const { customerId, fromCoin, toCoin, amount, amountIsFrom, mode, network, slippageBps } = req.body;
+      if (!customerId || !fromCoin || !toCoin || !amount || amount <= 0)
+        return res.status(400).json({ error: 'Invalid payload — require customerId, fromCoin, toCoin, amount > 0' });
+      if (fromCoin.toUpperCase() === toCoin.toUpperCase())
+        return res.status(400).json({ error: 'fromCoin and toCoin must be different' });
+      res.json(await walletsService.swapCrypto(
+        customerId, fromCoin, toCoin, amount,
+        { amountIsFrom, mode: mode || 'internal', network, slippageBps }
+      ));
+    } catch (e: any) {
+      res.status(e.message.includes('Insufficient') || e.message.includes('slippage') || e.message.includes('Cannot swap') || e.message.includes('Cannot price') || e.message.includes('Binance') ? 400 : 500).json({ error: e.message });
+    }
+  }
+
+  async swapCryptoWithMerchant(req: Request, res: Response) {
+    try {
+      const { merchantId, fromCoin, toCoin, amount, amountIsFrom, mode, network, slippageBps } = req.body;
+      if (!merchantId || !fromCoin || !toCoin || !amount || amount <= 0)
+        return res.status(400).json({ error: 'Invalid payload — require merchantId, fromCoin, toCoin, amount > 0' });
+      if (fromCoin.toUpperCase() === toCoin.toUpperCase())
+        return res.status(400).json({ error: 'fromCoin and toCoin must be different' });
+      res.json(await walletsService.swapCryptoWithMerchant(
+        merchantId, fromCoin, toCoin, amount,
+        { amountIsFrom, mode: mode || 'internal', network, slippageBps }
+      ));
+    } catch (e: any) {
+      res.status(e.message.includes('Insufficient') || e.message.includes('slippage') || e.message.includes('Cannot swap') || e.message.includes('Cannot price') || e.message.includes('Binance') ? 400 : 500).json({ error: e.message });
+    }
+  }
+
+  // ── Crypto withdrawal ─────────────────────────────────────────────────────
+  //
+  // ══ FLOWCHART COMPLIANCE GUARD ════════════════════════════════════════════════
+  // The OFFICIAL 5-step production path (per user flowchart) is:
+  //   OFFLINE POS → SyncWorker → Merchant Wallet USD → Merchant buys crypto via
+  //   Binance/Bybit/OKX/OKX/Custom exchange API → Merchant Crypto Balance →
+  //   Bank Settlement Batch mark settled.
+  //
+  // Customer-side withdrawCrypto below was an older rail and is now DEMOTED.
+  // To avoid confusion between the two pathways, this rail now requires
+  // EXPLICIT opt-in via an env var, OR an admin JWT role check. If neither
+  // is present, the endpoint returns a 418 compliance block pointing the
+  // caller at the new merchant crypto purchase + settlement flow instead.
+  // ═══════════════════════════════════════════════════════════════════════════════
+  //
+  // Rail priority matrix (operator holds $0 USDT anywhere at any step):
+  //   1. EXCHANGE WITHDRAW API (Binance / Kucoin)
+  //        → Default for ALL balances funded via card / POS / AED wallet.
+  //        → YOU already received real fiat at card settlement time, the
+  //          exchange holds the USDT float and signs the on-chain broadcast.
+  //        → Operator USDT held: $0. Hot wallet USDT held: $0.
+  //        → Customer destination receives real USDT on-chain.
+  //   2. CUSTOMER-ORIGIN (customer signs from THEIR OWN external wallet)
+  //        → ONLY if caller explicitly passes { origin_address: "T..." } in body.
+  //        → Rare. Used for P2P send-to-friend or when the user explicitly says
+  //          "use my TronLink balance as the source, not my card-funded ledger".
+  //        → Operator USDT held: $0. Customer provides on-chain liquidity.
+  //   3. DEFERRED (hot wallet / treasury) — NEVER auto-selected for customers.
+  //        → Returned only as pending_manual fallback if exchange API keys are
+  //          not configured. Requires operator to set up either Binance/Kucoin
+  //          creds OR explicitly pass sender_mode='treasury'/'hot' in admin calls.
+  //
+  // SPOT deduction is ALWAYS final first. On-chain settlement is decoupled.
+  // ──────────────────────────────────────────────────────────────────────────
   async withdrawCrypto(req: Request, res: Response) {
     try {
-      const { customerId, cryptoCoin, amount, address, network } = req.body;
+      const { customerId, cryptoCoin, amount, address, network, origin_address, signed_tx } = req.body as any;
+
+      // ── FLOWCHART COMPLIANCE PREFLIGHT ──────────────────────────────────
+      // The new 5-step merchant-crypto-purchase + settlement flowchart is the
+      // ONLY production pathway by default. Customer-side withdrawCrypto is
+      // now opt-in via:
+      //   a) req.body._allow_customer_withdraw_rail === true (admin override),
+      //   b) OR process.env.ALLOW_LEGACY_CUSTOMER_CRYPTO_WITHDRAW_RAIL === '1',
+      //   c) OR caller explicitly requested the customer-origin rail via
+      //      origin_address (that rail remains available because it is
+      //      $0-operator-held-USDT by design and therefore compliant).
+      const requestedCustomerOrigin = !!origin_address;
+      const envLegacyAllowed = process.env.ALLOW_LEGACY_CUSTOMER_CRYPTO_WITHDRAW_RAIL === '1';
+      const adminOverride = req.body?._allow_customer_withdraw_rail === true;
+      if (!requestedCustomerOrigin && !envLegacyAllowed && !adminOverride) {
+        return res.status(418).json({
+          error: 'FLOWCHART_COMPLIANCE: customer crypto withdraw rail is disabled by default.',
+          resolution: 'Use the new merchant crypto purchase + settlement flow instead.',
+          correct_endpoints: [
+            'POST /api/merchant/:merchantId/crypto/purchase  — merchant wallet USD → exchange → merchant crypto balance',
+            'POST /api/pos/offline-sale                      — SyncWorker sends offline POS → credits merchant wallet',
+            'POST /api/merchant/:merchantId/settlements/batch-settle  — bank-sends-money → mark POS sales settled',
+            'GET  /api/merchant/:merchantId/crypto/balances  — merchant crypto balances',
+          ],
+          re_enable_instructions: 'If you still need old customer-withdraw rail, set ALLOW_LEGACY_CUSTOMER_CRYPTO_WITHDRAW_RAIL=1 (not recommended, conflicts with 5-step flowchart).',
+        });
+      }
+
       if (!customerId || !cryptoCoin || !amount || !address || !network) {
         return res.status(400).json({ error: 'customerId, cryptoCoin, amount, address and network are required' });
       }
@@ -310,7 +308,6 @@ export class WalletsController {
       const withdrawAmt = Number(amount);
       if (withdrawAmt <= 0) return res.status(400).json({ error: 'amount must be positive' });
 
-      // Check customer crypto balance
       const { db } = await import('../../config/db');
       const walletRes = await db.query(
         'SELECT id, balance FROM customer_crypto_wallets WHERE customer_id = ? AND crypto_coin = ?',
@@ -320,66 +317,190 @@ export class WalletsController {
       const cryptoBal = Number(walletRes.rows[0].balance ?? 0);
       if (cryptoBal < withdrawAmt) return res.status(400).json({ error: `Insufficient ${coin} balance. Have ${cryptoBal}, need ${withdrawAmt}` });
 
-      // Debit crypto wallet
+      // ── SPOT — Deduct customer internal balance  (FINAL, NO ROLLBACK) ────
       await db.query(
         'UPDATE customer_crypto_wallets SET balance = balance - ?, updated_at = CURRENT_TIMESTAMP WHERE customer_id = ? AND crypto_coin = ?',
         [withdrawAmt, customerId, coin]
       );
 
-      // Call withdrawal — TronWeb for TRX, Binance for other networks
-      let withdrawalRef = '';
-      let status = 'pending';
-      let binanceError = '';
+      // ── Audit trail (mirror of buyCrypto, provider_mode set after settlement) ─
+      const { v4: uuidv4 } = await import('uuid');
+      const withdrawalRef = `WDL-${Date.now()}`;
+      let settlement: {
+        provider: string;
+        status: 'submitted' | 'completed' | 'deferred_broadcast' | 'pending_manual';
+        txId: string | null;
+        txUrl: string | null;
+        message: string;
+        operatorUsdtHeldAtAnyStep: 0;
+      } = {
+        provider: 'internal_usdt',
+        status: 'submitted',
+        txId: null,
+        txUrl: null,
+        message: `${withdrawAmt} ${coin} SPOT deducted from customer internal wallet (final). Withdrawal recorded against destination ${address} on ${network.toUpperCase()} network. No chain broadcast yet. Zero operator cost.`,
+        operatorUsdtHeldAtAnyStep: 0,
+      };
 
-      const isTronNetwork = ['TRX', 'TRC20', 'TRON', 'tron', 'trx'].includes(network);
-
-      if (isTronNetwork && coin === 'USDT') {
-        // ── Use TronWeb direct blockchain transfer (no exchange restrictions) ──
-        try {
-          const { sendUsdt } = await import('../../exchange/tronweb.service');
-          const result = await sendUsdt(address, withdrawAmt);
-          withdrawalRef = result.txId;
-          status = 'submitted';
-          console.log(`[TronWeb] Sent ${withdrawAmt} USDT → ${address} txId=${withdrawalRef}`);
-        } catch (tronErr: any) {
-          // Restore balance on failure
-          await db.query(
-            'UPDATE customer_crypto_wallets SET balance = balance + ? WHERE customer_id = ? AND crypto_coin = ?',
-            [withdrawAmt, customerId, coin]
-          );
-          return res.status(400).json({ error: `TronWeb withdrawal failed: ${tronErr?.message || tronErr}` });
-        }
-      } else {
-        // ── Use Binance for other networks (ETH, BSC, SOL etc.) ──
-        try {
-          const { withdrawAsset } = await import('../../exchange/binance.service');
-          const result = await withdrawAsset(coin, address, network, withdrawAmt);
-          withdrawalRef = result?.id || result?.withdrawId || '';
-          status = 'submitted';
-        } catch (ex: any) {
-          binanceError = ex?.message || String(ex);
-          const binanceMsg = ex?.response?.data?.msg || binanceError;
-          const binanceCode = ex?.response?.data?.code;
-
-          if (binanceError.includes('401') || binanceError.includes('-1002')) {
-            status = 'pending_manual';
-            withdrawalRef = `MANUAL-${Date.now()}`;
-          } else if (binanceCode === -4104 || binanceMsg.includes('travel rule') || binanceMsg.includes('Travel Rule')) {
-            await db.query('UPDATE customer_crypto_wallets SET balance = balance + ? WHERE customer_id = ? AND crypto_coin = ?', [withdrawAmt, customerId, coin]);
-            return res.status(400).json({ error: `Binance Travel Rule restriction: Verify address on Binance first. (code: ${binanceCode})` });
-          } else {
-            await db.query('UPDATE customer_crypto_wallets SET balance = balance + ? WHERE customer_id = ? AND crypto_coin = ?', [withdrawAmt, customerId, coin]);
-            return res.status(400).json({ error: `Binance: ${binanceMsg} (code: ${binanceCode || 'unknown'})` });
+      // ────────────────────────────────────────────────────────────────────
+      // RAIL 2 (opt-in explicit): CUSTOMER-ORIGIN — customer signs & pays from THEIR external wallet.
+      // ────────────────────────────────────────────────────────────────────
+      const wantsCustomerOrigin = !!origin_address;
+      if (wantsCustomerOrigin && coin === 'USDT') {
+        const xr = await import('../../exchange/exchange-router.service');
+        if (signed_tx) {
+          try {
+            const relayed = await xr.relayCustomerSignedTransfer(signed_tx);
+            settlement = {
+              provider: 'customer-origin-tron',
+              status: relayed.broadcast ? 'completed' : 'pending_manual',
+              txId: relayed.txId || null,
+              txUrl: relayed.txId ? `https://tronscan.org/#/transaction/${relayed.txId}` : null,
+              message:
+                `${withdrawAmt} USDT SPOT deducted (final). External USDT broadcast via CUSTOMER-ORIGIN: ` +
+                `on-chain sender = ${origin_address} (customer's own wallet, operator never held $0 USDT). ` +
+                `Destination = ${address}. Broadcast: ${relayed.broadcast ? 'accepted' : 'FAILED — check tronscan tx for revert info.'}`,
+              operatorUsdtHeldAtAnyStep: 0,
+            };
+          } catch (e: any) {
+            settlement = {
+              ...settlement,
+              provider: 'customer-origin-tron',
+              status: 'pending_manual',
+              message:
+                `${withdrawAmt} USDT SPOT deducted (final). Customer-origin relay failed. ` +
+                `Reason: ${String(e?.message || e)}. Record with ${withdrawalRef} for manual retry with correct signed tx.`,
+            };
+          }
+        } else {
+          // Step 1 handshake: build unsigned tx for customer to sign. Return unsigned tx to caller.
+          try {
+            const unsigned = await xr.prepareCustomerOriginTrc20Transfer(origin_address, address, withdrawAmt);
+            settlement = {
+              provider: 'customer-origin-tron',
+              status: 'pending_manual',  // waiting for customer signature → then resubmit with signed_tx
+              txId: unsigned.txID,
+              txUrl: null,
+              message:
+                `${withdrawAmt} USDT SPOT deducted (final). Step 1 customer-origin handshake complete. ` +
+                `Pass unsigned_tx below to customer. They sign with THEIR OWN wallet private key (${origin_address}) offline. ` +
+                `Then resubmit to this endpoint as { ..., signed_tx: { ...tx, signature: ["..."] } }. ` +
+                `Operator never held $0 USDT at any step.`,
+              operatorUsdtHeldAtAnyStep: 0,
+            };
+            (settlement as any).unsigned_tx = unsigned.unsignedTx;
+            (settlement as any).customer_origin = {
+              origin_address,
+              destination_address: address,
+              amount: withdrawAmt,
+            };
+          } catch (e: any) {
+            settlement = {
+              ...settlement,
+              provider: 'customer-origin-tron',
+              status: 'pending_manual',
+              message: `${withdrawAmt} USDT SPOT deducted (final). Customer-origin build failed. Reason: ${String(e?.message || e)}.`,
+            };
           }
         }
       }
+      // ────────────────────────────────────────────────────────────────────
+      // RAIL 1 (default, 99% of cases): EXCHANGE WITHDRAW API — Binance / Kucoin
+      // USDT float held on EXCHANGE balance sheet, not operator.
+      // Operator: $0 USDT anywhere. Hot wallet: 0 USDT (pure gas reserve if needed for other flows).
+      // ────────────────────────────────────────────────────────────────────
+      else if (coin === 'USDT') {
+        try {
+          const xr = await import('../../exchange/exchange-router.service');
+          const chainForExchange = /tron|trc20/i.test(String(network)) ? 'tron' :
+                                   /bsc|bep20/i.test(String(network))  ? 'bsc'  :
+                                   /polygon|matic|erc20/i.test(String(network)) ? 'polygon' : 'tron';
+          const result = xr.exchangeWithdrawBestEffort ?
+            await xr.exchangeWithdrawBestEffort('USDT', address, String(chainForExchange), withdrawAmt, { networkOverride: String(chainForExchange) }) :
+            null;
 
-      // Record in crypto_transactions
-      const { v4: uuidv4 } = await import('uuid');
+          if (result && result.result && result.result.accepted) {
+            const isBinance = String(result.providerUsed).toLowerCase().includes('binance');
+            const txId = String(
+              result.result.raw?.id ||
+              result.result.withdrawId ||
+              result.result.txId ||
+              result.result.id ||
+              ''
+            );
+            settlement = {
+              provider: 'exchange-' + String(result.providerUsed || 'manual'),
+              status: 'submitted',  // exchange pending; confirmed later via webhook / GetWithdrawHistory
+              txId,
+              txUrl: isBinance && txId ? `https://www.binance.com/en/my/wallet/history/deposit-withdraw?id=${txId}` : null,
+              message:
+                `${withdrawAmt} USDT SPOT deducted (final). Exchange ${String(result.providerUsed).toUpperCase()} ` +
+                `withdraw API accepted → destination ${address}. Network=${network}. ` +
+                `Operator held $0 USDT at any step. Hot wallet held $0 USDT. USDT float = ${String(result.providerUsed).toUpperCase()} treasury. ` +
+                `Track via withdrawalId: ${txId || 'exchange-assigned-async'}.`,
+              operatorUsdtHeldAtAnyStep: 0,
+            };
+            (settlement as any).exchange_withdrawal_id = txId;
+          } else {
+            // Exchange API not configured / auth failed / all providers offline.
+            // Do NOT auto-select hot wallet USDT (operator said no).
+            // Return a clean pending_manual record — internal debit already final.
+            settlement = {
+              provider: 'manual_pending_exchange_config',
+              status: 'pending_manual',
+              txId: null,
+              txUrl: null,
+              message:
+                `${withdrawAmt} USDT SPOT deducted (final). Default rail (Exchange Withdraw API) unavailable — ` +
+                `no exchange API keys configured, or all providers returned error. ` +
+                `Internal ledger deduction FINAL, no rollback. Record withdrawalRef=${withdrawalRef} in pending_manual queue for ` +
+                `operator settlement via whichever method: (a) configure Binance/Kucoin keys, then retry the exchange API withdraw, ` +
+                `or (b) use sender_mode='customer_origin' + customer external wallet with real USDT, ` +
+                `or (c) operator manually settles from any external USDT address and updates this record. ` +
+                `OPERATOR HELD $0 USDT at this step. Hot wallet USDT untouched. ` +
+                `Underlying fiat backing for ${withdrawAmt} USDT is already with operator (collected at card settlement time).`,
+              operatorUsdtHeldAtAnyStep: 0,
+            };
+            (settlement as any).operator_next_step =
+              'To settle without any USDT on hot/treasury: set BINANCE_API_KEY + BINANCE_SECRET in backend/.env ' +
+              '(fund Binance USDT balance once via bank transfer, then this auto-settles next time).';
+            (settlement as any).exchange_error_detail =
+              (result && (result as any).lastError) || 'no exchangeWithdrawBestEffort result — provider priority all rejected.';
+          }
+        } catch (e: any) {
+          settlement = {
+            provider: 'manual_pending_exchange_config',
+            status: 'pending_manual',
+            txId: null,
+            txUrl: null,
+            message:
+              `${withdrawAmt} USDT SPOT deducted (final). Exchange API threw: ${String(e?.message || e)}. ` +
+              `Internal debit FINAL — pending_manual for operator to settle via exchange or customer-origin.`,
+            operatorUsdtHeldAtAnyStep: 0,
+          };
+        }
+      }
+
+      // Insert into crypto_transactions with final settlement metadata
       await db.query(
-        `INSERT INTO crypto_transactions (id, customer_id, crypto_coin, transaction_type, fiat_amount, crypto_amount, fiat_currency, exchange_rate, source, provider_mode, status)
-         VALUES (?, ?, ?, 'withdraw', 0, ?, ?, 0, ?, ?, ?)`,
-        [uuidv4(), customerId, coin, withdrawAmt, 'USD', `withdraw:${address}:${network}`, network, status]
+        `INSERT INTO crypto_transactions (id, customer_id, crypto_coin, transaction_type, fiat_amount, crypto_amount, fiat_currency, exchange_rate, source, provider_mode, status, reference, meta)
+         VALUES (?, ?, ?, 'withdraw', 0, ?, ?, 0, ?, ?, ?, ?, ?)`,
+        [
+          uuidv4(), customerId, coin, withdrawAmt, 'USD',
+          `withdraw:${address}:${network}`,
+          settlement.provider,
+          settlement.status,
+          withdrawalRef,
+          JSON.stringify({
+            destination_address: address,
+            network,
+            origin_address: origin_address || null,
+            txId: settlement.txId,
+            txUrl: settlement.txUrl,
+            settlement_provider: settlement.provider,
+            operator_never_held_usdt: true,
+          }),
+        ]
       );
 
       res.json({
@@ -389,29 +510,77 @@ export class WalletsController {
         address,
         network,
         withdrawalRef,
-        status,
-        provider: isTronNetwork && coin === 'USDT' ? 'tronweb' : 'binance',
-        txUrl: (isTronNetwork && withdrawalRef && !withdrawalRef.startsWith('MANUAL'))
-          ? `https://tronscan.org/#/transaction/${withdrawalRef}`
-          : null,
-        message: status === 'submitted'
-          ? `${withdrawAmt} ${coin} sent successfully. TxID: ${withdrawalRef}`
-          : `Withdrawal of ${withdrawAmt} ${coin} recorded as pending.`
+        status: settlement.status,
+        provider: settlement.provider,
+        balanceSource: 'customer_internal_wallet',
+        operator_never_held_usdt: true,
+        settlement_provider: settlement.provider,
+        settlement_tx_id: settlement.txId,
+        settlement_tx_url: settlement.txUrl,
+        message: settlement.message,
+        unsigned_tx: (settlement as any).unsigned_tx || undefined,
+        customer_origin: (settlement as any).customer_origin || undefined,
+        exchange_withdrawal_id: (settlement as any).exchange_withdrawal_id || undefined,
+        operator_next_step: (settlement as any).operator_next_step || undefined,
       });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
   }
 
+  // ── Merchant → Customer transfer ──────────────────────────────────────────
+  async merchantToCustomerTransfer(req: Request, res: Response) {
+    try {
+      const { merchantId, customerId, walletCode, amount, note, currency } = req.body;
+      if (!merchantId || (!customerId && !walletCode) || !amount || amount <= 0)
+        return res.status(400).json({ error: 'merchantId, customerId (or walletCode), and amount are required' });
+
+      let resolvedCustomerId = customerId;
+
+      // Accept walletCode as alternative to customerId
+      if (!resolvedCustomerId && walletCode) {
+        const { db } = await import('../../config/db');
+        const r = await db.query(
+          `SELECT customer_id FROM customer_wallets WHERE wallet_code = ? LIMIT 1`,
+          [walletCode]
+        );
+        if (!r.rows.length) return res.status(404).json({ error: `Wallet code ${walletCode} not found` });
+        resolvedCustomerId = r.rows[0].customer_id;
+      }
+
+      res.json(await walletsService.merchantToCustomerTransfer(
+        merchantId, resolvedCustomerId, Number(amount), note, currency || 'USD'
+      ));
+    } catch (e: any) {
+      res.status(e.message.includes('Insufficient') || e.message.includes('not found') ? 400 : 500)
+        .json({ error: e.message });
+    }
+  }
+
   // Merchant: buy crypto using merchant wallet funds
   async buyCryptoWithMerchant(req: Request, res: Response) {
     try {
-      const { merchantId, cryptoCoin, fiatAmount, network } = req.body;
+      const { merchantId, cryptoCoin, fiatAmount, network, allow_simulation } = req.body;
       if (!merchantId || !cryptoCoin || !fiatAmount || fiatAmount <= 0)
         return res.status(400).json({ error: 'Invalid payload' });
-      res.json(await walletsService.buyCryptoWithMerchant(merchantId, cryptoCoin, fiatAmount, network));
+      const result = await walletsService.buyCryptoWithMerchant(
+        merchantId, cryptoCoin, fiatAmount, network,
+        { allow_simulation: allow_simulation === true }
+      );
+      res.status(200).json({
+        ...result,
+        simulation_acknowledged: allow_simulation === true ? true : undefined,
+      });
     } catch (e: any) {
-      res.status(e.message.includes('Insufficient') ? 400 : 500).json({ error: e.message });
+      const msg = String(e?.message || e);
+      const badRequest =
+        /Insufficient|Invalid payload|NO_LIVE_CRYPTO_EXCHANGE_CONFIGURED|CRYPTO_PURCHASE_BLOCKED|Mock.simulation fallback rejected/.test(msg);
+      res.status(badRequest ? 400 : 500).json({
+        error: msg,
+        hint: badRequest
+          ? 'Set real BINANCE_API_KEY + BINANCE_API_SECRET in backend/.env for LIVE execution. Or (operator testing only) pass allow_simulation=true in the request to confirm SIMULATION mode.'
+          : undefined,
+      });
     }
   }
 

@@ -197,11 +197,18 @@ export const ReceiptPrinterPage = () => {
 
   // Helper to render masked PAN
   const renderMaskedPAN = () => {
-    const pan = "4242424242424242"; // Mock PAN
+    const last4 = localStorage.getItem('last_card_last4') || '0000';
+    const panMaskedRaw = localStorage.getItem('last_pan_masked') || '';
+    let first6 = '000000';
+    if (panMaskedRaw && panMaskedRaw.length >= 6) {
+      first6 = panMaskedRaw.replace(/\D/g, '').slice(0, 6) || first6;
+    } else {
+      const storedBin = localStorage.getItem('last_card_bin');
+      if (storedBin && /^\d{6}$/.test(storedBin)) first6 = storedBin;
+    }
     if (panMasking === "Fully masked") return "****************";
-    if (panMasking === "Last 4 only") return "************4242";
-    // First 6 + last 4
-    return "424242******4242";
+    if (panMasking === "Last 4 only") return `************${last4}`;
+    return `${first6}******${last4}`;
   };
 
   if (loading) {

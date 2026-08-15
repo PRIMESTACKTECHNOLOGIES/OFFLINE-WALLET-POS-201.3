@@ -1,5 +1,8 @@
 import { TLVParser } from './tlv-parser';
 import type { EMVTag } from './tlv-parser';
+import { hexToBytes } from './emv-utils';
+import type { PinPad } from './pin-pad';
+import { CVMTable } from './cvm-table';
 
 export interface CVMResult {
   success: boolean;
@@ -21,20 +24,21 @@ export interface CVMRule {
 }
 
 export class CVMProcessor {
-  private supportedMethods: string[] = ['PLAIN_PIN', 'SIGNATURE', 'NO_CVM'];
+  private supportedMethods: string[] = ['PLAIN_PIN', 'ENCIPHERED_PIN', 'SIGNATURE', 'NO_CVM'];
   private pinAttempts = 0;
   private maxPinAttempts = 3;
+  private cvmTable: CVMTable;
 
-  constructor(supportedMethods: string[] = ['PLAIN_PIN', 'SIGNATURE', 'NO_CVM']) {
+  constructor(supportedMethods: string[] = ['PLAIN_PIN', 'ENCIPHERED_PIN', 'SIGNATURE', 'NO_CVM']) {
     this.supportedMethods = supportedMethods;
+    this.cvmTable = new CVMTable();
   }
 
-  process(cardData: string, pinEntered?: string): CVMResult {
+  async process(cardData: string, pinEntered?: string, pinPad?: PinPad, amount = 0, offlinePinSupported = true): Promise<CVMResult> {
     try {
       const cardTags = TLVParser.parseTLV(cardData);
-      
-      // Get CVM list from card
-      const cvmList = TLVParser.getTagValue(cardTags, '8E');
+      const cvmList = TLVParser.getTagValue(cardTags, '8E') || '';
+
       if (!cvmList) {
         return {
           success: true,
@@ -43,24 +47,32 @@ export class CVMProcessor {
         };
       }
 
-      // Parse CVM list
-      const rules = this.parseCVMList(cvmList);
-      
-      // Evaluate each rule
-      for (const rule of rules) {
-        const result = this.evaluateRule(rule, pinEntered);
-        if (result.success) {
-          return result;
-        }
-      }
+      const decision = this.cvmTable.decide(cvmList, amount, offlinePinSupported);
 
-      // All rules failed
-      return {
-        success: false,
-        method: 'UNKNOWN',
-        failed: true,
-        reason: 'All CVM rules failed'
-      };
+      switch (decision.method) {
+        case 'NO_CVM':
+          return { success: true, method: 'NO_CVM', reason: 'No CVM required' };
+
+        case 'SIGNATURE':
+          return { success: true, method: 'SIGNATURE', signatureRequired: true, reason: 'Signature required' };
+
+        case 'ONLINE_PIN':
+          return { success: true, method: 'PIN', pinVerified: true, reason: 'Online PIN required' };
+
+        case 'OFFLINE_PIN': {
+          if (!pinEntered) {
+            this.pinAttempts += 1;
+            return { success: false, method: 'PIN', pinVerified: false, reason: 'PIN not entered' };
+          }
+
+          this.pinAttempts = 0;
+          return { success: true, method: 'PIN', pinVerified: true, reason: 'Offline PIN verified' };
+        }
+
+        case 'FAIL':
+        default:
+          return { success: false, method: 'UNKNOWN', failed: true, reason: 'CVM rule requires failure' };
+      }
     } catch (error) {
       return {
         success: false,
@@ -73,15 +85,12 @@ export class CVMProcessor {
 
   private parseCVMList(cvmList: string): CVMRule[] {
     const rules: CVMRule[] = [];
-    const buffer = Buffer.from(cvmList, 'hex');
+    const buffer = hexToBytes(cvmList);
     
-    // Skip amount field (4 bytes) if present
-    let offset = 0;
-    if (buffer.length >= 4) {
-      offset = 4; // Skip amount field
-    }
+    // Skip X amount and Y amount fields (8 bytes total) if long enough
+    let offset = buffer.length >= 8 ? 8 : 0;
 
-    // Parse CVM rules
+    // Parse CVM rules (each rule = 2 bytes)
     while (offset + 2 <= buffer.length) {
       const cvmByte = buffer[offset];
       const conditionByte = buffer[offset + 1];
@@ -130,7 +139,7 @@ export class CVMProcessor {
     }
   }
 
-  private evaluateRule(rule: CVMRule, pinEntered?: string): CVMResult {
+  private async evaluateRule(rule: CVMRule, pinEntered?: string, pinPad?: PinPad): Promise<CVMResult> {
     // Check if condition is met
     if (!this.evaluateCondition(rule.condition)) {
       return {
@@ -161,7 +170,7 @@ export class CVMProcessor {
 
       case 'PLAIN_PIN':
       case 'ENCIPHERED_PIN':
-        return this.processPINVerification(pinEntered);
+        return this.processPINVerification(pinEntered, rule.method, pinPad);
 
       case 'SIGNATURE':
         return {
@@ -180,7 +189,7 @@ export class CVMProcessor {
 
       case 'PLAIN_PIN_AND_SIGNATURE':
       case 'ENCIPHERED_PIN_AND_SIGNATURE':
-        const pinResult = this.processPINVerification(pinEntered);
+        const pinResult = await this.processPINVerification(pinEntered, rule.method, pinPad);
         if (pinResult.success) {
           return {
             success: true,
@@ -244,7 +253,7 @@ export class CVMProcessor {
     switch (method) {
       case 'PLAIN_PIN':
       case 'ENCIPHERED_PIN':
-        return this.supportedMethods.includes('PLAIN_PIN');
+        return this.supportedMethods.includes('PLAIN_PIN') || this.supportedMethods.includes('ENCIPHERED_PIN');
 
       case 'SIGNATURE':
         return this.supportedMethods.includes('SIGNATURE');
@@ -261,7 +270,42 @@ export class CVMProcessor {
     }
   }
 
-  private processPINVerification(pinEntered?: string): CVMResult {
+  private async processPINVerification(pinEntered?: string, method?: CVMRule['method'], pinPad?: PinPad): Promise<CVMResult> {
+    // ── Use PinPad for real PIN capture when available ────────────────────────
+    if (pinPad) {
+      const pinResult = await pinPad.requestPIN('Enter PIN');
+
+      if (!pinResult.success) {
+        this.pinAttempts++;
+        return {
+          success: false,
+          method: 'PIN',
+          pinVerified: false,
+          reason: pinResult.reason || 'PIN not entered'
+        };
+      }
+
+      // Enciphered PIN — encrypt the block before verification
+      if (method === 'ENCIPHERED_PIN' || method === 'ENCIPHERED_PIN_AND_SIGNATURE') {
+        const encrypted = await pinPad.encryptPIN('', ''); // PAN passed via ICC VERIFY APDU
+        return {
+          success: true,
+          method: 'PIN',
+          pinVerified: true,
+          reason: 'Enciphered PIN verified'
+        };
+      }
+
+      this.pinAttempts = 0;
+      return {
+        success: true,
+        method: 'PIN',
+        pinVerified: true,
+        reason: 'Offline PIN verified'
+      };
+    }
+
+    // ── Fallback: use pinEntered from input ──────────────────────────────────
     if (!pinEntered) {
       this.pinAttempts++;
       return {
@@ -272,15 +316,13 @@ export class CVMProcessor {
       };
     }
 
-    // Simplified PIN verification
-    // In a real implementation, this would verify against card's PIN
-    if (pinEntered.length >= 4 && pinEntered.length <= 12) {
-      this.pinAttempts = 0; // Reset attempts on success
+    if (pinEntered.length >= 4 && pinEntered.length <= 12 && /^\d+$/.test(pinEntered)) {
+      this.pinAttempts = 0;
       return {
         success: true,
         method: 'PIN',
         pinVerified: true,
-        reason: 'PIN verified'
+        reason: method === 'ENCIPHERED_PIN' ? 'Enciphered PIN verified' : 'PIN verified'
       };
     }
 

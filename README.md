@@ -2,16 +2,44 @@
 
 > Last updated: August 2026
 
-This repository contains a full offline-capable POS stack with a React + Vite dashboard, a Node.js/TypeScript backend, and an Android client. The current setup is suitable for local development and for deployment to a public HTTPS host with a real payment processor or payout provider.
+This repository contains an offline-capable POS platform with a React + Vite dashboard, a Node.js/TypeScript backend, and an Android client. The core business flow is:
 
-## What is included
+1. A customer pays with a card.
+2. The payment is recorded and credited to the merchant wallet.
+3. Later, a payout can be requested and sent to a bank account through a payout provider.
 
-- Web dashboard and POS UI
-- Node.js/TypeScript backend with SQLite storage
-- Android POS app
-- Offline transaction handling and batch sync flow
-- Primestack integration for live payment routing
-- Optional crypto and bank payout provider integrations
+## Money flow overview
+
+- Card payment enters through the payments controller and service.
+- The backend records a ledger entry and credits the merchant wallet.
+- Batch and settlement records are created for reconciliation.
+- A payout request later debits the merchant wallet and sends funds to the configured bank destination.
+
+## Full payout flow
+
+See [docs/payout-flow-diagram.md](docs/payout-flow-diagram.md) for the end-to-end diagram.
+
+### Main flow
+
+1. Customer payment request
+   - [backend/src/domain/payments/payments.controller.ts](backend/src/domain/payments/payments.controller.ts)
+   - [backend/src/domain/payments/payments.service.ts](backend/src/domain/payments/payments.service.ts)
+
+2. Ledger and wallet credit
+   - [backend/src/domain/ledger/ledger.service.ts](backend/src/domain/ledger/ledger.service.ts)
+   - [backend/src/domain/wallets/wallets.service.ts](backend/src/domain/wallets/wallets.service.ts)
+
+3. Settlement / batching
+   - [backend/src/domain/batches/batches.service.ts](backend/src/domain/batches/batches.service.ts)
+   - [backend/src/domain/settlements/settlements.router.ts](backend/src/domain/settlements/settlements.router.ts)
+
+4. Payout request and provider submission
+   - [backend/src/domain/payouts/bank.router.ts](backend/src/domain/payouts/bank.router.ts)
+   - [backend/src/domain/payouts/payoutHelpers.ts](backend/src/domain/payouts/payoutHelpers.ts)
+   - [backend/src/domain/payouts/payoutProvider.service.ts](backend/src/domain/payouts/payoutProvider.service.ts)
+
+5. Persistent storage
+   - [backend/src/config/db.ts](backend/src/config/db.ts)
 
 ## Quick start
 
@@ -19,8 +47,8 @@ This repository contains a full offline-capable POS stack with a React + Vite da
 
 Use the helper scripts in the repository root:
 
-- Run [start_all.bat](start_all.bat) to start the backend and frontend together
-- Or run [start_dev.ps1](start_dev.ps1) from PowerShell
+- Run [start_all.bat](start_all.bat) to start the backend and frontend together.
+- Or run [start_dev.ps1](start_dev.ps1) from PowerShell.
 
 ### Manual start
 
@@ -46,29 +74,18 @@ Default local URLs:
 - Backend: http://localhost:7000
 - Frontend: http://localhost:7001
 
-## Default login
-
-On the first run, sign in with:
-- Username: admin
-- Password: set in the backend environment file
-
-If no password has been configured, the default example value is admin123, but it should be changed immediately.
-
 ## Configuration
 
 Copy the backend environment template before running the app:
 
-- backend/.env.example -> backend/.env
+- [backend/.env.example](backend/.env.example) → [backend/.env](backend/.env)
 
 Important variables:
 - PORT=7000
 - JWT_SECRET=your_secret_here
-- PRIMESTACK_API_URL=http://localhost:6001
-- PRIMESTACK_API_KEY=your_key_here
-
-Optional live integrations:
-- CRYPTO_PROVIDER / CUSTOM_CRYPTO_PROVIDER
-- BANK_PAYOUT_PROVIDER / BANK_PAYOUT_API_URL
+- BANK_PAYOUT_PROVIDER=wise or external
+- BANK_PAYOUT_API_URL
+- BANK_PAYOUT_API_KEY or WISE_API_KEY
 
 ## Build commands
 
@@ -76,27 +93,14 @@ From the repository root:
 
 - Backend build: cd backend && npm run build
 - Frontend build: cd client && npm run build
-- Full build: npm run build
 
 ## Project structure
 
-- backend/ — Express API, SQLite schema, domain services, auth, payments, terminals, transactions
-- client/ — Vite React frontend and POS pages
-- android_pos_app/ — Android Kotlin app
-- docker-compose.yml — container-based startup template
-- start_all.bat / start_dev.ps1 — local development helpers
-
-## Deployment notes
-
-The app is prepared for deployment with:
-- Docker Compose
-- A public HTTPS host such as Render, Railway, Fly.io, or a similar provider
-- Environment variables for the payment processor and payout provider
-
-For public deployment, ensure that:
-- The backend is reachable over HTTPS
-- JWT secrets and API keys are not committed to source control
-- Webhook URLs are configured with the deployed backend host
+- [backend](backend) — Express API, SQLite schema, domain services, auth, payments, terminals, transactions
+- [client](client) — Vite React frontend and POS pages
+- [android_pos_app](android_pos_app) — Android app
+- [docker-compose.yml](docker-compose.yml) — container-based startup template
+- [start_all.bat](start_all.bat) and [start_dev.ps1](start_dev.ps1) — local development helpers
 
 ## Notes
 

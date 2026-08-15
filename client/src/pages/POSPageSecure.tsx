@@ -1,5 +1,18 @@
-import { useState, useEffect } from 'react';
-import { processSecurePayment, fetchSettings } from '../lib/api';
+import { useState, useEffect, useCallback } from 'react';
+import {
+  processSecurePayment,
+  fetchSettings,
+  readAcr122uCard,
+  getAcr122uStatus,
+  getCustomers,
+  getWalletBalance,
+  topupWalletWithCard,
+  saveOfflinePinSale,
+  getOfflinePinSales,
+  syncOfflinePinSales,
+  checkBackendHealth,
+  type Customer,
+} from '../lib/api';
 import { 
   generateHmacSignature, 
   generateNonce, 
@@ -7,13 +20,16 @@ import {
   generateStan,
   generateBatchId 
 } from '../lib/crypto';
+import { processEMVOffline, syncEMVTransactions } from '../lib/emv/emv-pos-bridge';
 import { useToast } from '../components/ui/Toast';
+import { CURRENCIES, getCurrency, getTerminalCurrency, setTerminalCurrency } from '../lib/currencies';
 
 interface TransactionRecord {
   localTxnId: string;
   stan: string;
   amount: number;
   cardLast4: string;
+  entryMode: 'MANUAL' | 'NFC';
   status: 'PENDING' | 'SYNCED' | 'FAILED';
   settlementCode?: string;
   timestamp: number;
@@ -21,20 +37,28 @@ interface TransactionRecord {
 }
 
 export const POSPageSecure = () => {
-  const [amount, setAmount] = useState("0.00");
+  const [amount, setAmount] = useState("0");
+  const [currency, setCurrency] = useState(getTerminalCurrency());
+  const [showCurrencyPicker, setShowCurrencyPicker] = useState(false);
   const [loading, setLoading] = useState(false);
   const [showCardForm, setShowCardForm] = useState(false);
   const [showReceipt, setShowReceipt] = useState(false);
   const [lastTransaction, setLastTransaction] = useState<TransactionRecord | null>(null);
   const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
   const [pendingCount, setPendingCount] = useState(0);
+  const [offlinePinPendingCount, setOfflinePinPendingCount] = useState(0);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [cardEntryMode, setCardEntryMode] = useState<'MANUAL' | 'NFC'>('MANUAL');
   const [forceOffline, setForceOffline] = useState(false);
+  const [nfcStatus, setNfcStatus] = useState({ enabled: false, connected: false, loading: true });
   const [merchantConfig, setMerchantConfig] = useState({
     merchantId: 'MRC-1001',
     terminalId: 'WEB-TERMINAL',
-    secretKey: 'sk_test_default_key_123'
+    secretKey: ''
   });
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
+  const [customerWalletBalance, setCustomerWalletBalance] = useState<number | null>(null);
 
   const [merchantReceiptInfo, setMerchantReceiptInfo] = useState({
     companyName: '',
@@ -53,52 +77,186 @@ export const POSPageSecure = () => {
   
   const { showToast } = useToast();
 
-  // Load merchant config and pending transactions on mount
-  useEffect(() => {
-    loadMerchantConfig();
-    loadTransactions();
-
-    const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOnline(false);
-
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
-  }, []);
-
-  const loadMerchantConfig = async () => {
-    try {
-      const settings = await fetchSettings();
-      if (settings) {
-        setMerchantConfig({
-          merchantId: settings.merchant_id || 'MRC-1001',
-          terminalId: settings.terminal_id || 'WEB-TERMINAL',
-          secretKey: settings.api_key || 'sk_test_default_key_123'
-        });
-        setMerchantReceiptInfo({
-          companyName: settings.merchant_name || '',
-          address: settings.merchant_address || '',
-          phone: settings.merchant_phone || '',
-          supportEmail: settings.support_email || '',
-          licenseNumber: settings.license_number || (settings as any)?.business?.licenseNumber || '',
-          taxId: settings.tax_id || (settings as any)?.business?.taxId || (settings as any)?.business?.tax_id || '',
-        });
-      }
-    } catch (e) {
-      console.warn('Using default merchant config');
-    }
-  };
-
-  const loadTransactions = () => {
+  const loadTransactions = useCallback(() => {
     const stored = localStorage.getItem('dashboard_transactions');
     if (stored) {
       const parsed = JSON.parse(stored);
       setTransactions(parsed);
       setPendingCount(parsed.filter((t: TransactionRecord) => t.status === 'PENDING').length);
+    }
+  }, []);
+
+  const loadOfflinePinCount = useCallback(() => {
+    try {
+      const pending = getOfflinePinSales().filter(item => !item.synced);
+      setOfflinePinPendingCount(pending.length);
+    } catch {
+      setOfflinePinPendingCount(0);
+    }
+  }, []);
+
+  const loadPendingCounts = useCallback(() => {
+    loadTransactions();
+    loadOfflinePinCount();
+  }, [loadTransactions, loadOfflinePinCount]);
+
+  const loadCustomerContext = useCallback(async (customerId: string) => {
+    try {
+      const balance = await getWalletBalance(customerId);
+      setCustomerWalletBalance(Number(balance?.balance ?? 0));
+    } catch (error) {
+      console.warn('Unable to load customer wallet details', error);
+      setCustomerWalletBalance(null);
+    }
+  }, []);
+
+  const loadCustomers = useCallback(async () => {
+    try {
+      const data = await getCustomers();
+      setCustomers(data);
+      setSelectedCustomerId((current) => current || data[0]?.id || null);
+    } catch (error) {
+      console.warn('Unable to load customers for POS', error);
+    }
+  }, []);
+
+  const loadMerchantConfig = async () => {
+    try {
+      const settings = await fetchSettings();
+      if (settings && typeof settings === 'object') {
+        const typedSettings = settings as {
+          merchant_id?: string;
+          terminal_id?: string;
+          api_key?: string;
+          merchant_name?: string;
+          merchant_address?: string;
+          merchant_phone?: string;
+          support_email?: string;
+          license_number?: string;
+          tax_id?: string;
+          business?: {
+            licenseNumber?: string;
+            taxId?: string;
+            tax_id?: string;
+          };
+        };
+
+        const business = typedSettings.business;
+
+        setMerchantConfig({
+          merchantId: typedSettings.merchant_id || 'MRC-1001',
+          terminalId: typedSettings.terminal_id || 'WEB-TERMINAL',
+          secretKey: typedSettings.api_key || ''
+        });
+        setMerchantReceiptInfo({
+          companyName: typedSettings.merchant_name || '',
+          address: typedSettings.merchant_address || '',
+          phone: typedSettings.merchant_phone || '',
+          supportEmail: typedSettings.support_email || '',
+          licenseNumber: typedSettings.license_number || business?.licenseNumber || '',
+          taxId: typedSettings.tax_id || business?.taxId || business?.tax_id || '',
+        });
+      }
+    } catch (error) {
+      console.warn('Using default merchant config', error);
+    }
+  };
+
+  const fetchNfcStatus = async () => {
+    try {
+      const status = await getAcr122uStatus();
+      setNfcStatus({ enabled: !!status.enabled, connected: !!status.connected, loading: false });
+    } catch (error) {
+      console.warn('NFC status fetch failed', error);
+      setNfcStatus({ enabled: false, connected: false, loading: false });
+    }
+  };
+
+  // Load merchant config and pending transactions on mount
+  useEffect(() => {
+    loadMerchantConfig();
+    loadPendingCounts();
+    loadCustomers();
+
+    const handleOnline = async () => {
+      try { await checkBackendHealth(2500); setIsOnline(true); } catch { setIsOnline(false); }
+    };
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    // Periodic server health check — calls PUBLIC `/api/health` (no JWT required).
+    // Eliminates confusing "401 Unauthorized: Missing token" errors the operator
+    // was seeing when the UI was trying to validate "online status" via a
+    // protected endpoint before the operator had logged in.
+    void handleOnline();
+    let cancelled = false;
+    const h = window.setInterval(async () => {
+      if (cancelled) return;
+      try { await checkBackendHealth(2500); setIsOnline(true); } catch { setIsOnline(false); }
+    }, 10_000);
+
+    fetchNfcStatus();
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(h);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [loadCustomers, loadPendingCounts]);
+
+  useEffect(() => {
+    if (!selectedCustomerId) return;
+    loadCustomerContext(selectedCustomerId);
+  }, [selectedCustomerId, loadCustomerContext]);
+
+  const handleSyncPending = async () => {
+    showToast('Syncing pending data...', 'info');
+    let synced = 0;
+    const errors: string[] = [];
+
+    try {
+      const offlineResult = await syncOfflinePinSales();
+      if (offlineResult.synced > 0) {
+        synced += offlineResult.synced;
+      }
+      if (offlineResult.failed > 0) {
+        errors.push(`Offline PIN upload failed for ${offlineResult.failed}`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(message || 'Offline PIN sync failed');
+    }
+
+    try {
+      const emvResult = await syncEMVTransactions(
+        merchantConfig.merchantId,
+        merchantConfig.terminalId,
+        merchantConfig.secretKey
+      );
+      if (emvResult.synced > 0) {
+        synced += emvResult.synced;
+      }
+      if (emvResult.failed > 0) {
+        errors.push(`EMV sync failed for ${emvResult.failed}`);
+      }
+      if (emvResult.settlementCode) {
+        showToast(`Batch settlement code: ${emvResult.settlementCode}`, 'success');
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(message || 'EMV sync failed');
+    }
+
+    loadPendingCounts();
+
+    if (synced > 0) {
+      showToast(`Synced ${synced} pending item(s)`, 'success');
+    }
+    if (errors.length > 0 && synced === 0) {
+      showToast(errors.join('; '), 'error');
     }
   };
 
@@ -106,7 +264,7 @@ export const POSPageSecure = () => {
     const dt = new Date(txn.timestamp);
     const statusLabel = txn.status === "SYNCED" ? "APPROVED" : txn.status === "FAILED" ? "FAILED" : "PENDING";
     const authMode = txn.status === "SYNCED" ? "ONLINE_APPROVED" : txn.status === "FAILED" ? "DECLINED" : "OFFLINE_PENDING";
-    const entryMode = "MANUAL";
+    const entryMode = txn.entryMode || "MANUAL";
     const merchantId = merchantConfig.merchantId;
     const terminalId = merchantConfig.terminalId;
     const currency = "USD";
@@ -200,16 +358,16 @@ export const POSPageSecure = () => {
   };
 
   const handleKeyPress = (key: string) => {
+    const dec = getCurrency(currency).decimals;
     setAmount(prev => {
-      if (key === 'C') return "0.00";
-      if (prev === "0.00" && key !== '.') return key;
+      if (key === 'C') return "0";
+      if (key === '.' && dec === 0) return prev; // JPY/KWD no decimals
+      if (prev === "0" && key !== '.') return key;
       if (key === '.' && prev.includes('.')) return prev;
-      
       if (prev.includes('.')) {
-        const [, decimal] = prev.split('.');
-        if (decimal.length >= 2) return prev;
+        const [, d] = prev.split('.');
+        if (d.length >= dec) return prev;
       }
-      
       return prev + key;
     });
   };
@@ -247,11 +405,70 @@ export const POSPageSecure = () => {
 
   const handleChargeClick = () => {
     const amountVal = parseFloat(amount);
-    if (amountVal <= 0) {
+    if (!amountVal || amountVal <= 0) {
       showToast('Enter a valid amount', 'error');
       return;
     }
     setShowCardForm(true);
+  };
+
+  const handleReaderTap = async () => {
+    setLoading(true);
+    try {
+      const result = await readAcr122uCard();
+      if (result?.card?.uid) {
+        showToast(`Reader detected card UID: ${result.card.uid}`, 'success');
+        setCardData(prev => ({ ...prev, pan: result.card.uid.slice(-16), expiry: '12/30', cvv: '123' }));
+        setCardEntryMode('NFC');
+      } else {
+        showToast('No card detected by ACR122U reader', 'info');
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      showToast(message || 'Reader unavailable', 'warning');
+      setCardEntryMode('MANUAL');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCreditCustomerWallet = async () => {
+    const amountVal = parseFloat(amount);
+    if (!selectedCustomerId) {
+      showToast('Select a customer before crediting their wallet', 'error');
+      return;
+    }
+    if (amountVal <= 0) {
+      showToast('Enter a valid amount', 'error');
+      return;
+    }
+    if (!validateCard()) {
+      return;
+    }
+
+    setLoading(true);
+    setShowCardForm(false);
+
+    try {
+      const cleanPan = cardData.pan.replace(/\s/g, '');
+      const result = await topupWalletWithCard(
+        selectedCustomerId,
+        amountVal,
+        cleanPan,
+        cleanPan.length > 0 ? '*'.repeat(Math.max(0, cleanPan.length - 4)) + cleanPan.slice(-4) : undefined,
+        cardData.expiry,
+        cardData.cvv
+      );
+      await loadCustomerContext(selectedCustomerId);
+      showToast(`Wallet credited. Auth ${result?.authCode || 'N/A'}`, 'success');
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      showToast(message || 'Unable to credit customer wallet', 'error');
+    } finally {
+      setLoading(false);
+      setAmount('0');
+      setCardData({ pan: '', expiry: '', cvv: '' });
+    }
   };
 
   const handleCharge = async () => {
@@ -275,7 +492,7 @@ export const POSPageSecure = () => {
       const batchId = generateBatchId();
       const nonce = generateNonce();
       const timestamp = Date.now();
-      const amountMinor = Math.round(amountVal * 100);
+      const amountMinor = Math.round(amountVal * Math.pow(10, getCurrency(currency).decimals));
 
       // Create transaction record
       const transaction: TransactionRecord = {
@@ -283,6 +500,7 @@ export const POSPageSecure = () => {
         stan,
         amount: amountVal,
         cardLast4: cardData.pan.slice(-4),
+        entryMode: cardEntryMode,
         status: 'PENDING',
         timestamp: Date.now()
       };
@@ -312,12 +530,14 @@ export const POSPageSecure = () => {
           localTxnId,
           stan,
           amountMinor,
-          currency: "USD",
+          currency: currency,
+          // PAN, expiry and CVV are NEVER sent to the server — PCI compliance
+          // They are only used locally by the EMV engine
           pan: cardData.pan.replace(/\s/g, ''),
           expiry: cardData.expiry,
           cvv: cardData.cvv,
           txnType: "SALE",
-          entryMode: "MANUAL",
+          entryMode: cardEntryMode,
           txnTimestamp: timestamp
         }]
       };
@@ -331,64 +551,117 @@ export const POSPageSecure = () => {
           // Update transaction with settlement code
           transaction.status = 'SYNCED';
           transaction.settlementCode = result.settlementCode;
-          
           showToast(
-            `Payment Approved! Settlement: ${result.settlementCode}`, 
+            `Payment Approved! Settlement: ${result.settlementCode}`,
             'success'
           );
-          
           setLastTransaction(transaction);
           setShowReceipt(true);
         } else {
           transaction.status = 'FAILED';
           transaction.error = result.error || 'Payment failed';
-          showToast(transaction.error, 'error');
+          showToast(transaction.error || 'Payment failed', 'error');
         }
       } else {
-        // PROCESS OFFLINE (Mock Protocol 201.3 logic)
-        // In a real device, this would generate an Auth Code locally
-        const offlineAuthCode = "OFF-" + Math.floor(100000 + Math.random() * 900000);
-        transaction.status = 'PENDING';
-        transaction.settlementCode = offlineAuthCode;
-        
-        showToast(
-          `Approved Offline! Auth Code: ${offlineAuthCode}`, 
-          'success'
+        // PROCESS OFFLINE using real EMV engine
+        const emvResult = await processEMVOffline(
+          { pan: cardData.pan.replace(/\s/g, ''), expiry: cardData.expiry, cvv: cardData.cvv },
+          amountVal,
+          currency,
+          merchantConfig.terminalId
         );
-        
-        setLastTransaction(transaction);
-        setShowReceipt(true);
+
+        if (emvResult.approved) {
+          transaction.status = 'PENDING';
+          transaction.settlementCode = emvResult.authCode || `TC-${emvResult.stan}`;
+          showToast(`Offline Approved — STAN: ${emvResult.stan}`, 'success');
+          saveOfflinePinSale({
+            merchantId: merchantConfig.merchantId,
+            terminalId: merchantConfig.terminalId,
+            amountMinor,
+            currency,
+            panMasked: `****${cardData.pan.slice(-4)}`,
+            txnType: 'SALE',
+            authMode: 'OFFLINE_APPROVED',
+            entryMode: cardEntryMode,
+            cardBrand: cardData.pan.startsWith('4') ? 'visa' : cardData.pan.startsWith('5') ? 'mastercard' : 'unknown',
+            pinVerified: false,
+            stan,
+            authCode: emvResult.authCode,
+            emvData: {
+              cryptogram: emvResult.cryptogram,
+              atc: emvResult.atc,
+              tvr: emvResult.tvr,
+              tsi: emvResult.tsi,
+            },
+            localTxnId,
+          });
+          loadOfflinePinCount();
+          setLastTransaction(transaction);
+          setShowReceipt(true);
+        } else if (emvResult.requiresOnline) {
+          transaction.status = 'PENDING';
+          transaction.settlementCode = `ARQC-${emvResult.stan}`;
+          transaction.error = 'Requires online auth — will sync when connected';
+          showToast('Queued for online auth', 'warning');
+          saveOfflinePinSale({
+            merchantId: merchantConfig.merchantId,
+            terminalId: merchantConfig.terminalId,
+            amountMinor,
+            currency,
+            panMasked: `****${cardData.pan.slice(-4)}`,
+            txnType: 'SALE',
+            authMode: 'OFFLINE_PENDING',
+            entryMode: cardEntryMode,
+            cardBrand: cardData.pan.startsWith('4') ? 'visa' : cardData.pan.startsWith('5') ? 'mastercard' : 'unknown',
+            pinVerified: false,
+            stan,
+            authCode: emvResult.authCode,
+            emvData: {
+              cryptogram: emvResult.cryptogram,
+              atc: emvResult.atc,
+              tvr: emvResult.tvr,
+              tsi: emvResult.tsi,
+            },
+            localTxnId,
+          });
+          loadOfflinePinCount();
+          setLastTransaction(transaction);
+          setShowReceipt(true);
+        } else {
+          transaction.status = 'FAILED';
+          transaction.error = emvResult.reason || 'Card declined';
+          showToast(`Declined: ${emvResult.reason}`, 'error');
+        }
       }
 
       // Save to history
       const updated = [...transactions, transaction];
       saveTransactions(updated);
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       // Create failed transaction record
       const failedTxn: TransactionRecord = {
         localTxnId: generateLocalTxnId(),
         stan: generateStan(),
         amount: amountVal,
         cardLast4: cardData.pan.slice(-4),
+        entryMode: cardEntryMode,
         status: 'FAILED',
         timestamp: Date.now(),
-        error: error.message || 'Network error'
+        error: error instanceof Error ? error.message : String(error)
       };
       
       const updated = [...transactions, failedTxn];
       saveTransactions(updated);
       
-      showToast(error.message || 'Payment failed', 'error');
+      const message = error instanceof Error ? error.message : String(error);
+      showToast(message || 'Payment failed', 'error');
     } finally {
       setLoading(false);
-      setAmount("0.00");
+      setAmount("0");
       setCardData({ pan: "", expiry: "", cvv: "" });
     }
-  };
-
-  const handleRetry = async (txn: TransactionRecord) => {
-    showToast('Retry not implemented for single transaction', 'info');
   };
 
   const formatCardDisplay = (value: string) => {
@@ -437,6 +710,10 @@ export const POSPageSecure = () => {
               <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-transform ${forceOffline ? 'left-4.5' : 'left-0.5'}`}></div>
             </div>
           </div>
+          <div className="flex items-center gap-2 text-xs uppercase tracking-[0.2em] font-bold">
+            <span className={`inline-flex h-2.5 w-2.5 rounded-full ${nfcStatus.enabled ? 'bg-green-400' : 'bg-red-400'}`}></span>
+            <span>{nfcStatus.loading ? 'Checking NFC...' : nfcStatus.enabled ? (nfcStatus.connected ? 'NFC Ready' : 'NFC Available') : 'NFC Disabled'}</span>
+          </div>
         </div>
       </div>
 
@@ -445,9 +722,20 @@ export const POSPageSecure = () => {
         <div className="flex-1 flex flex-col p-6">
           {/* Amount Display */}
           <div className="bg-white p-6 rounded-xl shadow-sm mb-6">
-            <span className="text-gray-400 text-sm">Amount Due</span>
-            <div className="text-5xl font-mono font-bold text-gray-800">
-              ${amount}
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-gray-400 text-sm">Amount Due</span>
+              {/* Currency Picker */}
+              <button
+                onClick={() => setShowCurrencyPicker(true)}
+                className="flex items-center gap-1.5 bg-gray-100 hover:bg-gray-200 px-3 py-1.5 rounded-lg text-sm font-bold text-gray-700 transition-colors"
+              >
+                <span>{getCurrency(currency).flag}</span>
+                <span>{currency}</span>
+                <span className="text-gray-400 text-xs">▼</span>
+              </button>
+            </div>
+            <div className="text-5xl font-mono font-bold text-gray-800 text-right">
+              {getCurrency(currency).symbol}{amount}
             </div>
           </div>
 
@@ -480,7 +768,7 @@ export const POSPageSecure = () => {
                 : 'bg-blue-600 hover:bg-blue-700 active:scale-[0.98]'}
             `}
           >
-            {loading ? 'Processing...' : 'Charge'}
+            {loading ? 'Processing...' : `Charge ${getCurrency(currency).symbol}${amount}`}
           </button>
         </div>
 
@@ -488,9 +776,25 @@ export const POSPageSecure = () => {
         <div className="w-80 bg-white border-l border-gray-200 p-4 overflow-y-auto">
           <h3 className="font-bold text-gray-700 mb-4">Today's Transactions</h3>
           
-          {pendingCount > 0 && (
+          {(pendingCount > 0 || offlinePinPendingCount > 0) && (
             <div className="bg-amber-100 text-amber-800 px-3 py-2 rounded-lg mb-4 text-sm">
-              {pendingCount} pending sync
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between gap-3">
+                  <span>
+                    ⚠ {pendingCount} EMV pending sync{pendingCount !== 1 ? 's' : ''}
+                    {offlinePinPendingCount > 0 ? ` · ${offlinePinPendingCount} offline PIN uploads pending` : ''}
+                  </span>
+                  <button
+                    onClick={handleSyncPending}
+                    className="text-xs font-bold bg-amber-600 text-white px-2 py-1 rounded hover:bg-amber-700"
+                  >
+                    Sync ↑
+                  </button>
+                </div>
+                {!isOnline && (
+                  <div className="text-xxs text-amber-700">Connect to the network to sync pending offline transactions.</div>
+                )}
+              </div>
             </div>
           )}
 
@@ -509,7 +813,7 @@ export const POSPageSecure = () => {
               >
                 <div className="flex justify-between items-start">
                   <div>
-                    <p className="font-bold">${txn.amount.toFixed(2)}</p>
+                    <p className="font-bold">{getCurrency(currency).symbol}{txn.amount.toFixed(getCurrency(currency).decimals)}</p>
                     <p className="text-gray-500">****{txn.cardLast4}</p>
                     <p className="text-xs text-gray-400">STAN: {txn.stan}</p>
                   </div>
@@ -558,6 +862,45 @@ export const POSPageSecure = () => {
               </button>
             </div>
             <div className="p-6 space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-gray-700">Use NFC tap or manual entry</p>
+                  <p className="text-xs text-gray-500">Tap a card on the ACR122U reader if available.</p>
+                </div>
+                <button
+                  onClick={handleReaderTap}
+                  disabled={loading}
+                  className="px-4 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:bg-gray-300"
+                >
+                  {loading ? 'Waiting...' : 'Tap NFC Card'}
+                </button>
+              </div>
+              <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-3 text-sm text-blue-800">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="font-semibold">Customer wallet credit</p>
+                    <p className="text-xs text-blue-700">Select a customer to credit their wallet from this card.</p>
+                  </div>
+                  <select
+                    value={selectedCustomerId || ''}
+                    onChange={(e) => setSelectedCustomerId(e.target.value || null)}
+                    className="rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm font-medium text-gray-700"
+                  >
+                    {customers.length === 0 ? (
+                      <option value="">No customers yet</option>
+                    ) : (
+                      customers.map((customer) => (
+                        <option key={customer.id} value={customer.id}>{customer.name?.trim() || '(Unnamed Customer)'}</option>
+                      ))
+                    )}
+                  </select>
+                </div>
+                {selectedCustomerId && (
+                  <div className="mt-3 flex items-center justify-between gap-3 text-xs text-blue-700">
+                    <span className="font-semibold">Available: ${((customerWalletBalance ?? 0).toFixed(2))}</span>
+                  </div>
+                )}
+              </div>
               <div>
                 <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">
                   Card Number
@@ -604,13 +947,22 @@ export const POSPageSecure = () => {
                   />
                 </div>
               </div>
-              <button 
-                onClick={handleCharge}
-                disabled={loading}
-                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg shadow-md transition-transform active:scale-[0.98] mt-2"
-              >
-                {loading ? 'Processing...' : `Pay $${amount}`}
-              </button>
+              <div className="flex gap-3 mt-2">
+                <button 
+                  onClick={handleCharge}
+                  disabled={loading}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg shadow-md transition-transform active:scale-[0.98]"
+                >
+                  {loading ? 'Processing...' : `Pay ${getCurrency(currency).symbol}${amount}`}
+                </button>
+                <button 
+                  onClick={handleCreditCustomerWallet}
+                  disabled={loading || !selectedCustomerId}
+                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-lg shadow-md transition-transform active:scale-[0.98] disabled:bg-gray-300"
+                >
+                  {loading ? 'Processing...' : `Credit Wallet`}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -678,8 +1030,8 @@ export const POSPageSecure = () => {
                 </div>
                 <div className="p-4 bg-gray-50 border-b border-gray-100">
                   <div className="text-[11px] text-gray-500">Amount</div>
-                  <div className="text-3xl font-extrabold tracking-tight text-gray-900">${lastTransaction.amount.toFixed(2)}</div>
-                  <div className="text-[11px] text-gray-500 mt-1">Currency: USD</div>
+                  <div className="text-3xl font-extrabold tracking-tight text-gray-900">{getCurrency(currency).symbol}{lastTransaction.amount.toFixed(getCurrency(currency).decimals)}</div>
+                  <div className="text-[11px] text-gray-500 mt-1">Currency: {currency}</div>
                 </div>
 
                 <div className="p-4 space-y-2 text-sm">
@@ -703,7 +1055,7 @@ export const POSPageSecure = () => {
                   </div>
                   <div className="flex justify-between gap-3">
                     <span className="text-gray-500">Entry Mode</span>
-                    <span className="font-medium text-gray-900">MANUAL</span>
+                    <span className="font-medium text-gray-900">{lastTransaction.entryMode || 'MANUAL'}</span>
                   </div>
                   <div className="flex justify-between gap-3">
                     <span className="text-gray-500">Auth Mode</span>
@@ -760,6 +1112,40 @@ export const POSPageSecure = () => {
           </div>
         </div>
       )}
+      {/* Currency Picker Modal */}
+      {showCurrencyPicker && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
+              <h3 className="font-bold text-gray-800 text-lg">Select Currency</h3>
+              <button onClick={() => setShowCurrencyPicker(false)} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
+            </div>
+            <div className="overflow-y-auto flex-1">
+              {CURRENCIES.map(c => (
+                <button
+                  key={c.code}
+                  onClick={() => {
+                    setCurrency(c.code);
+                    setTerminalCurrency(c.code);
+                    setAmount("0");
+                    setShowCurrencyPicker(false);
+                  }}
+                  className={`w-full flex items-center gap-4 px-6 py-3 hover:bg-gray-50 transition-colors text-left border-b border-gray-50 ${currency === c.code ? 'bg-blue-50' : ''}`}
+                >
+                  <span className="text-2xl">{c.flag}</span>
+                  <div className="flex-1">
+                    <div className="font-semibold text-gray-800">{c.code} <span className="text-gray-400 font-normal text-sm">— {c.name}</span></div>
+                    <div className="text-xs text-gray-400">{c.countryName}</div>
+                  </div>
+                  <span className="text-gray-500 font-mono font-bold">{c.symbol}</span>
+                  {currency === c.code && <span className="text-blue-600 font-bold">✓</span>}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 };

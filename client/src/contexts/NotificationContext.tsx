@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, ReactNode, useEffect, useCallback } from 'react';
+import { playNotificationSound } from '../lib/sound';
 
 export type NotificationType = 'info' | 'success' | 'warning' | 'error';
 
@@ -14,7 +15,7 @@ export interface Notification {
 interface NotificationContextType {
   notifications: Notification[];
   unreadCount: number;
-  addNotification: (title: string, message: string, type?: NotificationType) => void;
+  addNotification: (title: string, message: string, type?: NotificationType, playSound?: boolean) => void;
   markAsRead: (id: string) => void;
   markAllAsRead: () => void;
   clearNotifications: () => void;
@@ -24,6 +25,7 @@ const NotificationContext = createContext<NotificationContextType | undefined>(u
 
 export const NotificationProvider = ({ children }: { children: ReactNode }) => {
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [lastCheckTime, setLastCheckTime] = useState(Date.now());
 
   // Load from local storage on mount
   useEffect(() => {
@@ -53,7 +55,7 @@ export const NotificationProvider = ({ children }: { children: ReactNode }) => {
     localStorage.setItem('pos_notifications', JSON.stringify(notifications));
   }, [notifications]);
 
-  const addNotification = useCallback((title: string, message: string, type: NotificationType = 'info') => {
+  const addNotification = useCallback((title: string, message: string, type: NotificationType = 'info', playSound: boolean = true) => {
     const newNotification: Notification = {
       id: Date.now().toString(36) + Math.random().toString(36).substr(2),
       title,
@@ -63,6 +65,10 @@ export const NotificationProvider = ({ children }: { children: ReactNode }) => {
       timestamp: Date.now(),
     };
     setNotifications(prev => [newNotification, ...prev].slice(0, 50)); // Keep last 50
+    
+    if (playSound) {
+      playNotificationSound(type);
+    }
   }, []);
 
   const markAsRead = useCallback((id: string) => {

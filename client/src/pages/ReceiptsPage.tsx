@@ -145,7 +145,7 @@ export function ReceiptsPage() {
                 <div className="flex justify-between items-center">
                   <span className="text-lg font-bold">TOTAL</span>
                   <span className="text-2xl font-bold">
-                    ${selectedReceipt.amount} {selectedReceipt.currency}
+                    ${parseFloat(selectedReceipt.amount || '0').toFixed(2)} {selectedReceipt.currency}
                   </span>
                 </div>
               </div>

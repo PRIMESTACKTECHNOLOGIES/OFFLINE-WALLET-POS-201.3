@@ -1,4 +1,6 @@
-import { TLVParser, EMVTag } from './tlv-parser';
+import { TLVParser } from './tlv-parser';
+import type { EMVTag } from './tlv-parser';
+import { hexToBytes, isBitSet } from './emv-utils';
 
 export interface ActionCodeResult {
   decision: 'APPROVE' | 'DECLINE' | 'ONLINE';
@@ -132,7 +134,7 @@ export class ActionCodeProcessor {
     }
   ): ActionCodeResult {
     try {
-      const bytes = Buffer.from(actionCode, 'hex');
+      const bytes = hexToBytes(actionCode);
       
       if (bytes.length < 5) {
         return {
@@ -214,17 +216,15 @@ export class ActionCodeProcessor {
     // Bit 8: Offline data authentication was not performed
     if ((byte1 & 0x80) !== 0) {
       const aip = TLVParser.getTagValue(cardTags, '82');
-      if (aip && (Buffer.from(aip, 'hex')[0] & 0x60) !== 0) {
+      if (aip && (hexToBytes(aip)[0] & 0x60) !== 0) {
         checks.push({ decision: 'ONLINE', reason: 'Offline data authentication not performed' });
       }
     }
 
     // Bit 7: SDA failed
     if ((byte1 & 0x40) !== 0) {
-      // In a real implementation, this would check if SDA failed
-      // For now, we'll check if card supports SDA
       const aip = TLVParser.getTagValue(cardTags, '82');
-      if (aip && (Buffer.from(aip, 'hex')[0] & 0x40) !== 0) {
+      if (aip && (hexToBytes(aip)[0] & 0x40) !== 0) {
         checks.push({ decision: 'DECLINE', reason: 'SDA failed' });
       }
     }
@@ -237,16 +237,11 @@ export class ActionCodeProcessor {
       }
     }
 
-    // Bit 5: Card appears on terminal exception file
-    if ((byte1 & 0x10) !== 0) {
-      // In a real implementation, this would check terminal exception file
-      // For now, we'll assume it's not on the exception file
-    }
-
+    // Bit 5: Card appears on terminal exception file — not implemented in software POS
     // Bit 4: DDA failed
     if ((byte1 & 0x08) !== 0) {
       const aip = TLVParser.getTagValue(cardTags, '82');
-      if (aip && (Buffer.from(aip, 'hex')[0] & 0x20) !== 0) {
+      if (aip && (hexToBytes(aip)[0] & 0x20) !== 0) {
         checks.push({ decision: 'DECLINE', reason: 'DDA failed' });
       }
     }
@@ -254,24 +249,21 @@ export class ActionCodeProcessor {
     // Bit 3: CDA failed
     if ((byte1 & 0x04) !== 0) {
       const aip = TLVParser.getTagValue(cardTags, '82');
-      if (aip && (Buffer.from(aip, 'hex')[0] & 0x80) !== 0) {
+      if (aip && (hexToBytes(aip)[0] & 0x01) !== 0) {
         checks.push({ decision: 'DECLINE', reason: 'CDA failed' });
       }
     }
 
-    // Bit 2: SDA selected
+    // Bit 2: SDA selected (AIP byte1 bits 6:5 = 01)
     if ((byte1 & 0x02) !== 0) {
       const aip = TLVParser.getTagValue(cardTags, '82');
-      if (aip && (Buffer.from(aip, 'hex')[0] & 0x40) !== 0 && (Buffer.from(aip, 'hex')[0] & 0x60) === 0x40) {
+      if (aip && (hexToBytes(aip)[0] & 0x60) === 0x40) {
         checks.push({ decision: 'ONLINE', reason: 'SDA selected' });
       }
     }
 
-    // Bit 1: RFU
-
     return checks;
   }
-
   private checkByte2(byte2: number, cardTags: EMVTag[], terminalTags: EMVTag[], transactionData: any): Array<{ decision: 'APPROVE' | 'DECLINE' | 'ONLINE'; reason: string }> {
     const checks: Array<{ decision: 'APPROVE' | 'DECLINE' | 'ONLINE'; reason: string }> = [];
 
@@ -320,7 +312,7 @@ export class ActionCodeProcessor {
     // Bit 4: New card
     if ((byte2 & 0x08) !== 0) {
       const aip = TLVParser.getTagValue(cardTags, '82');
-      if (aip && (Buffer.from(aip, 'hex')[0] & 0x08) !== 0) {
+      if (aip && (hexToBytes(aip)[0] & 0x08) !== 0) {
         checks.push({ decision: 'ONLINE', reason: 'New card' });
       }
     }

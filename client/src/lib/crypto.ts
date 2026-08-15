@@ -3,6 +3,21 @@
  * Matches backend and Android app exactly
  */
 
+function getBrowserSubtleCrypto(): SubtleCrypto {
+  const webCrypto =
+    (typeof window !== 'undefined' && window.crypto) ||
+    (typeof self !== 'undefined' && (self as any).crypto) ||
+    (typeof globalThis !== 'undefined' && (globalThis as any).crypto);
+
+  if (!webCrypto || typeof webCrypto.subtle === 'undefined') {
+    throw new Error(
+      'Web Crypto API is unavailable in this browser/environment. Please use a modern browser on localhost or HTTPS.'
+    );
+  }
+
+  return webCrypto.subtle;
+}
+
 export async function generateHmacSignature(
   protocolVersion: string,
   merchantId: string,
@@ -22,7 +37,8 @@ export async function generateHmacSignature(
   const key = encoder.encode(secretKey);
   const data = encoder.encode(payload);
   
-  const cryptoKey = await crypto.subtle.importKey(
+  const subtle = getBrowserSubtleCrypto();
+  const cryptoKey = await subtle.importKey(
     'raw',
     key,
     { name: 'HMAC', hash: 'SHA-256' },
@@ -30,7 +46,7 @@ export async function generateHmacSignature(
     ['sign']
   );
   
-  const signature = await crypto.subtle.sign('HMAC', cryptoKey, data);
+  const signature = await subtle.sign('HMAC', cryptoKey, data);
   return btoa(String.fromCharCode(...new Uint8Array(signature)));
 }
 

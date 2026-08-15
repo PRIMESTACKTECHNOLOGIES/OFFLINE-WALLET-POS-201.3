@@ -1,0 +1,10 @@
+<host-apdu-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/hce_service_description"
+    android:requireDeviceUnlock="false">
+
+    <aid-group android:description="@string/virtual_wallet_card"
+        android:category="payment">
+        <aid-filter android:name="F0394148341010"/>
+    </aid-group>
+
+</host-apdu-service>

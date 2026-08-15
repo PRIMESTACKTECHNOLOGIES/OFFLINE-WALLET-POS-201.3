@@ -22,9 +22,10 @@ router.get('/merchant/:merchantId/settlements/unsettled', async (req, res) => {
 });
 
 // POST /api/merchant/settlements/:settlementId/settle
+// — Bank sent real money for a single POS sale — mark it settled.
 router.post('/merchant/settlements/:settlementId/settle', async (req, res) => {
   const { settlementId } = req.params as any;
-  const { note, external_ref } = req.body || {};
+  const { note, external_ref, provider_ref, settled_by } = req.body || {};
   try {
     await db.query('BEGIN IMMEDIATE');
     const sel = await db.query('SELECT * FROM merchant_pos_settlements WHERE id = ? LIMIT 1', [settlementId]);
@@ -32,17 +33,101 @@ router.post('/merchant/settlements/:settlementId/settle', async (req, res) => {
     const settlement = sel.rows[0];
     if (settlement.status === 'settled') { await db.query('ROLLBACK'); return res.status(400).json({ error: 'Already settled' }); }
 
-    const metaUpdate = Object.assign({}, settlement.meta ? JSON.parse(settlement.meta) : {}, { note, external_ref });
+    const metaUpdate = Object.assign(
+      {},
+      settlement.meta ? JSON.parse(settlement.meta) : {},
+      { note: note || null, external_ref: external_ref || null, provider_ref: provider_ref || null, settled_by: settled_by || null }
+    );
     await db.query(
-      `UPDATE merchant_pos_settlements SET status = 'settled', settled_at = CURRENT_TIMESTAMP, meta = ? WHERE id = ?`,
+      `UPDATE merchant_pos_settlements SET status = 'settled', settled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, meta = ? WHERE id = ?`,
       [JSON.stringify(metaUpdate), settlementId]
     );
 
     await db.query('COMMIT');
-    res.json({ ok: true, status: 'settled' });
+    res.json({ ok: true, status: 'settled', settlement_id: settlementId });
   } catch (e: any) {
     try { await db.query('ROLLBACK'); } catch (err) { /* ignore */ }
     console.error(e); res.status(500).json({ error: e.message });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// POST /api/merchant/:merchantId/settlements/batch-settle
+// — Bank settlement batch (EOD): settle multiple POS sales at once.
+//   This is the normal "Bank sends real money → Mark POS sale settled" step.
+// ──────────────────────────────────────────────────────────────────────────────
+router.post('/merchant/:merchantId/settlements/batch-settle', async (req, res) => {
+  const { merchantId } = req.params as any;
+  const {
+    settlement_ids,
+    external_batch_ref,
+    provider_ref,
+    note,
+    settled_by,
+  } = (req.body || {}) as {
+    settlement_ids?: string[];
+    external_batch_ref?: string;
+    provider_ref?: string;
+    note?: string;
+    settled_by?: string;
+  };
+  try {
+    const ids = Array.isArray(settlement_ids) ? settlement_ids.filter(s => typeof s === 'string' && s.trim()) : [];
+    if (!ids.length) return res.status(400).json({ error: 'settlement_ids (non-empty array) is required' });
+
+    await db.query('BEGIN IMMEDIATE');
+    const placeholders = ids.map(() => '?').join(',');
+    const existingQ = await db.query(
+      `SELECT id, status, meta FROM merchant_pos_settlements
+       WHERE merchant_id = ? AND id IN (${placeholders})`,
+      [merchantId, ...ids]
+    );
+    if (!existingQ.rows.length) {
+      await db.query('ROLLBACK');
+      return res.status(404).json({ error: 'No matching settlement rows found for this merchant' });
+    }
+    const rows: Array<{ id: string; status: string; meta: any }> = existingQ.rows as any;
+
+    const alreadySettled = rows.filter(r => r.status === 'settled').map(r => r.id);
+    if (alreadySettled.length) {
+      await db.query('ROLLBACK');
+      return res.status(400).json({ error: 'Some rows already settled', already_settled: alreadySettled });
+    }
+    if (rows.length !== ids.length) {
+      const found = new Set(rows.map(r => r.id));
+      const missing = ids.filter(i => !found.has(i));
+      await db.query('ROLLBACK');
+      return res.status(404).json({ error: 'Some settlement_ids do not exist for this merchant', missing_ids: missing });
+    }
+
+    let settledCount = 0;
+    let totalAmount = 0;
+    for (const row of rows) {
+      const metaUpdate = Object.assign(
+        {},
+        row.meta ? (typeof row.meta === 'string' ? JSON.parse(row.meta) : row.meta) : {},
+        { note: note || null, external_batch_ref: external_batch_ref || null, provider_ref: provider_ref || null, settled_by: settled_by || null }
+      );
+      const up = await db.query(
+        `UPDATE merchant_pos_settlements SET status = 'settled', settled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, meta = ?
+         WHERE id = ? AND status <> 'settled'`,
+        [JSON.stringify(metaUpdate), row.id]
+      );
+      settledCount += (up.rowCount as number) || 0;
+      // Read back amount (rows array has original row objects from SELECT but we didn't SELECT amount — re-query)
+    }
+    const amountQ = await db.query(
+      `SELECT COALESCE(SUM(amount),0) AS total FROM merchant_pos_settlements WHERE id IN (${placeholders})`,
+      ids
+    );
+    totalAmount = Number((amountQ.rows?.[0] as any)?.total ?? 0);
+
+    await db.query('COMMIT');
+    res.json({ ok: true, settled_count: settledCount, total_settled_amount: totalAmount, external_batch_ref: external_batch_ref || null });
+  } catch (e: any) {
+    try { await db.query('ROLLBACK'); } catch (_err) { /* ignore */ }
+    console.error('[batch-settle]', e);
+    res.status(500).json({ error: String(e?.message || e).slice(0, 500) });
   }
 });
 

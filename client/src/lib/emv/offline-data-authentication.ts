@@ -1,5 +1,9 @@
-import crypto from 'crypto';
-import { TLVParser, EMVTag } from './tlv-parser';
+import { TLVParser } from './tlv-parser';
+import type { EMVTag } from './tlv-parser';
+import { hexToBytes } from './emv-utils';
+import { RSAODA, type CAPK as RSA_CAPK, type ODAResult } from './rsa-oda';
+import { ICCPublicKeyRecovery } from './icc-public-key';
+import { OdaErrorCode, odaErrorReason } from './odaErrorCodes';
 
 export interface AuthenticationResult {
   success: boolean;
@@ -7,13 +11,10 @@ export interface AuthenticationResult {
   error?: string;
   signature?: string;
   certificate?: string;
+  errorCode?: OdaErrorCode;
 }
 
-export interface CAPK {
-  rid: string;
-  index: string;
-  modulus: string;
-  exponent: string;
+export interface CAPK extends RSA_CAPK {
   hashAlgorithm: string;
   algorithm: string;
   expiryDate: string;
@@ -21,267 +22,376 @@ export interface CAPK {
 
 export class OfflineDataAuthentication {
   private capks: CAPK[] = [];
+  private rsa: RSAODA;
 
   constructor(capks: CAPK[] = []) {
     this.capks = capks;
+    this.rsa = new RSAODA(capks);
   }
 
-  authenticate(cardData: string, terminalData: string): AuthenticationResult {
+  async authenticate(cardData: string, terminalData: string): Promise<AuthenticationResult> {
     const cardTags = TLVParser.parseTLV(cardData);
-    
-    // Check authentication method from AIP
+
     const aip = TLVParser.getTagValue(cardTags, '82');
     if (!aip) {
-      return { success: false, method: 'SDA', error: 'AIP not found' };
+      return {
+        success: false,
+        method: 'SDA',
+        errorCode: OdaErrorCode.AIP_MISSING,
+        error: odaErrorReason(OdaErrorCode.AIP_MISSING),
+      };
     }
 
-    const aipBytes = Buffer.from(aip, 'hex');
+    const aipBytes = hexToBytes(aip);
     const supportsSDA = (aipBytes[0] & 0x40) !== 0;
     const supportsDDA = (aipBytes[0] & 0x20) !== 0;
-    const supportsCDA = (aipBytes[0] & 0x80) !== 0;
+    const supportsCDA = (aipBytes[0] & 0x01) !== 0;
 
-    // Try CDA first if supported
+    if (!supportsSDA && !supportsDDA && !supportsCDA) {
+      return {
+        success: false,
+        method: 'SDA',
+        errorCode: OdaErrorCode.NO_AUTH_METHOD,
+        error: odaErrorReason(OdaErrorCode.NO_AUTH_METHOD),
+      };
+    }
+
     if (supportsCDA) {
       return this.performCDA(cardData, terminalData);
     }
 
-    // Try DDA if supported
     if (supportsDDA) {
       return this.performDDA(cardData, terminalData);
     }
 
-    // Fall back to SDA
     if (supportsSDA) {
       return this.performSDA(cardData);
     }
 
-    return { success: false, method: 'SDA', error: 'No supported authentication method' };
+    return {
+      success: false,
+      method: 'SDA',
+      errorCode: OdaErrorCode.NO_AUTH_METHOD,
+      error: odaErrorReason(OdaErrorCode.NO_AUTH_METHOD),
+    };
   }
 
-  private performSDA(cardData: string): AuthenticationResult {
+  private async performSDA(cardData: string): Promise<AuthenticationResult> {
     try {
       const cardTags = TLVParser.parseTLV(cardData);
-      
-      // Get signed static application data (SSAD)
+
       const ssad = TLVParser.getTagValue(cardTags, '93');
       if (!ssad) {
-        return { success: false, method: 'SDA', error: 'SSAD not found' };
+        return {
+          success: false,
+          method: 'SDA',
+          errorCode: OdaErrorCode.SDA_SSAD_MISSING,
+          error: odaErrorReason(OdaErrorCode.SDA_SSAD_MISSING),
+        };
       }
 
-      // Get issuer public key certificate
       const issuerCert = TLVParser.getTagValue(cardTags, '90');
       if (!issuerCert) {
-        return { success: false, method: 'SDA', error: 'Issuer certificate not found' };
+        return {
+          success: false,
+          method: 'SDA',
+          errorCode: OdaErrorCode.SDA_ISSUER_CERT_MISSING,
+          error: odaErrorReason(OdaErrorCode.SDA_ISSUER_CERT_MISSING),
+        };
       }
 
-      // Get CA public key
       const rid = TLVParser.getTagValue(cardTags, '9F06');
       const capki = TLVParser.getTagValue(cardTags, '8F');
-      
+
       if (!rid || !capki) {
-        return { success: false, method: 'SDA', error: 'RID or CAPKI not found' };
+        return {
+          success: false,
+          method: 'SDA',
+          errorCode: OdaErrorCode.SDA_RID_CAPKI_MISSING,
+          error: odaErrorReason(OdaErrorCode.SDA_RID_CAPKI_MISSING),
+        };
       }
 
       const capk = this.findCAPK(rid, capki);
       if (!capk) {
-        return { success: false, method: 'SDA', error: 'CAPK not found' };
+        return {
+          success: false,
+          method: 'SDA',
+          errorCode: OdaErrorCode.SDA_CAPK_NOT_FOUND,
+          error: odaErrorReason(OdaErrorCode.SDA_CAPK_NOT_FOUND),
+        };
       }
 
-      // Verify issuer certificate
-      const issuerCertVerified = this.verifyCertificate(issuerCert, capk);
-      if (!issuerCertVerified) {
-        return { success: false, method: 'SDA', error: 'Issuer certificate verification failed' };
+      const result: ODAResult = await this.rsa.verifySDA(
+        hexToBytes(ssad),
+        hexToBytes(issuerCert),
+        capk
+      );
+
+      if (result.success) {
+        return {
+          success: true,
+          method: 'SDA',
+          signature: ssad,
+          certificate: issuerCert,
+        };
       }
 
-      // Extract issuer public key from certificate
-      const issuerPublicKey = this.extractPublicKeyFromCertificate(issuerCert);
-      
-      // Verify SSAD using issuer public key
-      const ssadVerified = this.verifySignature(ssad, this.buildStaticDataToSign(cardTags), issuerPublicKey);
-      
-      return {
-        success: ssadVerified,
-        method: 'SDA',
-        error: ssadVerified ? undefined : 'SSAD verification failed',
-        signature: ssad,
-        certificate: issuerCert
-      };
-    } catch (error) {
       return {
         success: false,
         method: 'SDA',
-        error: `SDA failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+        errorCode: OdaErrorCode.SDA_RSA_FAILED,
+        error: odaErrorReason(OdaErrorCode.SDA_RSA_FAILED, result.reason),
+        signature: ssad,
+        certificate: issuerCert,
+      };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'Unknown error';
+      return {
+        success: false,
+        method: 'SDA',
+        errorCode: OdaErrorCode.SDA_EXCEPTION,
+        error: odaErrorReason(OdaErrorCode.SDA_EXCEPTION, detail),
       };
     }
   }
 
-  private performDDA(cardData: string, terminalData: string): AuthenticationResult {
+  private async performDDA(cardData: string, terminalData: string): Promise<AuthenticationResult> {
     try {
       const cardTags = TLVParser.parseTLV(cardData);
-      
-      // Get ICC public key certificate
+
       const iccCert = TLVParser.getTagValue(cardTags, '9F46');
       if (!iccCert) {
-        return { success: false, method: 'DDA', error: 'ICC certificate not found' };
+        return {
+          success: false,
+          method: 'DDA',
+          errorCode: OdaErrorCode.DDA_ICC_CERT_MISSING,
+          error: odaErrorReason(OdaErrorCode.DDA_ICC_CERT_MISSING),
+        };
       }
 
-      // Get CA public key
+      const dynamicSignature = TLVParser.getTagValue(cardTags, '9F4B');
+      if (!dynamicSignature) {
+        return {
+          success: false,
+          method: 'DDA',
+          errorCode: OdaErrorCode.DDA_DYNAMIC_SIG_MISSING,
+          error: odaErrorReason(OdaErrorCode.DDA_DYNAMIC_SIG_MISSING),
+        };
+      }
+
+      const iccKey = await ICCPublicKeyRecovery.recover(cardData);
+
+      if (iccKey) {
+        const result: ODAResult = await this.rsa.verifyDDA(
+          hexToBytes(dynamicSignature),
+          hexToBytes(iccCert),
+          iccKey.key
+        );
+
+        if (result.success) {
+          return {
+            success: true,
+            method: 'DDA',
+            signature: dynamicSignature,
+            certificate: iccCert,
+          };
+        }
+
+        return {
+          success: false,
+          method: 'DDA',
+          errorCode: OdaErrorCode.DDA_RSA_FAILED,
+          error: odaErrorReason(OdaErrorCode.DDA_RSA_FAILED, result.reason),
+          signature: dynamicSignature,
+          certificate: iccCert,
+        };
+      }
+
       const rid = TLVParser.getTagValue(cardTags, '9F06');
       const capki = TLVParser.getTagValue(cardTags, '8F');
-      
+
       if (!rid || !capki) {
-        return { success: false, method: 'DDA', error: 'RID or CAPKI not found' };
+        return {
+          success: false,
+          method: 'DDA',
+          errorCode: OdaErrorCode.DDA_ICC_KEY_UNRECOVERABLE_RID_CAPKI_MISSING,
+          error: odaErrorReason(OdaErrorCode.DDA_ICC_KEY_UNRECOVERABLE_RID_CAPKI_MISSING),
+        };
       }
 
       const capk = this.findCAPK(rid, capki);
       if (!capk) {
-        return { success: false, method: 'DDA', error: 'CAPK not found' };
+        return {
+          success: false,
+          method: 'DDA',
+          errorCode: OdaErrorCode.DDA_ICC_KEY_UNRECOVERABLE_CAPK_MISSING,
+          error: odaErrorReason(OdaErrorCode.DDA_ICC_KEY_UNRECOVERABLE_CAPK_MISSING),
+        };
       }
 
-      // Verify ICC certificate
-      const iccCertVerified = this.verifyCertificate(iccCert, capk);
-      if (!iccCertVerified) {
-        return { success: false, method: 'DDA', error: 'ICC certificate verification failed' };
+      const issuerKey = await this.rsa.importCAPK(capk);
+      const result: ODAResult = await this.rsa.verifyDDA(
+        hexToBytes(dynamicSignature),
+        hexToBytes(iccCert),
+        issuerKey
+      );
+
+      if (result.success) {
+        return {
+          success: true,
+          method: 'DDA',
+          signature: dynamicSignature,
+          certificate: iccCert,
+        };
       }
 
-      // Extract ICC public key from certificate
-      const iccPublicKey = this.extractPublicKeyFromCertificate(iccCert);
-      
-      // Generate unpredictable number
-      const unpredictableNumber = crypto.randomBytes(4).toString('hex');
-      
-      // Build dynamic data to sign
-      const dynamicData = this.buildDynamicDataToSign(cardTags, terminalData, unpredictableNumber);
-      
-      // Get dynamic signature from card (would be done via APDU in real implementation)
-      const dynamicSignature = TLVParser.getTagValue(cardTags, '9F4B');
-      if (!dynamicSignature) {
-        return { success: false, method: 'DDA', error: 'Dynamic signature not found' };
-      }
-
-      // Verify dynamic signature
-      const signatureVerified = this.verifySignature(dynamicSignature, dynamicData, iccPublicKey);
-      
-      return {
-        success: signatureVerified,
-        method: 'DDA',
-        error: signatureVerified ? undefined : 'Dynamic signature verification failed',
-        signature: dynamicSignature,
-        certificate: iccCert
-      };
-    } catch (error) {
       return {
         success: false,
         method: 'DDA',
-        error: `DDA failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+        errorCode: OdaErrorCode.DDA_RSA_FAILED,
+        error: odaErrorReason(OdaErrorCode.DDA_RSA_FAILED, result.reason),
+        signature: dynamicSignature,
+        certificate: iccCert,
+      };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'Unknown error';
+      return {
+        success: false,
+        method: 'DDA',
+        errorCode: OdaErrorCode.DDA_EXCEPTION,
+        error: odaErrorReason(OdaErrorCode.DDA_EXCEPTION, detail),
       };
     }
   }
 
-  private performCDA(cardData: string, terminalData: string): AuthenticationResult {
+  private async performCDA(cardData: string, terminalData: string): Promise<AuthenticationResult> {
     try {
-      // CDA combines DDA with transaction data
-      const ddaResult = this.performDDA(cardData, terminalData);
-      
-      if (!ddaResult.success) {
-        return ddaResult;
+      const cardTags = TLVParser.parseTLV(cardData);
+
+      const iccCert = TLVParser.getTagValue(cardTags, '9F46');
+      if (!iccCert) {
+        return {
+          success: false,
+          method: 'CDA',
+          errorCode: OdaErrorCode.DDA_ICC_CERT_MISSING,
+          error: odaErrorReason(OdaErrorCode.DDA_ICC_CERT_MISSING),
+        };
       }
 
-      // Additional CDA-specific verification would go here
-      // This includes verifying the transaction cryptogram
-      
-      return {
-        ...ddaResult,
-        method: 'CDA'
-      };
-    } catch (error) {
+      const cdaSignature = TLVParser.getTagValue(cardTags, '9F4C');
+      if (!cdaSignature) {
+        const fallbackResult = await this.performDDA(cardData, terminalData);
+        if (fallbackResult.success) {
+          return { ...fallbackResult, method: 'CDA' as const };
+        }
+        return {
+          success: false,
+          method: 'CDA',
+          errorCode: OdaErrorCode.CDA_SIG_MISSING_FALLBACK_DDA,
+          error: odaErrorReason(OdaErrorCode.CDA_SIG_MISSING_FALLBACK_DDA),
+        };
+      }
+
+      const iccKey = await ICCPublicKeyRecovery.recover(cardData);
+
+      if (iccKey) {
+        const result: ODAResult = await this.rsa.verifyCDA(
+          hexToBytes(cdaSignature),
+          hexToBytes(iccCert),
+          iccKey.key
+        );
+
+        if (result.success) {
+          return {
+            success: true,
+            method: 'CDA',
+            signature: cdaSignature,
+            certificate: iccCert,
+          };
+        }
+
+        return {
+          success: false,
+          method: 'CDA',
+          errorCode: OdaErrorCode.DDA_RSA_FAILED,
+          error: odaErrorReason(OdaErrorCode.DDA_RSA_FAILED, result.reason),
+          signature: cdaSignature,
+          certificate: iccCert,
+        };
+      }
+
+      const rid = TLVParser.getTagValue(cardTags, '9F06');
+      const capki = TLVParser.getTagValue(cardTags, '8F');
+
+      if (!rid || !capki) {
+        return {
+          success: false,
+          method: 'CDA',
+          errorCode: OdaErrorCode.DDA_ICC_KEY_UNRECOVERABLE_RID_CAPKI_MISSING,
+          error: odaErrorReason(OdaErrorCode.DDA_ICC_KEY_UNRECOVERABLE_RID_CAPKI_MISSING),
+        };
+      }
+
+      const capk = this.findCAPK(rid, capki);
+      if (!capk) {
+        return {
+          success: false,
+          method: 'CDA',
+          errorCode: OdaErrorCode.DDA_ICC_KEY_UNRECOVERABLE_CAPK_MISSING,
+          error: odaErrorReason(OdaErrorCode.DDA_ICC_KEY_UNRECOVERABLE_CAPK_MISSING),
+        };
+      }
+
+      const issuerKey = await this.rsa.importCAPK(capk);
+      const result: ODAResult = await this.rsa.verifyCDA(
+        hexToBytes(cdaSignature),
+        hexToBytes(iccCert),
+        issuerKey
+      );
+
+      if (result.success) {
+        return {
+          success: true,
+          method: 'CDA',
+          signature: cdaSignature,
+          certificate: iccCert,
+        };
+      }
+
       return {
         success: false,
         method: 'CDA',
-        error: `CDA failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+        errorCode: OdaErrorCode.DDA_RSA_FAILED,
+        error: odaErrorReason(OdaErrorCode.DDA_RSA_FAILED, result.reason),
+        signature: cdaSignature,
+        certificate: iccCert,
+      };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'Unknown error';
+      return {
+        success: false,
+        method: 'CDA',
+        errorCode: OdaErrorCode.CDA_EXCEPTION,
+        error: odaErrorReason(OdaErrorCode.CDA_EXCEPTION, detail),
       };
     }
   }
 
   private findCAPK(rid: string, index: string): CAPK | null {
-    return this.capks.find(capk => 
-      capk.rid.toUpperCase() === rid.toUpperCase() && 
+    return this.capks.find(capk =>
+      capk.rid.toUpperCase() === rid.toUpperCase() &&
       capk.index.toUpperCase() === index.toUpperCase()
     ) || null;
   }
 
-  private verifyCertificate(cert: string, capk: CAPK): boolean {
-    try {
-      // In a real implementation, this would verify the certificate signature
-      // against the CA public key
-      
-      // For now, we'll simulate verification
-      const certBuffer = Buffer.from(cert, 'hex');
-      const certHash = crypto.createHash('sha1').update(certBuffer).digest('hex');
-      
-      // Simulate certificate validation
-      return certHash.length > 0 && certBuffer.length > 0;
-    } catch (error) {
-      return false;
-    }
-  }
-
-  private extractPublicKeyFromCertificate(cert: string): { modulus: string; exponent: string } {
-    // In a real implementation, this would extract the public key
-    // from the certificate structure
-    
-    // For simulation, we'll use dummy values
-    return {
-      modulus: '00' + cert.substr(0, 128),
-      exponent: '010001'
-    };
-  }
-
-  private verifySignature(signature: string, data: string, publicKey: { modulus: string; exponent: string }): boolean {
-    try {
-      // In a real implementation, this would verify the signature
-      // using the public key and appropriate algorithm
-      
-      // For simulation, we'll check basic format
-      return signature.length > 0 && data.length > 0 && publicKey.modulus.length > 0;
-    } catch (error) {
-      return false;
-    }
-  }
-
-  private buildStaticDataToSign(cardTags: EMVTag[]): string {
-    // Build static data for SDA verification
-    // This would include application data, PAN, expiry, etc.
-    const relevantTags = ['5A', '5F24', '5F34', '9F06', '9F07'];
-    let data = '';
-    
-    for (const tag of relevantTags) {
-      const value = TLVParser.getTagValue(cardTags, tag);
-      if (value) {
-        data += TLVParser.buildTLV(tag, value);
-      }
-    }
-    
-    return data;
-  }
-
-  private buildDynamicDataToSign(cardTags: EMVTag[], terminalData: string, unpredictableNumber: string): string {
-    // Build dynamic data for DDA verification
-    const relevantTags = ['9F02', '9F03', '9F1A', '95', '5F2A', '9A', '9F37', '9F4E'];
-    let data = unpredictableNumber;
-    
-    for (const tag of relevantTags) {
-      const value = TLVParser.getTagValue(cardTags, tag);
-      if (value) {
-        data += TLVParser.buildTLV(tag, value);
-      }
-    }
-    
-    return data;
+  getRSA(): RSAODA {
+    return this.rsa;
   }
 
   addCAPK(capk: CAPK): void {
     this.capks.push(capk);
+    this.rsa = new RSAODA(this.capks);
   }
 
   getCAPKs(): CAPK[] {

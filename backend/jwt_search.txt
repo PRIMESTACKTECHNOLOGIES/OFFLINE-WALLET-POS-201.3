@@ -1,0 +1,5 @@
+﻿
+dist\domain\auth\auth.service.js:13:    throw new Error("JWT_SECRET 
+environment variable must be set for secure authentication");
+
+

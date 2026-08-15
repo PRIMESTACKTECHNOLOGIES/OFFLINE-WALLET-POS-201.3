@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="856" height="540" viewBox="0 0 856 540" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="back-grad" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#071122"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" rx="24" ry="24" width="856" height="540" fill="url(#back-grad)" />
+
+  <!-- Top title -->
+  <g transform="translate(48,60)">
+    <text x="0" y="0" font-family="Inter, Arial, Helvetica, sans-serif" font-weight="600" font-size="18" fill="#FFFFFF">PrimeStack Internal Wallet Card</text>
+  </g>
+
+  <!-- Main info block -->
+  <g transform="translate(48,120)" fill="#DCEFFB" font-family="Inter, Arial, Helvetica, sans-serif">
+    <text x="0" y="0" font-weight="600" font-size="12">Cardholder: <tspan id="b-cardholder" font-weight="700">{{CARDHOLDER}}</tspan></text>
+    <text x="0" y="28" font-weight="600" font-size="12">Wallet ID: <tspan id="b-wallet" font-weight="700">{{WALLET_ID}}</tspan></text>
+
+    <text x="0" y="68" font-weight="400" font-size="11">
+      This card is linked to your PrimeStack internal wallet.
+    </text>
+    <text x="0" y="88" font-weight="400" font-size="11">
+      For use only with PrimeStack POS terminals and services.
+    </text>
+    <text x="0" y="108" font-weight="400" font-size="11">
+      This is not a bank card. No Visa/Mastercard network access.
+    </text>
+    <text x="0" y="128" font-weight="400" font-size="11">
+      Offline transactions are stored and processed by PrimeStack.
+    </text>
+  </g>
+
+  <!-- Bottom-left support + security -->
+  <g transform="translate(48,360)" fill="#BFDDF8" font-family="Inter, Arial, Helvetica, sans-serif">
+    <text x="0" y="0" font-weight="600" font-size="12">Support: support@primestack.com</text>
+    <text x="0" y="28" font-weight="400" font-size="10">If found, please return to PrimeStack or contact support.</text>
+    <text x="0" y="44" font-weight="400" font-size="10">Unauthorized use is prohibited.</text>
+  </g>
+
+  <!-- Bottom-right QR area -->
+  <g transform="translate(620,340)">
+    <rect x="0" y="0" width="180" height="180" rx="8" ry="8" fill="#FFFFFF" />
+    <text x="0" y="200" font-family="Inter, Arial, Helvetica, sans-serif" font-size="10" fill="#E6EEF8">Scan to view wallet balance</text>
+    <text x="0" y="216" font-family="Inter, Arial, Helvetica, sans-serif" font-size="9" fill="#A8C3E8">https://app.primestack.com/wallet/{{WALLET_ID}}</text>
+  </g>
+
+  <!-- Optional magstripe (subtle) -->
+  <rect x="48" y="20" width="760" height="28" fill="#000000" opacity="0.18" rx="2" />
+
+  <!-- Notes: replace {{WALLET_ID}} and {{CARDHOLDER}} programmatically; the QR rect is a placeholder to draw a real QR -->
+</svg>

@@ -1,6 +1,29 @@
 import { useEffect, useState } from "react";
-import { fetchTerminals, fetchTransactions, type Transaction, type Terminal } from "../lib/api";
-import { Link } from "react-router-dom";
+import { 
+  fetchTerminals, 
+  fetchTransactions, 
+  fetchProducts,
+  fetchBatches,
+  getCustomers,
+  getWalletBalance,
+  getCashouts,
+  getCryptoWallets,
+  getCryptoPrice,
+  getMerchantBalance,
+  getMerchantTransactions,
+  type Transaction, 
+  type Terminal,
+  type Product,
+  type Batch,
+  type Customer,
+  type Cashout,
+  type CryptoWallet,
+  type MerchantWallet,
+  type MerchantWalletTransaction,
+  exportTransactionsToCSV 
+} from "../lib/api";
+import { Link, useNavigate } from "react-router-dom";
+import { useNotifications } from "../contexts/NotificationContext";
 
 // --- Types ---
 
@@ -18,32 +41,9 @@ interface StatCardProps {
   subtext?: string;
 }
 
-// --- Mock Data Helpers ---
-
-const generateChartData = (filter: string) => {
-  return []; // Return empty data to remove mock chart
-};
-
+// Dashboard KPIs below are computed from real API terminal/transaction data, not hardcoded placeholders.
 const enhanceTerminalData = (t: Terminal): TerminalUI => {
-  const hash = t.id.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-  const statuses: ('ONLINE' | 'OFFLINE' | 'ERROR' | 'SYNCING')[] = ['ONLINE', 'ONLINE', 'ONLINE', 'OFFLINE', 'SYNCING', 'ERROR'];
-  const weightedStatus = hash % 10 < 7 ? 'ONLINE' : statuses[hash % statuses.length];
-  
-  return {
-    ...t,
-    status: weightedStatus,
-  };
-};
-
-const INSIGHTS = {
-  avgTicket: 42.50,
-  peakHour: "12:00 PM - 2:00 PM",
-  paymentMethods: [
-    { type: "Chip (EMV)", percent: 65, color: "var(--accent-primary)" },
-    { type: "Tap (NFC)", percent: 25, color: "var(--accent-secondary)" },
-    { type: "Swipe", percent: 10, color: "var(--text-muted)" },
-  ],
-  offlineOnlineRatio: { offline: 15, online: 85 }
+  return { ...t, status: (t as any).status || 'OFFLINE' };
 };
 
 // --- Components ---
@@ -77,13 +77,16 @@ const StatCard = ({ title, value, trend, trendUp, icon, color, subtext }: StatCa
 const SmoothAreaChart = ({ data }: { data: { day: string; value: number }[] }) => {
   if (!data || data.length === 0) return null;
   
-  const max = Math.max(...data.map(d => d.value)) * 1.1;
-  const min = Math.min(...data.map(d => d.value)) * 0.8;
+  const values = data.map(d => d.value);
+  const max = Math.max(...values) * 1.1;
+  const min = Math.min(...values) * 0.8;
   const range = max - min;
   
   const getCoord = (d: { day: string; value: number }, i: number) => {
     const x = (i / (data.length - 1)) * 100;
-    const y = 100 - ((d.value - min) / range) * 80 - 10;
+    const y = range > 0
+      ? 100 - ((d.value - min) / range) * 80 - 10
+      : 50;
     return [x, y];
   };
 
@@ -146,38 +149,310 @@ const SmoothAreaChart = ({ data }: { data: { day: string; value: number }[] }) =
   );
 };
 
+// Generate chart data from real transactions
+const generateChartData = (timeFilter: string, transactions: Transaction[]) => {
+  const now = new Date();
+  const data: { day: string; value: number }[] = [];
+
+  if (timeFilter === 'Today') {
+    // Last 8 hours
+    for (let i = 7; i >= 0; i--) {
+      const hour = new Date(now.getTime() - i * 60 * 60 * 1000);
+      const hourStart = new Date(hour);
+      hourStart.setMinutes(0, 0, 0);
+      const hourEnd = new Date(hour);
+      hourEnd.setMinutes(59, 59, 999);
+      const hourTxns = transactions.filter(t => {
+        const tDate = new Date(t.txnTimestamp);
+        return tDate >= hourStart && tDate <= hourEnd;
+      });
+      const total = hourTxns.reduce((sum, t) => sum + t.amountMinor, 0) / 100;
+      data.push({
+        day: `${hour.getHours() % 12 || 12} ${hour.getHours() >= 12 ? 'PM' : 'AM'}`,
+        value: total
+      });
+    }
+  } else if (timeFilter === 'Week') {
+    // Last 7 days
+    for (let i = 6; i >= 0; i--) {
+      const day = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+      const dayStart = new Date(day);
+      dayStart.setHours(0, 0, 0, 0);
+      const dayEnd = new Date(day);
+      dayEnd.setHours(23, 59, 59, 999);
+      const dayTxns = transactions.filter(t => {
+        const tDate = new Date(t.txnTimestamp);
+        return tDate >= dayStart && tDate <= dayEnd;
+      });
+      const total = dayTxns.reduce((sum, t) => sum + t.amountMinor, 0) / 100;
+      data.push({
+        day: day.toLocaleDateString('en-US', { weekday: 'short' }),
+        value: total
+      });
+    }
+  } else if (timeFilter === 'Month') {
+    // Last 4 weeks
+    for (let i = 3; i >= 0; i--) {
+      const weekStart = new Date(now.getTime() - i * 7 * 24 * 60 * 60 * 1000);
+      const weekEnd = new Date(weekStart.getTime() + 7 * 24 * 60 * 60 * 1000);
+      const weekTxns = transactions.filter(t => {
+        const tDate = new Date(t.txnTimestamp);
+        return tDate >= weekStart && tDate <= weekEnd;
+      });
+      const total = weekTxns.reduce((sum, t) => sum + t.amountMinor, 0) / 100;
+      data.push({
+        day: `Week ${4 - i}`,
+        value: total
+      });
+    }
+  } else if (timeFilter === 'Year') {
+    // Last 6 months
+    for (let i = 5; i >= 0; i--) {
+      const month = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const monthStart = new Date(month.getFullYear(), month.getMonth(), 1);
+      const monthEnd = new Date(month.getFullYear(), month.getMonth() + 1, 0);
+      const monthTxns = transactions.filter(t => {
+        const tDate = new Date(t.txnTimestamp);
+        return tDate >= monthStart && tDate <= monthEnd;
+      });
+      const total = monthTxns.reduce((sum, t) => sum + t.amountMinor, 0) / 100;
+      data.push({
+        day: month.toLocaleDateString('en-US', { month: 'short' }),
+        value: total
+      });
+    }
+  }
+
+  return data;
+};
+
 export const OverviewPage = () => {
   const [terminals, setTerminals] = useState<TerminalUI[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [chartData, setChartData] = useState<{ day: string; value: number }[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [batches, setBatches] = useState<Batch[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [cashouts, setCashouts] = useState<Cashout[]>([]);
+  const [cryptoWallets, setCryptoWallets] = useState<CryptoWallet[]>([]);
+  const [totalWalletBalance, setTotalWalletBalance] = useState(0);
+  const [totalCryptoValueUSD, setTotalCryptoValueUSD] = useState(0);
+  const [merchantWallet, setMerchantWallet] = useState<MerchantWallet | null>(null);
   const [loading, setLoading] = useState(true);
   const [timeFilter, setTimeFilter] = useState('Today');
+  const [lastTransactionCount, setLastTransactionCount] = useState(0);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const { addNotification } = useNotifications();
+  const navigate = useNavigate();
+
+  const loadData = async () => {
+    try {
+      const [terms, txns, prods, bts, custs, cashs, mwallet] = await Promise.all([
+        fetchTerminals(),
+        fetchTransactions(),
+        fetchProducts().catch(() => [] as Product[]),
+        fetchBatches().catch(() => [] as Batch[]),
+        getCustomers().catch(() => [] as Customer[]),
+        getCashouts().catch(() => [] as Cashout[]),
+        getMerchantBalance((() => { try { return JSON.parse(localStorage.getItem('settings')||'{}').merchant_id || 'MRC-1001'; } catch { return 'MRC-1001'; } })()).catch(() => null),
+      ]);
+      
+      setTerminals(terms.map(enhanceTerminalData));
+      if (mwallet) setMerchantWallet(mwallet);
+      const sortedTxns = txns.sort((a, b) => new Date(b.txnTimestamp).getTime() - new Date(a.txnTimestamp).getTime());
+      setTransactions(sortedTxns);
+      setChartData(generateChartData(timeFilter, sortedTxns));
+      setProducts(prods || []);
+      setBatches(bts || []);
+      setCustomers(custs || []);
+      setCashouts(cashs || []);
+
+      // Aggregate wallet balances and crypto wallets across all customers
+      let aggBalance = 0;
+      let allCryptos: CryptoWallet[] = [];
+      if (custs && custs.length > 0) {
+        const cappedCustomers = custs.slice(0, 10);
+        const perCustomerData = await Promise.all(
+          cappedCustomers.map(async (c) => {
+            try {
+              const [bal, cryptos] = await Promise.all([
+                getWalletBalance(c.id).catch(() => ({ balance: 0, currency: 'USD' })),
+                getCryptoWallets(c.id).catch(() => [])
+              ]);
+              return { bal, cryptos };
+            } catch {
+              return { bal: { balance: 0, currency: 'USD' }, cryptos: [] };
+            }
+          })
+        );
+        for (const pd of perCustomerData) {
+          aggBalance += Number(pd.bal?.balance) || 0;
+          allCryptos = [...allCryptos, ...(pd.cryptos || [])];
+        }
+      }
+      setTotalWalletBalance(aggBalance);
+      setCryptoWallets(allCryptos);
+
+      // Aggregate crypto portfolio value
+      let totalCryptoVal = 0;
+      const uniqueCoins = [...new Set((allCryptos || []).map(c => c.crypto_coin))];
+      for (const coin of uniqueCoins) {
+        const coinWallets = (allCryptos || []).filter(c => c.crypto_coin === coin);
+        const coinBal = coinWallets.reduce((s, w) => s + Number(w.balance || 0), 0);
+        if (coinBal > 0) {
+          try {
+            const priceData = await getCryptoPrice(coin).catch(() => ({ price: 0 }));
+            totalCryptoVal += coinBal * (priceData.price || 0);
+          } catch { /* skip */ }
+        }
+      }
+      setTotalCryptoValueUSD(totalCryptoVal);
+
+      if (lastTransactionCount > 0 && sortedTxns.length > lastTransactionCount) {
+        const newTxns = sortedTxns.length - lastTransactionCount;
+        addNotification(
+          "New Transaction",
+          `${newTxns} new transaction${newTxns > 1 ? 's' : ''} received`,
+          'success',
+          true
+        );
+      }
+      setLastTransactionCount(sortedTxns.length);
+    } catch (err) {
+      console.error("Failed to load dashboard data", err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const loadData = async () => {
-      try {
-        const [terms, txns] = await Promise.all([fetchTerminals(), fetchTransactions()]);
-        setTerminals(terms.map(enhanceTerminalData));
-        setTransactions(txns.sort((a, b) => new Date(b.txnTimestamp).getTime() - new Date(a.txnTimestamp).getTime()));
-        setChartData(generateChartData(timeFilter));
-      } catch (err) {
-        console.error("Failed to load dashboard data", err);
-      } finally {
-        setLoading(false);
-      }
-    };
     loadData();
   }, [timeFilter]);
 
-  // KPIs Calculations
-  const multiplier = 1;
-  const totalSales = (transactions.reduce((sum, t) => sum + t.amountMinor, 0) / 100); 
-  const successfulTxns = transactions.filter(t => t.status === 'APPROVED').length;
-  const declinedTxns = transactions.filter(t => t.status === 'DECLINED').length;
-  const activeTerminals = terminals.filter(t => t.status === 'ONLINE').length; 
+  useEffect(() => {
+    const interval = setInterval(() => {
+      loadData();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [timeFilter]);
+
+  useEffect(() => {
+    const handleClickOutside = () => setExportMenuOpen(false);
+    if (exportMenuOpen) {
+      setTimeout(() => document.addEventListener('click', handleClickOutside), 0);
+      return () => document.removeEventListener('click', handleClickOutside);
+    }
+  }, [exportMenuOpen]);
+
+  // ── Period-over-Period Comparator ──────────────────────────────────────────
+  const splitTransactionsByPeriod = (filter: string, txns: Transaction[]) => {
+    const now = new Date();
+    let currentStart: Date, prevStart: Date, prevEnd: Date;
+
+    if (filter === 'Today') {
+      currentStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      prevEnd = new Date(currentStart.getTime() - 1);
+      prevStart = new Date(prevEnd.getFullYear(), prevEnd.getMonth(), prevEnd.getDate());
+    } else if (filter === 'Week') {
+      currentStart = new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000);
+      currentStart.setHours(0, 0, 0, 0);
+      prevEnd = new Date(currentStart.getTime() - 1);
+      prevStart = new Date(prevEnd.getTime() - 6 * 24 * 60 * 60 * 1000);
+      prevStart.setHours(0, 0, 0, 0);
+    } else if (filter === 'Month') {
+      currentStart = new Date(now.getTime() - 27 * 24 * 60 * 60 * 1000);
+      currentStart.setHours(0, 0, 0, 0);
+      prevEnd = new Date(currentStart.getTime() - 1);
+      prevStart = new Date(prevEnd.getTime() - 27 * 24 * 60 * 60 * 1000);
+      prevStart.setHours(0, 0, 0, 0);
+    } else {
+      currentStart = new Date(now.getTime() - 179 * 24 * 60 * 60 * 1000);
+      currentStart.setHours(0, 0, 0, 0);
+      prevEnd = new Date(currentStart.getTime() - 1);
+      prevStart = new Date(prevEnd.getTime() - 179 * 24 * 60 * 60 * 1000);
+      prevStart.setHours(0, 0, 0, 0);
+    }
+
+    const current = txns.filter(t => {
+      const d = new Date(t.txnTimestamp);
+      return d >= currentStart;
+    });
+    const previous = txns.filter(t => {
+      const d = new Date(t.txnTimestamp);
+      return d >= prevStart && d <= prevEnd;
+    });
+    return { current, previous };
+  };
+
+  const { current: currentTxns, previous: previousTxns } = splitTransactionsByPeriod(timeFilter, transactions);
   
-  const offlinePending = 0; // Fixed: No mock offline pending
-  const chargebacks = 0; // Fixed: No mock chargebacks
+  const currentSales = currentTxns.reduce((s, t) => s + (t.amountMinor || 0), 0) / 100;
+  const previousSales = previousTxns.reduce((s, t) => s + (t.amountMinor || 0), 0) / 100;
+  const salesDelta = previousSales > 0 ? ((currentSales - previousSales) / previousSales) * 100 : 0;
+
+  const currentApprovals = currentTxns.filter(t => ['APPROVED','SYNCED'].includes(t.status)).length;
+  const prevApprovals = previousTxns.filter(t => ['APPROVED','SYNCED'].includes(t.status)).length;
+  const approvalDelta = prevApprovals > 0 ? ((currentApprovals - prevApprovals) / prevApprovals) * 100 : 0;
+
+  const formatDelta = (val: number, unit = '%') => {
+    const sign = val >= 0 ? '+' : '';
+    return `${sign}${val.toFixed(1)}${unit}`;
+  };
+
+  // KPIs — all computed from real data
+  const totalSales = transactions.reduce((sum, t) => sum + (t.amountMinor || 0), 0) / 100;
+  const merchantSettlementBalance = merchantWallet?.balance ?? 0; // money credited after batch syncs
+  const successfulTxns = transactions.filter(t => ['APPROVED','SYNCED'].includes(t.status)).length;
+  const declinedTxns = transactions.filter(t => t.status === 'DECLINED').length;
+  const activeTerminals = terminals.filter(t => t.status === 'ONLINE').length;
+  const offlinePending = transactions.filter(t => t.status === 'PENDING').length;
+  const chargebacks = transactions.filter(t => t.status && t.status.toUpperCase().includes('CHARGEBACK')).length;
+  const avgTicket = transactions.length > 0 ? (totalSales / transactions.length) : 0;
+  const offlineCount = transactions.filter(t => t.authMode === 'OFFLINE_APPROVED').length;
+  const onlineCount = transactions.length - offlineCount;
+  const offlinePct = transactions.length > 0 ? Math.round((offlineCount / transactions.length) * 100) : 0;
+  const onlinePct = 100 - offlinePct;
+
+  // Inventory Metrics
+  const inventoryCount = products.length;
+  const inventoryValue = products.reduce((sum, p) => sum + ((p.price_minor || 0) * (p.stock || 0)), 0) / 100;
+  const lowStockCount = products.filter(p => (p.stock || 0) > 0 && (p.stock || 0) < 10).length;
+  const outOfStockCount = products.filter(p => (p.stock || 0) === 0).length;
+
+  // Wallet & Customer Metrics
+  const customerCount = customers.length;
+
+  // Settlement / Cashout Metrics
+  const pendingCashouts = cashouts.filter(c => c.status === 'PENDING' || c.status === 'PROCESSING').length;
+  const completedCashouts = cashouts.filter(c => c.status === 'COMPLETED').length;
+  const totalCashoutsAmount = cashouts.reduce((sum, c) => sum + (c.net_amount_minor || c.amount_minor || 0), 0) / 100;
+  const pendingSettlementBatches = batches.filter(b => b.status === 'PENDING_UPLOAD' || b.status === 'UPLOADED' || b.status === 'OPEN').length;
+
+  // Crypto Portfolio Metrics
+  const cryptoCoinCount = cryptoWallets.length;
+  const activeCryptoCoins = cryptoWallets.filter(c => Number(c.balance || 0) > 0).length;
+
+  // Settlement period payout total (same window as timeFilter)
+  const periodStartMs = (() => {
+    const now = new Date();
+    if (timeFilter === 'Today') return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    if (timeFilter === 'Week') return now.getTime() - 6 * 24 * 60 * 60 * 1000;
+    if (timeFilter === 'Month') return now.getTime() - 27 * 24 * 60 * 60 * 1000;
+    return now.getTime() - 179 * 24 * 60 * 60 * 1000;
+  })();
+  const periodCashouts = cashouts.filter(c => new Date(c.created_at).getTime() >= periodStartMs);
+  const periodPayouts = periodCashouts.reduce((s, c) => s + (c.net_amount_minor || c.amount_minor || 0), 0) / 100;
+
+  // Entry mode breakdown
+  const chipCount = transactions.filter(t => t.entryMode === 'CHIP').length;
+  const contactlessCount = transactions.filter(t => t.entryMode === 'CONTACTLESS').length;
+  const manualCount = transactions.filter(t => t.entryMode === 'MANUAL').length;
+  const totalEntries = Math.max(chipCount + contactlessCount + manualCount, 1);
+  const paymentMethods = [
+    { type: 'Chip (EMV)', percent: Math.round((chipCount / totalEntries) * 100) || 0, color: 'var(--accent-primary)' },
+    { type: 'Contactless', percent: Math.round((contactlessCount / totalEntries) * 100) || 0, color: 'var(--accent-secondary)' },
+    { type: 'Manual', percent: Math.round((manualCount / totalEntries) * 100) || 0, color: 'var(--text-muted)' },
+  ];
 
   if (loading) return (
     <div className="flex items-center justify-center h-full min-h-[400px]">
@@ -195,68 +470,203 @@ export const OverviewPage = () => {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 tracking-tight">Dashboard Overview</h1>
-          <p className="text-sm text-gray-500 mt-1">Welcome back, Merchant Admin</p>
+          <p className="text-sm text-gray-500 mt-1">Welcome back, Merchant Admin — here's your business pulse.</p>
         </div>
         <div className="flex items-center gap-3">
           <span className="text-sm text-gray-500 bg-white px-3 py-1.5 rounded-full border border-gray-200 shadow-sm">
             {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
           </span>
-          <button className="p-2 text-gray-500 hover:text-blue-600 bg-white hover:bg-gray-50 rounded-full border border-gray-200 shadow-sm transition-colors">
+          <button 
+            onClick={loadData}
+            className="p-2 text-gray-500 hover:text-blue-600 bg-white hover:bg-gray-50 rounded-full border border-gray-200 shadow-sm transition-colors"
+            title="Refresh data"
+          >
             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"></path><path d="M16 21h5v-5"></path></svg>
           </button>
+          <div className="relative">
+            <button 
+              onClick={(e) => { e.stopPropagation(); setExportMenuOpen(v => !v); }}
+              className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 rounded-lg border border-gray-200 shadow-sm transition-colors"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+              Export
+            </button>
+            {exportMenuOpen && (
+              <div className="absolute right-0 top-full mt-2 w-52 bg-white border border-gray-200 rounded-lg shadow-xl z-50 animate-fade-in overflow-hidden">
+                <button 
+                  onClick={() => { exportTransactionsToCSV(transactions); setExportMenuOpen(false); addNotification('Export', 'Transactions CSV exported', 'success', false); }}
+                  className="w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 transition-colors"
+                >
+                  <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                  Transactions (CSV)
+                </button>
+                <button 
+                  onClick={() => { navigate('/transactions'); setExportMenuOpen(false); }}
+                  className="w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 transition-colors"
+                >
+                  <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2" /></svg>
+                  Sales Report (PDF)
+                </button>
+                <button 
+                  onClick={() => { navigate('/settlements'); setExportMenuOpen(false); }}
+                  className="w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 transition-colors border-t border-gray-100"
+                >
+                  <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
+                  Settlement Report
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* KPI Cards Grid */}
+      {/* Quick Actions Row */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {[
+          { label: 'New Charge', path: '/pos', icon: 'credit-card', color: 'from-blue-500 to-blue-600' },
+          { label: 'Add Product', path: '/inventory', icon: 'box', color: 'from-emerald-500 to-emerald-600' },
+          { label: 'Pair Terminal', path: '/terminal-pairing', icon: 'terminal', color: 'from-violet-500 to-violet-600' },
+          { label: 'Settle Batch', path: '/batches', icon: 'check-circle', color: 'from-amber-500 to-amber-600' },
+        ].map((action, i) => (
+          <button
+            key={i}
+            onClick={() => navigate(action.path)}
+            className={`group relative overflow-hidden rounded-xl p-4 bg-gradient-to-br ${action.color} text-white shadow-sm hover:shadow-lg transition-all duration-300 hover:-translate-y-0.5`}
+          >
+            <div className="absolute top-0 right-0 p-3 opacity-10 group-hover:opacity-20 transition-opacity transform group-hover:scale-110">
+              {action.icon === 'credit-card' && <svg width="40" height="40" fill="currentColor" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>}
+              {action.icon === 'box' && <svg width="40" height="40" fill="currentColor" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>}
+              {action.icon === 'terminal' && <svg width="40" height="40" fill="currentColor" viewBox="0 0 24 24"><path d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>}
+              {action.icon === 'check-circle' && <svg width="40" height="40" fill="currentColor" viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>}
+            </div>
+            <div className="relative z-10 flex items-center gap-3">
+              <div className="w-9 h-9 rounded-lg bg-white/20 backdrop-blur flex items-center justify-center">
+                {action.icon === 'credit-card' && <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>}
+                {action.icon === 'box' && <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>}
+                {action.icon === 'terminal' && <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18"/></svg>}
+                {action.icon === 'check-circle' && <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><polyline points="22 4 12 14.01 9 11.01"/></svg>}
+              </div>
+              <div className="text-sm font-semibold text-left">{action.label}</div>
+            </div>
+          </button>
+        ))}
+      </div>
+
+      {/* KPI Cards Grid — Row 1: Core Payment KPIs */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-5">
         <StatCard 
           title="Total Sales" 
-          value={new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(totalSales)}
-          trend="+12.5%"
-          trendUp={true}
+          value={new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(currentSales)}
+          trend={transactions.length > 0 ? formatDelta(salesDelta) : 'No data'}
+          trendUp={salesDelta >= 0}
+          subtext={`${currentTxns.length} txns · vs ${previousTxns.length} prev.`}
           color="var(--accent-primary)"
           icon={<svg width="22" height="22" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>}
+        />
+        <StatCard
+          title="Settlement Balance"
+          value={new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(merchantSettlementBalance)}
+          trend={merchantSettlementBalance > 0 ? 'Credited from syncs' : 'No synced batches'}
+          trendUp={merchantSettlementBalance > 0}
+          subtext="Auto-credited on batch sync"
+          color="#16a34a"
+          icon={<svg width="22" height="22" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.25 18.75a60.07 60.07 0 0115.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 013 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 00-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 01-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 003 15h-.75" /></svg>}
         />
         <StatCard 
           title="Offline Pending" 
           value={offlinePending}
-          subtext="Est. $450.00"
-          trend="Syncing..."
-          trendUp={true} // Neutral
-          color="#f59e0b" // Amber
+          subtext={offlinePending > 0 ? `Est. $${(offlinePending * avgTicket || 50).toFixed(2)}` : 'All synced'}
+          trend={offlinePending > 0 ? 'Syncing...' : 'Complete'}
+          trendUp={true}
+          color="#f59e0b"
           icon={<svg width="22" height="22" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18.364 5.636a9 9 0 010 12.728m0 0l-2.829-2.829m2.829 2.829L21 21M15.536 8.464a5 5 0 010 7.072m0 0l-2.829-2.829m-4.243 2.829a4.978 4.978 0 01-1.414-2.83m-1.414 5.658a9 9 0 01-2.167-9.238m7.824 2.167a1 1 0 111.414 1.414m-1.414-1.414L3 3m8.293 8.293l1.414 1.414" /></svg>}
         />
         <StatCard 
-          title="Successful Txns" 
-          value={successfulTxns}
-          trend="98.5% Rate"
-          trendUp={true}
-          color="#10b981" // Emerald
+          title="Approved Txns" 
+          value={currentApprovals}
+          trend={transactions.length > 0 ? formatDelta(approvalDelta) : '0% Rate'}
+          trendUp={approvalDelta >= 0}
+          subtext={transactions.length > 0 ? `${Math.round((successfulTxns / transactions.length) * 100)}% lifetime rate` : 'No data yet'}
+          color="#10b981"
           icon={<svg width="22" height="22" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>}
         />
         <StatCard 
           title="Declined" 
           value={declinedTxns}
-          trend="1.5% Rate"
+          trend={transactions.length > 0 ? `${Math.round((declinedTxns / transactions.length) * 100)}% Rate` : '0% Rate'}
           trendUp={false} 
-          color="#ef4444" // Red
+          color="#ef4444"
           icon={<svg width="22" height="22" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>}
         />
         <StatCard 
           title="Active Terminals" 
           value={`${activeTerminals}/${terminals.length}`}
-          trend="All Online"
-          trendUp={true}
-          color="#3b82f6" // Blue
+          trend={terminals.length === 0 ? 'No terminals' : activeTerminals === terminals.length ? 'All Online' : `${terminals.length - activeTerminals} offline`}
+          trendUp={activeTerminals === terminals.length}
+          color="#3b82f6"
           icon={<svg width="22" height="22" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>}
         />
         <StatCard 
           title="Chargebacks" 
           value={chargebacks}
-          trend="Action Req."
-          trendUp={false}
-          color="#8b5cf6" // Violet
+          trend={chargebacks > 0 ? `${chargebacks} open cases` : 'None reported'}
+          trendUp={chargebacks === 0}
+          color={chargebacks > 0 ? '#ef4444' : '#8b5cf6'}
           icon={<svg width="22" height="22" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>}
+        />
+      </div>
+
+      {/* KPI Cards Grid — Row 2: Inventory, Wallets, Settlements, Crypto */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-5">
+        {/* Inventory Value */}
+        <StatCard 
+          title="Inventory Value" 
+          value={new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(inventoryValue)}
+          trend={`${inventoryCount} SKUs`}
+          trendUp={true}
+          subtext={lowStockCount > 0 || outOfStockCount > 0 ? `${lowStockCount} low · ${outOfStockCount} out` : 'Stock healthy'}
+          color="#0891b2"
+          icon={<svg width="22" height="22" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" /><polyline strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} points="3.27 6.96 12 12.01 20.73 6.96" /><line strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} x1="12" y1="22.08" x2="12" y2="12" /></svg>}
+        />
+        {/* Customer Wallet Balance */}
+        <StatCard 
+          title="Wallet Balances" 
+          value={new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(totalWalletBalance)}
+          trend={customerCount > 0 ? `${customerCount} customers` : 'No customers'}
+          trendUp={true}
+          subtext={customerCount > 0 ? `Avg $${(customerCount > 0 ? (totalWalletBalance / customerCount).toFixed(2) : '0.00')} / customer` : 'Create customer first'}
+          color="#0ea5e9"
+          icon={<svg width="22" height="22" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 12a2.25 2.25 0 0 0-2.25-2.25H15a3 3 0 1 1-6 0H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 9m18 0V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v3" /></svg>}
+        />
+        {/* Settlements / Payouts */}
+        <StatCard 
+          title="Period Payouts" 
+          value={new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(periodPayouts)}
+          trend={`${completedCashouts} completed`}
+          trendUp={completedCashouts > 0}
+          subtext={pendingCashouts > 0 ? `${pendingCashouts} pending · ${pendingSettlementBatches} batches` : `${cashouts.length} all-time payouts`}
+          color="#14b8a6"
+          icon={<svg width="22" height="22" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.25 18.75a60.07 60.07 0 0 1 15.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 0 1 3 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 0 0-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 0 1-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 0 0 3 15h-.75M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm3 0h.008v.008H18V10.5Zm-12 0h.008v.008H6V10.5Z" /></svg>}
+        />
+        {/* Crypto Portfolio */}
+        <StatCard 
+          title="Crypto Portfolio" 
+          value={new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(totalCryptoValueUSD)}
+          trend={`${activeCryptoCoins} active${cryptoCoinCount > 0 ? ` / ${cryptoCoinCount} wallets` : ''}`}
+          trendUp={totalCryptoValueUSD > 0}
+          subtext={totalCryptoValueUSD > 0 ? 'Live prices from exchange' : 'Buy from Wallets → Crypto'}
+          color="#f97316"
+          icon={<svg width="22" height="22" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 6v12m-3-2.818.879.659c1.171.879 3.07.879 4.242 0 1.172-.879 1.172-2.303 0-3.182C13.536 12.219 12.768 12 12 12c-.725 0-1.45-.22-2.003-.659-1.106-.879-1.106-2.303 0-3.182s2.9-.879 4.006 0l.415.33M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg>}
+        />
+        {/* Customers */}
+        <StatCard 
+          title="Customers" 
+          value={customerCount}
+          trend={customerCount > 0 ? `$${totalWalletBalance.toLocaleString()} held` : 'Acquire first'}
+          trendUp={customerCount > 0}
+          subtext={customerCount > 0 ? `${periodCashouts.length} payouts` : 'Manage in Wallets page'}
+          color="#ec4899"
+          icon={<svg width="22" height="22" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" /></svg>}
         />
       </div>
 
@@ -302,7 +712,7 @@ export const OverviewPage = () => {
               <div className="flex items-center justify-between p-4 bg-gray-50 rounded-xl border border-gray-100">
                 <div>
                   <div className="text-sm text-gray-500 mb-1 font-medium">Average Ticket Size</div>
-                  <div className="text-2xl font-bold text-gray-900 tracking-tight">${INSIGHTS.avgTicket.toFixed(2)}</div>
+                  <div className="text-2xl font-bold text-gray-900 tracking-tight">${avgTicket.toFixed(2)}</div>
                 </div>
                 <div className="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600">
                   <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="1" x2="12" y2="23"></line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>
@@ -313,35 +723,42 @@ export const OverviewPage = () => {
               <div>
                 <div className="flex justify-between items-end mb-2">
                    <div className="text-sm text-gray-500 font-medium">Transaction Mode</div>
-                   <div className="text-xs font-semibold text-gray-500">{INSIGHTS.offlineOnlineRatio.online}% Online</div>
+                   <div className="text-xs font-semibold text-gray-500">{onlinePct}% Online</div>
                 </div>
                 <div className="flex h-3 w-full rounded-full overflow-hidden">
-                   <div className="bg-blue-500 h-full" style={{ width: `${INSIGHTS.offlineOnlineRatio.online}%` }} title="Online"></div>
-                   <div className="bg-amber-500 h-full" style={{ width: `${INSIGHTS.offlineOnlineRatio.offline}%` }} title="Offline"></div>
+                   <div className="bg-blue-500 h-full" style={{ width: `${onlinePct}%` }} title="Online"></div>
+                   <div className="bg-amber-500 h-full" style={{ width: `${offlinePct}%` }} title="Offline"></div>
                 </div>
                 <div className="flex justify-between mt-1 text-[10px] text-gray-400 font-medium uppercase tracking-wide">
                    <span>Online</span>
-                   <span>Offline ({INSIGHTS.offlineOnlineRatio.offline}%)</span>
+                   <span>Offline ({offlinePct}%)</span>
                 </div>
               </div>
               
-              {/* Peak Hour */}
+              {/* Peak Hour — computed from real transactions */}
               <div>
                 <div className="flex justify-between items-end mb-2">
-                  <div className="text-sm text-gray-500 font-medium">Peak Transaction Hour</div>
-                  <div className="text-xs font-semibold text-green-600 bg-green-50 px-2 py-1 rounded-full border border-green-100">Busy Now</div>
+                  <div className="text-sm text-gray-500 font-medium">Most Active Period</div>
                 </div>
-                <div className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-orange-500"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
-                  {INSIGHTS.peakHour}
+                <div className="text-lg font-semibold text-gray-900">
+                  {transactions.length > 0
+                    ? (() => {
+                        const hours: Record<number, number> = {};
+                        transactions.forEach(t => { const h = new Date(t.txnTimestamp).getHours(); hours[h] = (hours[h] || 0) + 1; });
+                        const peak = Object.entries(hours).sort((a, b) => b[1] - a[1])[0];
+                        if (!peak) return 'No data';
+                        const h = parseInt(peak[0]);
+                        return `${h % 12 || 12}:00 ${h < 12 ? 'AM' : 'PM'} — ${(h + 1) % 12 || 12}:00 ${h + 1 < 12 ? 'AM' : 'PM'}`;
+                      })()
+                    : 'No data yet'}
                 </div>
               </div>
 
               {/* Payment Methods */}
               <div>
-                <div className="text-sm text-gray-500 mb-4 font-medium">Payment Methods</div>
+                <div className="text-sm text-gray-500 mb-4 font-medium">Entry Methods</div>
                 <div className="space-y-4">
-                  {INSIGHTS.paymentMethods.map((method, i) => (
+                  {paymentMethods.map((method, i) => (
                     <div key={i}>
                       <div className="flex justify-between text-xs mb-1.5 font-medium text-gray-600">
                         <span>{method.type}</span>
@@ -360,41 +777,144 @@ export const OverviewPage = () => {
           {/* Additional Panels: Alerts & Accuracy & Recent Purchase History */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 gap-4">
              
-             {/* Opportunities / Alerts Panel */}
-             <div className="card border border-orange-100 bg-orange-50/50 p-4 rounded-xl shadow-sm relative overflow-hidden">
-                <div className="flex items-center gap-3 mb-2">
-                   <div className="p-1.5 bg-orange-100 rounded-lg text-orange-600">
-                      <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+             {/* Opportunities / Alerts Panel (consolidated: batches + inventory + payouts) */}
+             {(() => {
+               const pendingBatches = transactions.filter(t => t.status === 'PENDING');
+               const hasInventoryIssues = lowStockCount > 0 || outOfStockCount > 0;
+               const hasPayoutPending = pendingCashouts > 0 || pendingSettlementBatches > 0;
+               const hasAlerts = pendingBatches.length > 0 || hasInventoryIssues || hasPayoutPending || chargebacks > 0;
+               
+               if (!hasAlerts) {
+                 return (
+                   <div className="card border border-green-100 bg-green-50/50 p-4 rounded-xl shadow-sm relative overflow-hidden">
+                     <div className="flex items-center gap-3 mb-2">
+                       <div className="p-1.5 bg-green-100 rounded-lg text-green-600">
+                         <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                       </div>
+                       <h3 className="text-sm font-bold text-green-900">All Systems Operational</h3>
+                     </div>
+                     <div className="text-xs text-green-800">No pending batches, inventory issues, or chargebacks</div>
                    </div>
-                   <h3 className="text-sm font-bold text-orange-900">Attention Required</h3>
-                </div>
-                <div className="space-y-2">
-                   <div className="flex items-start gap-2 text-xs text-orange-800">
-                      <span className="w-1.5 h-1.5 rounded-full bg-orange-500 mt-1.5 flex-shrink-0"></span>
-                      <span>3 Offline batches pending upload (&gt; 2 hours)</span>
+                 );
+               }
+               
+               return (
+                 <div className="card border border-orange-100 bg-orange-50/50 p-4 rounded-xl shadow-sm relative overflow-hidden">
+                   <div className="flex items-center gap-3 mb-2">
+                     <div className="p-1.5 bg-orange-100 rounded-lg text-orange-600">
+                        <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                     </div>
+                     <h3 className="text-sm font-bold text-orange-900">Attention Required</h3>
                    </div>
-                   <div className="flex items-start gap-2 text-xs text-orange-800">
-                      <span className="w-1.5 h-1.5 rounded-full bg-orange-500 mt-1.5 flex-shrink-0"></span>
-                      <span>Terminal <span className="font-mono font-semibold">T-8842</span> not synced today</span>
+                   <div className="space-y-2">
+                     {pendingBatches.length > 0 && (
+                       <div className="flex items-start gap-2 text-xs text-orange-800">
+                          <span className="w-1.5 h-1.5 rounded-full bg-orange-500 mt-1.5 flex-shrink-0"></span>
+                          <span>{pendingBatches.length} Offline batch{pendingBatches.length !== 1 ? 'es' : ''} pending upload</span>
+                       </div>
+                     )}
+                     {hasInventoryIssues && (
+                       <div className="flex items-start gap-2 text-xs text-orange-800">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 mt-1.5 flex-shrink-0"></span>
+                          <span>{lowStockCount} low stock · {outOfStockCount} out of stock SKU{outOfStockCount !== 1 ? 's' : ''}</span>
+                       </div>
+                     )}
+                     {hasPayoutPending && (
+                       <div className="flex items-start gap-2 text-xs text-orange-800">
+                          <span className="w-1.5 h-1.5 rounded-full bg-teal-500 mt-1.5 flex-shrink-0"></span>
+                          <span>{pendingCashouts} payout{pendingCashouts !== 1 ? 's' : ''} pending · {pendingSettlementBatches} open batch{pendingSettlementBatches !== 1 ? 'es' : ''}</span>
+                       </div>
+                     )}
+                     {chargebacks > 0 && (
+                       <div className="flex items-start gap-2 text-xs text-red-700">
+                          <span className="w-1.5 h-1.5 rounded-full bg-red-500 mt-1.5 flex-shrink-0"></span>
+                          <span>{chargebacks} open chargeback case{chargebacks !== 1 ? 's' : ''}</span>
+                       </div>
+                     )}
                    </div>
-                </div>
-                <Link 
-                  to="/batches"
-                  className="mt-3 block w-full py-1.5 bg-white border border-orange-200 text-orange-700 text-xs text-center font-semibold rounded-lg hover:bg-orange-50 transition-colors shadow-sm"
-                >
-                   Resolve Issues
-                </Link>
-             </div>
+                   <div className="mt-3 flex gap-2">
+                     {(pendingBatches.length > 0 || hasPayoutPending) && (
+                       <Link 
+                         to="/batches"
+                         className="flex-1 py-1.5 bg-white border border-orange-200 text-orange-700 text-xs text-center font-semibold rounded-lg hover:bg-orange-50 transition-colors shadow-sm"
+                       >
+                          Batches
+                       </Link>
+                     )}
+                     {hasInventoryIssues && (
+                       <Link 
+                         to="/inventory"
+                         className="flex-1 py-1.5 bg-white border border-amber-200 text-amber-700 text-xs text-center font-semibold rounded-lg hover:bg-amber-50 transition-colors shadow-sm"
+                       >
+                          Inventory
+                       </Link>
+                     )}
+                   </div>
+                 </div>
+               );
+             })()}
 
-             {/* Accuracy Score */}
+             {/* Accuracy Score — computed from real transaction data */}
              <div className="card bg-gradient-to-br from-indigo-500 to-purple-600 text-white p-5 rounded-2xl shadow-lg relative overflow-hidden">
                 <div className="absolute top-0 right-0 p-4 opacity-10">
                    <svg width="60" height="60" fill="currentColor" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                 </div>
-                <div className="text-sm font-medium text-indigo-100 mb-1">Batch Accuracy</div>
-                <div className="text-3xl font-bold mb-2">99.8%</div>
+                <div className="text-sm font-medium text-indigo-100 mb-1">Approval Rate</div>
+                <div className="text-3xl font-bold mb-2">
+                  {transactions.length > 0
+                    ? `${Math.round((successfulTxns / transactions.length) * 100)}%`
+                    : '—'}
+                </div>
                 <div className="text-xs text-indigo-100 bg-white/20 inline-block px-2 py-1 rounded-lg backdrop-blur-sm">
-                   Top 5% of merchants
+                  {transactions.length > 0
+                    ? `${successfulTxns} of ${transactions.length} approved`
+                    : 'No transactions yet'}
+                </div>
+             </div>
+
+             {/* Wallet & Inventory Quick Summary — new panel */}
+             <div className="card border border-gray-200 bg-gradient-to-br from-sky-50 to-indigo-50 p-5 rounded-2xl shadow-sm relative">
+                <div className="flex items-center justify-between mb-3">
+                   <div className="text-sm font-bold text-gray-900">Financial Snapshot</div>
+                   <Link to="/wallets" className="text-xs text-blue-600 font-semibold hover:underline">Wallets</Link>
+                </div>
+                <div className="space-y-3">
+                   <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                         <div className="w-7 h-7 rounded-lg bg-sky-100 text-sky-600 flex items-center justify-center">
+                            <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a2.25 2.25 0 0 0-2.25-2.25H15a3 3 0 1 1-6 0H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 9m18 0V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v3" /></svg>
+                         </div>
+                         <span className="text-xs font-medium text-gray-600">Wallet Balances</span>
+                      </div>
+                      <span className="text-sm font-bold text-gray-900">${totalWalletBalance.toLocaleString()}</span>
+                   </div>
+                   <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                         <div className="w-7 h-7 rounded-lg bg-orange-100 text-orange-600 flex items-center justify-center">
+                            <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v12m-3-2.818.879.659c1.171.879 3.07.879 4.242 0 1.172-.879 1.172-2.303 0-3.182C13.536 12.219 12.768 12 12 12c-.725 0-1.45-.22-2.003-.659-1.106-.879-1.106-2.303 0-3.182s2.9-.879 4.006 0l.415.33M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg>
+                         </div>
+                         <span className="text-xs font-medium text-gray-600">Crypto (USD)</span>
+                      </div>
+                      <span className="text-sm font-bold text-gray-900">${totalCryptoValueUSD.toLocaleString()}</span>
+                   </div>
+                   <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                         <div className="w-7 h-7 rounded-lg bg-emerald-100 text-emerald-600 flex items-center justify-center">
+                            <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.25 18.75a60.07 60.07 0 0 1 15.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 0 1 3 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 0 0-.75.75v.75m0 0H3.75" /></svg>
+                         </div>
+                         <span className="text-xs font-medium text-gray-600">Period Payouts</span>
+                      </div>
+                      <span className="text-sm font-bold text-gray-900">${periodPayouts.toLocaleString()}</span>
+                   </div>
+                   <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                         <div className="w-7 h-7 rounded-lg bg-cyan-100 text-cyan-600 flex items-center justify-center">
+                            <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" /></svg>
+                         </div>
+                         <span className="text-xs font-medium text-gray-600">Inventory Value</span>
+                      </div>
+                      <span className="text-sm font-bold text-gray-900">${inventoryValue.toLocaleString()}</span>
+                   </div>
                 </div>
              </div>
 
@@ -414,6 +934,11 @@ export const OverviewPage = () => {
                             <div>
                                <div className="text-xs font-semibold text-gray-900">Purchase</div>
                                <div className="text-[10px] text-gray-500">{new Date(txn.txnTimestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
+                               {(txn.readerSource || txn.cardBrand) && (
+                                 <div className="text-[10px] text-emerald-600 font-medium">
+                                   {txn.readerSource === 'NFC_CONTACTLESS' ? 'NFC' : txn.readerSource === 'EMV_CHIP' ? 'EMV' : txn.cardBrand || 'Card'}
+                                 </div>
+                               )}
                             </div>
                          </div>
                          <div className="text-sm font-bold text-gray-900">
@@ -421,6 +946,9 @@ export const OverviewPage = () => {
                          </div>
                       </div>
                    ))}
+                   {transactions.length === 0 && (
+                      <div className="text-xs text-gray-400 text-center py-2">No transactions yet</div>
+                   )}
                 </div>
              </div>
           </div>
@@ -438,25 +966,38 @@ export const OverviewPage = () => {
             <Link to="/terminals" className="text-xs font-semibold text-blue-600 hover:text-blue-700 hover:underline">View All</Link>
           </div>
           <div className="space-y-3">
-            {terminals.slice(0, 5).map(term => (
-              <div key={term.id} className="flex items-center justify-between p-3 rounded-xl hover:bg-gray-50 transition-all duration-200 border border-transparent hover:border-gray-100 cursor-pointer group">
-                <div className="flex items-center gap-4">
-                  <div className={`w-2.5 h-2.5 rounded-full ${
-                    term.status === 'ONLINE' ? 'bg-green-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' :
-                    term.status === 'OFFLINE' ? 'bg-amber-500' :
-                    term.status === 'ERROR' ? 'bg-red-500' : 'bg-blue-500'
-                  }`}></div>
-                  <div>
-                    <div className="text-sm font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">{term.name}</div>
-                    <div className="text-xs text-gray-500 font-mono">{term.terminalId}</div>
+            {terminals.slice(0, 5).map(term => {
+              // Calculate today's total for this terminal
+              const today = new Date();
+              today.setHours(0, 0, 0, 0);
+              const terminalTxns = transactions.filter(t => {
+                const tDate = new Date(t.txnTimestamp);
+                return t.terminalId === term.terminalId && tDate >= today;
+              });
+              const terminalTotal = terminalTxns.reduce((sum, t) => sum + t.amountMinor, 0) / 100;
+              
+              return (
+                <div key={term.id} className="flex items-center justify-between p-3 rounded-xl hover:bg-gray-50 transition-all duration-200 border border-transparent hover:border-gray-100 cursor-pointer group">
+                  <div className="flex items-center gap-4">
+                    <div className={`w-2.5 h-2.5 rounded-full ${
+                      term.status === 'ONLINE' ? 'bg-green-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' :
+                      term.status === 'OFFLINE' ? 'bg-amber-500' :
+                      term.status === 'ERROR' ? 'bg-red-500' : 'bg-blue-500'
+                    }`}></div>
+                    <div>
+                      <div className="text-sm font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">{term.name}</div>
+                      <div className="text-xs text-gray-500 font-mono">{term.terminalId}</div>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-xs font-bold text-gray-900">
+                      {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(terminalTotal)}
+                    </div>
+                    <div className="text-[10px] text-gray-500 font-medium uppercase tracking-wide">Today</div>
                   </div>
                 </div>
-                <div className="text-right">
-                  <div className="text-xs font-bold text-gray-900">$1,240.50</div>
-                  <div className="text-[10px] text-gray-500 font-medium uppercase tracking-wide">Today</div>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 

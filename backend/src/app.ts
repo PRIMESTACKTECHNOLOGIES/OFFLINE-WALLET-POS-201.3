@@ -70,7 +70,13 @@ app.use("/auth/login", loginRateLimiter);
 app.use("/auth", authRouter);
 
 // ── Health checks (public) ────────────────────────────────────────────────────
-app.get("/", (_req, res) => res.send("POS 201.3 Backend Running"));
+app.get("/", (_req, res) => res.json({
+  status: "ok",
+  service: "POS 201.3 Backend",
+  timestamp: new Date().toISOString(),
+  health_endpoints: ["GET /health", "GET /api/health"],
+  auth_endpoints:  ["POST /auth/login"],
+}));
 app.get("/health", (_req, res) => res.json({ status: "ok", timestamp: new Date().toISOString() }));
 app.get("/api/health", (_req, res) => res.json({ status: "ok", timestamp: new Date().toISOString() }));
 
@@ -86,11 +92,14 @@ app.get("/merchant/v1", (_req, res) => {
 app.post("/merchant/v1/terminal/register", terminalsController.register.bind(terminalsController));
 app.post("/merchant/v1/terminal/verify", terminalsController.verify.bind(terminalsController));
 
-// ── Android POS offline-sale alias (maps to batch upload) ────────────────────
-app.post("/api/pos/offline-sale", batchesController.processOfflineBatch.bind(batchesController));
+// ── Standalone redeem (public, HMAC)
 app.post("/api/payment2013/redeem", batchesController.redeemPaymentCode.bind(batchesController));
 
 // ── POS standalone batch upload and settlement endpoints (public, HMAC-protected)
+//    NOTE: Previous public alias /api/pos/offline-sale has been REMOVED to avoid
+//    conflict with the new JWT-authenticated dashboard SyncWorker endpoint at
+//    /api/pos/offline-sale (inside api/router, flowchart-compliant).
+//    Airgapped/Protocol 201.3 (HMAC public) clients now use these two alternatives:
 app.post("/merchant/v1/api/payment2013/batch", batchesController.processOfflineBatch.bind(batchesController));
 app.post("/merchant/v1/pos/201.3/offline-batch", batchesController.processOfflineBatch.bind(batchesController));
 app.post("/merchant/v1/api/payment2013/redeem", batchesController.redeemPaymentCode.bind(batchesController));

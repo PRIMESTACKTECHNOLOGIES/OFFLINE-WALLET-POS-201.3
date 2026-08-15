@@ -3,8 +3,8 @@ import react from '@vitejs/plugin-react'
 
 // https://vite.dev/config/
 export default defineConfig(() => {
-  const port = parseInt(process.env.VITE_PORT || '5174');
-  const apiUrl = process.env.VITE_API_URL || 'http://localhost:3002';
+  const port = parseInt(process.env.VITE_PORT || '7001');
+  const apiUrl = process.env.VITE_API_URL || 'http://localhost:7000';
   
   return {
     plugins: [react()],

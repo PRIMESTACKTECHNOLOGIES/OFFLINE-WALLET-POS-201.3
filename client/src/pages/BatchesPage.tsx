@@ -29,47 +29,75 @@ interface BatchUI extends Batch {
   offlineApprovedCount: number;
   storedCount: number;
   
-  // Metadata
+  // Metadata (drawn from real payload; undefined/empty when server does not send)
   uploadDuration: string;
   firmwareVersion: string;
-  connectionType: "WiFi" | "Ethernet" | "4G";
+  connectionType: "WiFi" | "Ethernet" | "4G" | "";
   ipAddress: string;
   
   // Error logs
   errors?: { code: string; message: string; timestamp: string }[];
   
-  // Mock transactions for the drawer
+  // Transactions
   transactions: BatchTransaction[];
 }
 
-// --- Mock Data Generators ---
+const computeUploadDuration = (uploadTs: unknown, createTs: unknown): string => {
+  if (!uploadTs || !createTs) return "";
+  try {
+    const upMs = new Date(String(uploadTs)).getTime();
+    const crMs = new Date(String(createTs)).getTime();
+    if (!Number.isFinite(upMs) || !Number.isFinite(crMs)) return "";
+    const deltaMs = Math.max(0, upMs - crMs);
+    if (deltaMs < 1000) return `${deltaMs}ms`;
+    if (deltaMs < 60_000) return `${(deltaMs / 1000).toFixed(1)}s`;
+    return `${Math.floor(deltaMs / 60_000)}m ${Math.floor((deltaMs % 60_000) / 1000)}s`;
+  } catch {
+    return "";
+  }
+};
 
-const generateMockTransactions = (count: number, batchId: string): BatchTransaction[] => {
-  return []; // Fixed: Removed mock transactions
+const isValidConnection = (v: unknown): v is BatchUI["connectionType"] => {
+  return v === "WiFi" || v === "Ethernet" || v === "4G";
 };
 
 const enhanceBatchData = (b: Batch): BatchUI => {
-  // Use real data from the batch object instead of generating mock values
+  // Prefer real amount from batch payload (total_amount_minor) over any hardcoded default.
+  const amountMinor =
+    typeof (b as any).total_amount_minor === "number"
+      ? (b as any).total_amount_minor
+      : typeof b.totalAmount === "number"
+      ? Math.round(b.totalAmount * 100)
+      : 0;
+  const derivedTotalAmount = amountMinor / 100;
+
+  const rawConnection = (b as any).connectionType ?? (b as any).connection_type;
+  const rawFirmware = (b as any).firmwareVersion ?? (b as any).firmware_version;
+  const rawIp = (b as any).ipAddress ?? (b as any).ip_address;
+
   return {
     ...b,
-    status: b.status || 'RECEIVED',
-    terminalName: b.terminalName || `Terminal ${b.terminalId}`,
-    transactionCount: b.transactionCount || 0,
-    totalAmount: 0, // Should be calculated from real txns if available
-    currency: "USD",
-    
-    approvedCount: b.approvedCount || 0,
-    declinedCount: b.declinedCount || 0,
-    duplicateCount: 0,
-    offlineApprovedCount: 0,
-    storedCount: 0,
-    
-    uploadDuration: "0ms",
-    firmwareVersion: "v1.0.0",
-    connectionType: "WiFi",
-    ipAddress: "127.0.0.1",
-    
-    transactions: [] // Fixed: No mock transactions
+    status: b.status || "RECEIVED",
+    terminalName: b.terminalName || (b as any).terminal_name || `Terminal ${b.terminalId}`,
+    transactionCount: typeof b.transactionCount === "number" ? b.transactionCount : (b as any).txn_count ?? 0,
+    totalAmount: derivedTotalAmount,
+    currency: b.currency || (b as any).currency || "USD",
+
+    approvedCount: typeof b.approvedCount === "number" ? b.approvedCount : (b as any).approved_count ?? 0,
+    declinedCount: typeof b.declinedCount === "number" ? b.declinedCount : (b as any).declined_count ?? 0,
+    duplicateCount: (b as any).duplicate_count ?? 0,
+    offlineApprovedCount: (b as any).offline_approved_count ?? 0,
+    storedCount: (b as any).stored_count ?? 0,
+
+    uploadDuration: computeUploadDuration(
+      (b as any).uploadTimestamp ?? (b as any).upload_timestamp,
+      (b as any).createdAt ?? (b as any).created_at
+    ),
+    firmwareVersion: typeof rawFirmware === "string" && rawFirmware.length > 0 ? rawFirmware : "",
+    connectionType: isValidConnection(rawConnection) ? rawConnection : "",
+    ipAddress: typeof rawIp === "string" && rawIp.length > 0 && rawIp !== "127.0.0.1" ? rawIp : "",
+
+    transactions: []
   };
 };
 
@@ -410,34 +438,44 @@ const BatchDetailDrawer = ({ batch, isOpen, onClose, onReprocess }: { batch: Bat
           {activeTab === 'metadata' && (
             <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden animate-fade-in">
               <div className="divide-y divide-gray-100">
+
+                {/* Settlement Code — most important field for reconciliation */}
+                {(batch as any).settlementCode && (
+                  <div className="p-4 bg-green-50">
+                    <div className="text-xs text-green-700 uppercase tracking-wider mb-1 font-semibold">Settlement Code</div>
+                    <div className="font-mono text-2xl font-extrabold text-green-800 tracking-widest">{(batch as any).settlementCode}</div>
+                    <div className="text-xs text-green-600 mt-1">Use this code for reconciliation and customer redemption</div>
+                  </div>
+                )}
+
                 <div className="p-4 grid grid-cols-2 gap-4">
                   <div>
                     <div className="text-xs text-gray-500 uppercase tracking-wider mb-1">Terminal ID</div>
-                    <div className="font-mono text-sm">{batch.terminalId}</div>
+                    <div className="font-mono text-sm">{batch.terminalId || "—"}</div>
                   </div>
                   <div>
                     <div className="text-xs text-gray-500 uppercase tracking-wider mb-1">Firmware</div>
-                    <div className="font-mono text-sm">{batch.firmwareVersion}</div>
+                    <div className="font-mono text-sm">{batch.firmwareVersion || "—"}</div>
                   </div>
                 </div>
                 <div className="p-4 grid grid-cols-2 gap-4">
                   <div>
                     <div className="text-xs text-gray-500 uppercase tracking-wider mb-1">Connection</div>
-                    <div className="text-sm">{batch.connectionType}</div>
+                    <div className="text-sm">{batch.connectionType || "—"}</div>
                   </div>
                   <div>
                     <div className="text-xs text-gray-500 uppercase tracking-wider mb-1">IP Address</div>
-                    <div className="font-mono text-sm">{batch.ipAddress}</div>
+                    <div className="font-mono text-sm">{batch.ipAddress || "—"}</div>
                   </div>
                 </div>
                 <div className="p-4 grid grid-cols-2 gap-4">
                   <div>
                     <div className="text-xs text-gray-500 uppercase tracking-wider mb-1">Upload Duration</div>
-                    <div className="text-sm">{batch.uploadDuration}</div>
+                    <div className="text-sm">{batch.uploadDuration || "—"}</div>
                   </div>
                   <div>
                     <div className="text-xs text-gray-500 uppercase tracking-wider mb-1">Batch Sequence</div>
-                    <div className="font-mono text-sm">#{batch.batchSeq}</div>
+                    <div className="font-mono text-sm">{(batch.batchSeq ?? null) !== null ? `#${batch.batchSeq}` : "—"}</div>
                   </div>
                 </div>
               </div>
@@ -550,8 +588,7 @@ export const BatchesPage = () => {
 
   // Actions
   const handleExport = () => {
-    // Simple CSV Export
-    const headers = ["Batch ID", "Terminal ID", "Upload Time", "Txns", "Approved", "Declined", "Status"];
+    const headers = ["Batch ID", "Terminal ID", "Upload Time", "Txns", "Approved", "Declined", "Total Amount", "sourceCurrency", "Settlement Code", "Status"];
     const rows = filteredBatches.map(b => [
       b.id,
       b.terminalId,
@@ -559,6 +596,9 @@ export const BatchesPage = () => {
       b.transactionCount,
       b.approvedCount,
       b.declinedCount,
+      (b.totalAmount || 0).toFixed(2),
+      b.currency || 'USD',
+      (b as any).settlementCode || '',
       b.status
     ]);
     
@@ -580,14 +620,14 @@ export const BatchesPage = () => {
     }
   };
 
-  const handleReprocess = (batchId: string) => {
+  const handleReprocess = async (batchId: string) => {
     const batch = batches.find(b => b.id === batchId);
     if (!batch) return;
 
-    if (window.confirm(`Are you sure you want to reprocess batch ${batchId}?`)) {
-      showToast(`Reprocessing batch ${batchId}...`, "info");
-      
-      // Simulate API call - set to PENDING
+    if (window.confirm(
+      `Batch reprocessing requires backend reconciliation. Contact your operations admin to re-submit batch ${batchId}. ` +
+      `Do you want to mark this batch as requiring manual reprocessing?`
+    )) {
       const updateStatus = (status: string, errors?: any[]) => {
         setBatches(prev => prev.map(b => 
           b.id === batchId ? { ...b, status: status, errors } : b
@@ -598,13 +638,8 @@ export const BatchesPage = () => {
         }
       };
 
-      updateStatus('PENDING');
-      
-      // Simulate completion after 2 seconds
-      setTimeout(() => {
-        updateStatus('PROCESSED', undefined);
-        showToast(`Batch ${batchId} reprocessed successfully`, "success");
-      }, 2000);
+      updateStatus('PENDING', [{ message: 'Awaiting manual ops reconciliation. Batch flagged for reprocessing.' }]);
+      showToast(`Batch ${batchId} flagged for manual reprocessing by operations`, "info");
     }
   };
 

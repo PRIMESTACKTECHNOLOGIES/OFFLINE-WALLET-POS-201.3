@@ -1,4 +1,0 @@
-- [ ] Increase network timeouts in `PosApi.kt`
-- [ ] Add URL normalization in `SettingsActivity.kt`
-- [ ] Improve error reporting in `SettingsActivity.kt`
-- [ ] Verify build and connectivity

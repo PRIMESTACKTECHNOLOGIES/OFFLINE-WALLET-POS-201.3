@@ -1,20 +1,6 @@
 import { useState, useEffect } from 'react';
+import { fetchProducts, createProduct, type Product } from '../lib/api';
 
-// Mock Data
-const MOCK_INVENTORY = Array.from({ length: 25 }, (_, i) => ({
-  id: `prod_${i + 1000}`,
-  name: `Product ${String.fromCharCode(65 + (i % 26))}${i + 1}`,
-  sku: `SKU-${1000 + i}`,
-  category: ['Electronics', 'Accessories', 'Services', 'Hardware'][i % 4],
-  price: (Math.random() * 100 + 10).toFixed(2),
-  stock: Math.floor(Math.random() * 150),
-  minStock: 10,
-  status: 'IN_STOCK', // Will be calculated
-  lastUpdated: new Date(Date.now() - Math.random() * 86400000 * 5).toISOString()
-})).map(p => ({
-  ...p,
-  status: p.stock === 0 ? 'OUT_OF_STOCK' : p.stock < p.minStock ? 'LOW_STOCK' : 'IN_STOCK'
-}));
 
 // Components
 const StatCard = ({ title, value, icon, color, subtext }: any) => (
@@ -54,17 +40,41 @@ const StatusBadge = ({ status }: { status: string }) => {
 };
 
 export const InventoryPage = () => {
-  const [products] = useState(MOCK_INVENTORY);
+  const [products, setProducts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('ALL'); // ALL, LOW_STOCK, OUT_OF_STOCK
   const [searchTerm, setSearchTerm] = useState('');
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [newProduct, setNewProduct] = useState({ name: '', sku: '', price: '', stock: '' });
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    // Simulate loading
-    const timer = setTimeout(() => {
-      setLoading(false);
-    }, 800);
-    return () => clearTimeout(timer);
+    let mounted = true;
+    const load = async () => {
+      try {
+        const res = await fetchProducts();
+        if (!mounted) return;
+        // Map API product to UI shape
+        const mapped = res.map((p: Product) => ({
+          id: p.id,
+          name: p.name,
+          sku: p.sku || '',
+          category: '',
+          price: (p.price_minor || 0) / 100,
+          stock: p.stock || 0,
+          minStock: 10,
+          status: (p.stock || 0) === 0 ? 'OUT_OF_STOCK' : (p.stock || 0) < 10 ? 'LOW_STOCK' : 'IN_STOCK',
+          lastUpdated: p.updated_at || new Date().toISOString()
+        }));
+        setProducts(mapped);
+      } catch (e) {
+        console.error('Failed to load products', e);
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
+    return () => { mounted = false; };
   }, []);
 
   const filteredProducts = products.filter(p => {
@@ -74,7 +84,7 @@ export const InventoryPage = () => {
     return matchesFilter && matchesSearch;
   });
 
-  const totalValue = products.reduce((acc, p) => acc + (parseFloat(p.price) * p.stock), 0);
+  const totalValue = products.reduce((acc, p) => acc + ((Number(p.price) || 0) * (p.stock || 0)), 0);
   const lowStockCount = products.filter(p => p.status === 'LOW_STOCK').length;
   const outOfStockCount = products.filter(p => p.status === 'OUT_OF_STOCK').length;
 
@@ -97,7 +107,10 @@ export const InventoryPage = () => {
           <h1 className="text-2xl font-bold text-gray-900 tracking-tight">Inventory Management</h1>
           <p className="text-sm text-gray-500 mt-1">Track stock levels and product catalog</p>
         </div>
-        <button className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors shadow-sm flex items-center gap-2">
+        <button
+          onClick={() => { setNewProduct({ name: '', sku: '', price: '', stock: '' }); setShowAddModal(true); }}
+          className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors shadow-sm flex items-center gap-2"
+        >
           <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
           Add Product
         </button>
@@ -200,7 +213,7 @@ export const InventoryPage = () => {
                       </span>
                     </td>
                     <td className="px-6 py-4 text-sm font-medium text-gray-900 text-right">
-                      ${product.price}
+                      ${product.price.toFixed ? product.price.toFixed(2) : Number(product.price).toFixed(2)}
                     </td>
                     <td className="px-6 py-4 text-sm text-gray-900 text-right">
                       <span className={`font-medium ${product.stock < product.minStock ? 'text-red-600' : 'text-gray-900'}`}>
@@ -243,6 +256,77 @@ export const InventoryPage = () => {
           </div>
         </div>
       </div>
+
+      {/* Add Product Modal */}
+      {showAddModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => setShowAddModal(false)}>
+          <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md mx-4" onClick={e => e.stopPropagation()}>
+            <h2 className="text-lg font-bold text-gray-900 mb-4">Add New Product</h2>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Product Name *</label>
+                <input type="text" value={newProduct.name} onChange={e => setNewProduct(p => ({...p, name: e.target.value}))} placeholder="e.g. Wireless Headphones"
+                  className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">SKU</label>
+                <input type="text" value={newProduct.sku} onChange={e => setNewProduct(p => ({...p, sku: e.target.value}))} placeholder="e.g. WH-1001"
+                  className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Price (USD) *</label>
+                  <input type="number" value={newProduct.price} onChange={e => setNewProduct(p => ({...p, price: e.target.value}))} placeholder="0.00" step="0.01" min="0"
+                    className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Stock *</label>
+                  <input type="number" value={newProduct.stock} onChange={e => setNewProduct(p => ({...p, stock: e.target.value}))} placeholder="0" min="0"
+                    className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                </div>
+              </div>
+            </div>
+            <div className="flex gap-3 mt-6">
+              <button onClick={() => setShowAddModal(false)} className="flex-1 px-4 py-2.5 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200 transition-colors">
+                Cancel
+              </button>
+              <button
+                disabled={saving || !newProduct.name.trim()}
+                onClick={async () => {
+                  setSaving(true);
+                  try {
+                    const priceMinor = Math.round(parseFloat(newProduct.price || '0') * 100);
+                    await createProduct({
+                      name: newProduct.name.trim(),
+                      sku: newProduct.sku.trim(),
+                      price_minor: priceMinor,
+                      stock: parseInt(newProduct.stock || '0', 10)
+                    });
+                    setShowAddModal(false);
+                    // Refresh product list
+                    const res = await fetchProducts();
+                    const mapped = res.map((p: Product) => ({
+                      id: p.id, name: p.name, sku: p.sku || '', category: '',
+                      price: (p.price_minor || 0) / 100, stock: p.stock || 0, minStock: 10,
+                      status: (p.stock || 0) === 0 ? 'OUT_OF_STOCK' : (p.stock || 0) < 10 ? 'LOW_STOCK' : 'IN_STOCK',
+                      lastUpdated: p.updated_at || new Date().toISOString()
+                    }));
+                    setProducts(mapped);
+                  } catch (e: any) {
+                    console.error('Failed to create product', e);
+                    alert('Failed to create product: ' + (e.message || 'Unknown error'));
+                  } finally {
+                    setSaving(false);
+                  }
+                }}
+                className={`flex-1 px-4 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors ${saving || !newProduct.name.trim() ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                {saving ? 'Creating...' : 'Create Product'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

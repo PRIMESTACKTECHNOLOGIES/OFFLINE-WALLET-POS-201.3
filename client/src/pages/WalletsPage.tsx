@@ -5,12 +5,12 @@ import {
   fetchSettings,
   getWalletBalance, getWalletTransactions, topupWallet, topupWalletWithCard, debitWallet,
   walletTransfer,
-  getVirtualCards, issueVirtualCard, topupVirtualCard, freezeCard, unfreezeCard,
   getBankAccounts, addBankAccount, bankPayout, getBankPayouts,
   getCryptoWallets, getCryptoPrice, buyCryptoWithWallet, sellCrypto, getCryptoTransactions, withdrawCrypto,
-  getMerchantBalance, getMerchantTransactions, buyCryptoWithMerchant,
+  getMerchantBalance, getMerchantTransactions, buyCryptoWithMerchant, merchantToCustomerTransfer,
+  checkBackendHealth,
   type Customer, type WalletBalance, type WalletTransaction,
-  type VirtualCard, type BankAccount, type BankPayout,
+  type BankAccount, type BankPayout,
   type CryptoWallet, type CryptoTransaction, type MerchantWallet, type MerchantWalletTransaction,
 } from "../lib/api";
 import { resolveApiBaseUrl } from "../lib/backendUrl";
@@ -20,21 +20,22 @@ import {
   enqueue, cacheBalance, getCachedBalance, applyLocalBalance, pendingCount as offlinePending
 } from "../lib/offline-queue";
 
-type Tab = 'wallet' | 'virtual-cards' | 'bank' | 'crypto';
+type Tab = 'wallet' | 'bank' | 'crypto';
 type Modal =
   | 'create-customer' | 'topup' | 'debit' | 'transfer'
-  | 'issue-card' | 'topup-card' | 'add-bank' | 'bank-payout'
-  | 'buy-crypto' | 'sell-crypto' | 'withdraw-crypto' | 'merchant-buy' | null;
+  | 'add-bank' | 'bank-payout'
+  | 'buy-crypto' | 'sell-crypto' | 'withdraw-crypto' | 'merchant-buy'
+  | 'merchant-to-customer' | null;
 
 const COINS = ['BTC','ETH','USDT','SOL','DOGE','BNB','XRP','ADA','AVAX','LINK','MATIC'];
 const COIN_ICONS: Record<string,string> = {
-  BTC:'₿', ETH:'Ξ', USDT:'₮', SOL:'◎', DOGE:'Ð',
-  BNB:'🟡', XRP:'◈', ADA:'₳', AVAX:'🔺', LINK:'⬡', MATIC:'🟣'
+  BTC:'â‚¿', ETH:'Îž', USDT:'â‚®', SOL:'â—Ž', DOGE:'Ã',
+  BNB:'ðŸŸ¡', XRP:'â—ˆ', ADA:'â‚³', AVAX:'ðŸ”º', LINK:'â¬¡', MATIC:'ðŸŸ£'
 };
 const NETWORK_OPTIONS: Record<string, string[]> = {
   BTC: ['bitcoin', 'lightning'],
   ETH: ['ethereum', 'arbitrum', 'optimism'],
-  USDT: ['ethereum', 'tron', 'solana'],
+  USDT: ['tron', 'bsc', 'polygon', 'ethereum', 'solana'],
   SOL: ['solana', 'spl'],
   DOGE: ['dogecoin'],
   BNB: ['bsc'],
@@ -43,6 +44,10 @@ const NETWORK_OPTIONS: Record<string, string[]> = {
   AVAX: ['avalanche'],
   LINK: ['ethereum'],
   MATIC: ['polygon'],
+};
+
+const DIRECT_RAIL_NETWORKS: Record<string, string[]> = {
+  USDT: ['tron', 'bsc', 'polygon'],
 };
 const getNetworkOptions = (coin: string) => NETWORK_OPTIONS[coin] || ['mainnet'];
 
@@ -58,7 +63,7 @@ function sourceLabel(raw: string | null | undefined): string {
   return raw.replace(/_/g,' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
-// ── Stable module-level components (no re-mount on parent re-render) ──────────
+// â”€â”€ Stable module-level components (no re-mount on parent re-render) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const FormInput: React.FC<{
   f: Record<string,string>; setF: React.Dispatch<React.SetStateAction<Record<string,string>>>;
   name: string; placeholder: string; type?: string; required?: boolean;
@@ -76,7 +81,7 @@ const ModalShell: React.FC<{
     <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md" onClick={e=>e.stopPropagation()}>
       <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
         <h3 className="text-lg font-bold text-gray-900">{title}</h3>
-        <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl" type="button">✕</button>
+        <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl" type="button">âœ•</button>
       </div>
       <div className="p-6 space-y-3">{children}</div>
       <div className="px-6 pb-6 flex gap-3">
@@ -84,7 +89,7 @@ const ModalShell: React.FC<{
           className="flex-1 py-3 rounded-xl border border-gray-200 font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50">Cancel</button>
         <button onClick={onConfirm} disabled={busy} type="button"
           className={`flex-1 py-3 rounded-xl font-medium text-white ${confirmColor} disabled:opacity-50`}>
-          {busy ? '⏳ Processing...' : confirmLabel}
+          {busy ? 'â³ Processing...' : confirmLabel}
         </button>
       </div>
     </div>
@@ -117,9 +122,6 @@ export const WalletsPage = () => {
   const [loadingCust, setLoadingCust] = useState(true);
   const [balance, setBalance] = useState<WalletBalance>({ balance:0, currency:'USD' });
   const [walletTxns, setWalletTxns] = useState<WalletTransaction[]>([]);
-  const [cards, setCards] = useState<VirtualCard[]>([]);
-  const [selCard, setSelCard] = useState<VirtualCard|null>(null);
-  const [flippedCardId, setFlippedCardId] = useState<string | null>(null);
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
   const [bankPayouts, setBankPayouts] = useState<BankPayout[]>([]);
   const [selBank, setSelBank] = useState('');
@@ -132,7 +134,6 @@ export const WalletsPage = () => {
   const [selectedNetwork, setSelectedNetwork] = useState('bitcoin');
   const [coinPrice, setCoinPrice] = useState(0);
   const [f, setF] = useState<Record<string,string>>({});
-  const [modalBalanceLoading, setModalBalanceLoading] = useState(false);
   const [coinPriceMap, setCoinPriceMap] = useState<Record<string, number>>(() => {
     const map: Record<string, number> = {};
     COINS.forEach(c => { map[c] = 0; });
@@ -168,10 +169,31 @@ export const WalletsPage = () => {
   };
 
   useEffect(() => {
-    const up = () => { setIsOnline(true); setQueuedOps(offlinePending()); };
+    const up = async () => {
+      try { await checkBackendHealth(2500); setIsOnline(true); } catch { setIsOnline(false); }
+      setQueuedOps(offlinePending());
+    };
     const dn = () => setIsOnline(false);
     window.addEventListener('online', up); window.addEventListener('offline', dn);
-    return () => { window.removeEventListener('online', up); window.removeEventListener('offline', dn); };
+
+    // ══ Periodic BACKEND HEALTH CHECK EVERY 10s ══
+    // This uses the PUBLIC `/api/health` endpoint (NO JWT REQUIRED), so even if
+    // the user is not logged in, the "online indicator" dot in the UI will show
+    // GREEN if server is alive / RED if server is down.  This eliminates the
+    // confusing 401 {"error":"Unauthorized: Missing token"} error that was
+    // appearing previously because the UI tried pinging protected endpoints
+    // before login to check server health.
+    void up();
+    let cancelled = false;
+    const timer = window.setInterval(async () => {
+      if (cancelled) return;
+      try { await checkBackendHealth(2500); setIsOnline(true); } catch { setIsOnline(false); }
+    }, 10_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener('online', up); window.removeEventListener('offline', dn);
+    };
   }, []);
 
   useEffect(() => {
@@ -235,7 +257,6 @@ export const WalletsPage = () => {
     getWalletBalance(selId).then(b => { setBalance(b); cacheBalance(selId, Number(b.balance), b.currency); })
       .catch(() => { const c = getCachedBalance(selId); if (c) setBalance(c); });
     getWalletTransactions(selId).then(setWalletTxns).catch(()=>{});
-    getVirtualCards(selId).then(setCards).catch(()=>{});
     getBankAccounts(selId).then(ba => { setBankAccounts(ba); if (ba.length>0) setSelBank(ba[0].id); }).catch(()=>{});
     getBankPayouts(selId).then(setBankPayouts).catch(()=>{});
     getCryptoWallets(selId).then(setCryptoWallets).catch(()=>{});
@@ -275,21 +296,6 @@ export const WalletsPage = () => {
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
-  useEffect(() => {
-    if (modal !== 'topup-card' || !selId) return;
-
-    let cancelled = false;
-    setModalBalanceLoading(true);
-
-    void refreshWalletAndCards().finally(() => {
-      if (!cancelled) setModalBalanceLoading(false);
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [modal, selId]);
-
   const refreshWallet = async () => {
     if (!selId) return;
     try {
@@ -297,20 +303,6 @@ export const WalletsPage = () => {
       setBalance(bal); setWalletTxns(wt); cacheBalance(selId, Number(bal.balance), bal.currency);
     } catch { const c = getCachedBalance(selId); if (c) setBalance(c); }
     setQueuedOps(offlinePending());
-  };
-  const refreshCards = async () => { if (selId) setCards(await getVirtualCards(selId)); };
-  const refreshWalletAndCards = async () => {
-    if (!selId) return;
-    try {
-      const [bal, cardsData] = await Promise.all([getWalletBalance(selId), getVirtualCards(selId)]);
-      setBalance(bal);
-      setCards(cardsData);
-      setSelCard(prev => cardsData.find(card => card.id === prev?.id) ?? prev);
-      cacheBalance(selId, Number(bal.balance), bal.currency);
-    } catch {
-      const c = getCachedBalance(selId);
-      if (c) setBalance(c);
-    }
   };
   const refreshBank  = async () => {
     if (!selId) return;
@@ -324,9 +316,16 @@ export const WalletsPage = () => {
   };
 
   const closeAll = () => { setModal(null); setF({}); };
-  const act = async (fn: ()=>Promise<void>, msg: string) => {
+  const act = async (fn: ()=>Promise<any>, msg: string, detail?: (result: any) => string | null) => {
     setBusy(true);
-    try { await fn(); if (msg) addNotification('Success', msg, 'success'); closeAll(); }
+    try {
+      const result = await fn();
+      if (msg) {
+        const extra = detail ? detail(result) : null;
+        addNotification('Success', extra ? `${msg}\n\n${extra}` : msg, 'success');
+      }
+      closeAll();
+    }
     catch (e:any) { addNotification('Error', e.message||'Error', 'error'); }
     finally { setBusy(false); }
   };
@@ -335,7 +334,7 @@ export const WalletsPage = () => {
 
   // Handlers
   const handleCreateCustomer = () => act(async () => {
-    // ── Snapshot ALL state into local constants BEFORE any await.
+    // â”€â”€ Snapshot ALL state into local constants BEFORE any await.
     //    This defends against stale closures if any UI path calls setF({}) mid-flight.
     const snapF = { ...f };
 
@@ -359,15 +358,15 @@ export const WalletsPage = () => {
     try {
       await getWalletBalance(safeCustomer.id);
       const walletId = safeCustomer.wallet_id || safeCustomer.id;
-      const walletCode = safeCustomer.wallet_code ? ` · Code: ${safeCustomer.wallet_code}` : '';
-      addNotification('Wallet Created', `${savedName}'s wallet ready — ID: ${walletId}${walletCode}`, 'success');
+      const walletCode = safeCustomer.wallet_code ? ` Â· Code: ${safeCustomer.wallet_code}` : '';
+      addNotification('Wallet Created', `${savedName}'s wallet ready â€” ID: ${walletId}${walletCode}`, 'success');
     } catch {
-      addNotification('Wallet Created', `${savedName}'s wallet created — ID: ${safeCustomer.id}`, 'success');
+      addNotification('Wallet Created', `${savedName}'s wallet created â€” ID: ${safeCustomer.id}`, 'success');
     }
   }, `Customer created`);
 
   const handleTopup = () => act(async () => {
-    // ── Snapshot ALL state into local constants BEFORE any await.
+    // â”€â”€ Snapshot ALL state into local constants BEFORE any await.
     const snapF = { ...f };
     const snapSelId = selId;
     const snapIsOnline = isOnline;
@@ -401,11 +400,11 @@ export const WalletsPage = () => {
 
     const result = await topupWalletWithCard(snapSelId, amt, pan, panMasked, expiry, cvv);
     await refreshWallet();
-    addNotification('Top Up Complete', `Amount $${amt.toFixed(2)} credited. Auth: ${result.authCode || 'N/A'}${result.processorId ? ` · Processor: ${result.processorId}` : ''}`, 'success');
+    addNotification('Top Up Complete', `Amount $${amt.toFixed(2)} credited. Auth: ${result.authCode || 'N/A'}${result.processorId ? ` Â· Processor: ${result.processorId}` : ''}`, 'success');
   }, '');
 
   const handleDebit = () => act(async () => {
-    // ── Snapshot ALL state into local constants BEFORE any await.
+    // â”€â”€ Snapshot ALL state into local constants BEFORE any await.
     const snapF = { ...f };
     const snapSelId = selId;
     const snapIsOnline = isOnline;
@@ -418,7 +417,7 @@ export const WalletsPage = () => {
   }, 'Debit applied');
 
   const handleTransfer = () => act(async () => {
-    // ── Snapshot ALL state into local constants BEFORE any await.
+    // â”€â”€ Snapshot ALL state into local constants BEFORE any await.
     const snapF = { ...f };
     const snapSelId = selId;
     const snapIsOnline = isOnline;
@@ -430,31 +429,8 @@ export const WalletsPage = () => {
     await refreshWallet();
   }, 'Transfer sent');
 
-  const handleIssueCard = () => act(async () => {
-    // ── Snapshot ALL state into local constants BEFORE any await.
-    const snapF = { ...f };
-    const snapSelId = selId;
-    const snapSelName = sel?.name;
-
-    if (!snapSelId) throw new Error('No customer');
-    const card = await issueVirtualCard(snapSelId, snapF.name||snapSelName||'Card Holder', snapF.currency||'USD');
-    addNotification('Card Issued', `Number: ${(card as any).cardNumber}  CVV: ${(card as any).cvv}`, 'success');
-    await refreshWallet(); await refreshCards();
-  }, '');
-
-  const handleTopupCard = () => act(async () => {
-    // ── Snapshot ALL state into local constants BEFORE any await.
-    const snapF = { ...f };
-    const snapSelId = selId;
-    const snapSelCard = selCard;
-
-    if (!snapSelId||!snapSelCard) throw new Error('Select a card');
-    await topupVirtualCard(snapSelId, snapSelCard.id, parseFloat(snapF.amount));
-    await refreshWallet(); await refreshCards();
-  }, 'Card topped up');
-
   const handleAddBank = () => act(async () => {
-    // ── Snapshot ALL state into local constants BEFORE any await.
+    // â”€â”€ Snapshot ALL state into local constants BEFORE any await.
     const snapF = { ...f };
     const snapSelId = selId;
 
@@ -464,7 +440,7 @@ export const WalletsPage = () => {
   }, 'Bank account added');
 
   const handleBankPayout = () => act(async () => {
-    // ── Snapshot ALL state into local constants BEFORE any await.
+    // â”€â”€ Snapshot ALL state into local constants BEFORE any await.
     const snapF = { ...f };
     const snapSelId = selId;
     const snapSelBank = selBank;
@@ -492,7 +468,7 @@ export const WalletsPage = () => {
   }, 'Crypto purchase complete');
 
   const handleMerchantBuy = () => act(async () => {
-    // ── Snapshot ALL state into local constants BEFORE any await.
+    // ══ Snapshot ALL state into local constants BEFORE any await.
     //    This defends against stale closures if any UI path calls setF({}) mid-flight.
     const snapF = { ...f };
     const snapSelCoin = selCoin;
@@ -511,12 +487,84 @@ export const WalletsPage = () => {
     const amt = parseFloat(snapF.amount);
     if (!amt || amt <= 0) throw new Error('Enter a valid USD amount to spend');
 
-    // ── Async execution starts here — state values above are fully captured by closure.
-    await buyCryptoWithMerchant(merchantId, snapSelCoin, amt, snapSelectedNetwork);
+    // ══ 1st try with allow_simulation=false (enforce LIVE MODE ONLY).
+    //    This mirrors the user's rule: NO SILENT MOCK / DEMO PURCHASES EVER.
+    let result: any = null;
+    let acknowledgedSim: boolean = false;
+    try {
+      result = await buyCryptoWithMerchant(merchantId, snapSelCoin, amt, snapSelectedNetwork, { allow_simulation: false });
+    } catch (firstErr: any) {
+      const msg = String(firstErr?.message || firstErr || '');
+      const blockedReasons =
+        /NO_LIVE_CRYPTO_EXCHANGE_CONFIGURED|CRYPTO_PURCHASE_BLOCKED|CRYPTO_PURCHASE_SIMULATION_UNACKNOWLEDGED/.test(msg);
+
+      if (!blockedReasons) throw firstErr; // not a "keys missing" style block — surface original
+
+      // Keys are missing.  Before today the UI would silently proceed with a MOCK
+      // purchase and toast "Merchant buy executed" (misleading).  Instead, we STOP
+      // and force the operator to EXPLICITLY ACKNOWLEDGE this is a SIMULATION and
+      // that no real crypto was purchased.  Only proceed if they click OK.
+      const confirmed = window.confirm(
+        '⚠️  NO REAL CRYPTO EXCHANGE CONFIGURED (Binance / KuCoin API keys are missing from .env).\n\n' +
+        'If you continue, this will run a SIMULATION ONLY:\n' +
+        `  • Merchant wallet WILL BE debited $${amt.toFixed(2)} USD (internal bookkeeping)\n` +
+        `  • ${snapSelCoin} balance WILL be added (displayed with a "SIMULATED" badge in dashboard)\n` +
+        '  • BUT NO REAL crypto will be purchased from any exchange.\n\n' +
+        'This is ONLY for operator UI testing.  Are you SURE you want to proceed with a SIMULATION?\n\n' +
+        '(Click Cancel to go set real API keys in backend/.env instead.)'
+      );
+      if (!confirmed) {
+        addNotification(
+          'Aborted',
+          `Merchant ${snapSelCoin} purchase cancelled — no money moved, no simulation run. Set real exchange keys or click OK to allow simulation.`,
+          'info'
+        );
+        return;
+      }
+      acknowledgedSim = true;
+      result = await buyCryptoWithMerchant(merchantId, snapSelCoin, amt, snapSelectedNetwork, { allow_simulation: true });
+    }
+
     await refreshMerchantWallet(merchantId);
-    addNotification('Success', `Merchant bought ${snapSelCoin} on ${snapSelectedNetwork} for $${amt}`, 'success');
+
+    const actuallyLive = result && result.mode === 'live' && result.is_mock !== true && !acknowledgedSim;
+    if (actuallyLive) {
+      addNotification(
+        'Real purchase executed',
+        `Merchant bought ${result.cryptoAmount ?? '-'} ${snapSelCoin} on ${snapSelectedNetwork} for $${amt} via ${result.providerMode ?? 'exchange'}. Order ID: ${result.exchangeOrderId ?? '-'}`,
+        'success'
+      );
+    } else {
+      const warning = (result?.warning as string) ||
+        '⚠️ SIMULATION ONLY — Real crypto was NOT purchased. The displayed wallet/crypto balances are internal bookkeeping only.';
+      addNotification(
+        '⚠️ SIMULATION ONLY',
+        `${warning}\n  • Spent $${amt.toFixed(2)} USD (internal debit)\n  • Credited ${result?.cryptoAmount ?? '-'} ${snapSelCoin} (displayed SIMULATED)\n  • No order ID on any exchange — this was NOT a real trade.`,
+        'warning'
+      );
+    }
     closeAll();
-  }, 'Merchant buy executed');
+  }, 'Merchant crypto buy');
+
+
+  const handleMerchantToCustomer = () => act(async () => {
+    const snapF = { ...f };
+    const snapMerchantWallet = merchantWallet;
+    const merchantId =
+      snapF.merchantId?.trim() ||
+      snapMerchantWallet?.merchant_id?.trim() ||
+      snapMerchantWallet?.id?.trim() || '';
+    if (!merchantId) throw new Error('Merchant ID not configured');
+    const targetCustomerId = snapF.targetCustomerId?.trim();
+    if (!targetCustomerId) throw new Error('Please select a customer');
+    const amt = parseFloat(snapF.amount);
+    if (!amt || amt <= 0) throw new Error('Enter a valid amount');
+    const result = await merchantToCustomerTransfer(merchantId, targetCustomerId, amt, snapF.note || undefined, 'USD');
+    await refreshMerchantWallet(merchantId);
+    if (targetCustomerId === selId) await refreshWallet();
+    addNotification('Transfer Complete', `$${amt.toFixed(2)} sent to ${result.customerName}. Ref: ${result.reference}`, 'success');
+    closeAll();
+  }, '');
 
   const handleSellCrypto = () => act(async () => {
     const snapF = { ...f };
@@ -535,14 +583,74 @@ export const WalletsPage = () => {
     const snapSelId = selId;
     const snapSelCoin = selCoin;
     const snapSelectedNetwork = selectedNetwork;
+    const snapIsOnline = isOnline;
     if (!snapSelId) throw new Error('No customer selected');
+    if (!snapIsOnline) throw new Error('Crypto withdrawal requires internet (for on-chain broadcast or exchange API)');
     const amt = parseFloat(snapF.amount);
     if (!amt || amt <= 0) throw new Error('Enter a valid amount');
-    if (!snapF.address || snapF.address.trim().length < 10) throw new Error('Enter a valid wallet address');
-    const result = await withdrawCrypto(snapSelId, snapSelCoin, amt, snapF.address.trim(), snapSelectedNetwork);
+    const addr = snapF.address?.trim();
+    if (!addr || addr.length < 10) throw new Error('Enter a valid wallet address');
+
+    // ── Per-network address format validation (pre-submit UX) ──
+    const net = String(snapSelectedNetwork || '').toLowerCase();
+    const coin = String(snapSelCoin || '').toUpperCase();
+    const tronLike = addr.startsWith('T') && addr.length >= 33 && addr.length <= 36;
+    const evmLike = /^0x[a-fA-F0-9]{40}$/.test(addr);
+    const btcLike = /^(bc1|[13])[a-zA-HJ-NP-Z0-9]{25,62}$/.test(addr);
+    const solLike = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr);
+    const xrpLike = /^r[1-9A-HJ-NP-Za-km-z]{24,34}$/.test(addr);
+
+    if (coin === 'USDT' && (net === 'tron' || net === 'trc20' || net === 'trx')) {
+      if (!tronLike) throw new Error('TronLink / TRC-20 addresses start with "T" and are ~34 characters long.');
+    }
+    if (coin === 'USDT' && (net === 'bsc' || net === 'bep20' || net === 'polygon' || net === 'erc20' || net === 'ethereum' || net === 'eth')) {
+      if (!evmLike) throw new Error(`${net.toUpperCase()} addresses must be a 0x-prefixed 42-char hex EVM address (Trust Wallet format).`);
+    }
+    if (coin === 'BTC' || net === 'bitcoin' || net === 'btc') {
+      if (!btcLike && !tronLike && !evmLike) throw new Error('BTC address format not recognized. Use bech32 (bc1…) or legacy (1…/3…).');
+    }
+    if (coin === 'SOL' || net === 'solana' || net === 'spl') {
+      if (!solLike) throw new Error('Solana addresses are 32–44 char base58 (no l/I/0/O).');
+    }
+    if (coin === 'XRP' || net === 'ripple' || net === 'xrp') {
+      if (!xrpLike) throw new Error('Ripple/XRP addresses start with "r" (r…). Note: destination tag required for exchanges (add in remarks during audit).');
+    }
+    if (coin === 'BNB' || net === 'bsc' || net === 'bep2') {
+      if (net === 'bsc' && !evmLike) throw new Error('BNB (BSC) addresses are 0x-prefixed EVM format.');
+      if (net === 'bep2' && !(addr.startsWith('bnb') || btcLike)) throw new Error('BNB Beacon Chain (BEP2) addresses start with "bnb".');
+    }
+
+    const isUsdt = coin === 'USDT';
+    const looksTron = tronLike;
+    const looksEvm = evmLike;
+
+    if (isUsdt) {
+      if (looksTron && net !== 'tron' && net !== 'trc20' && net !== 'trx') {
+        console.warn('[withdraw] Address is Tron (T-addr) but network not TRON — backend will auto-route via tronweb direct rail.');
+      }
+      if (looksEvm && !['bsc', 'polygon', 'ethereum', 'eth', 'erc20', 'bep20'].includes(net)) {
+        console.warn('[withdraw] Address is EVM (0x) but network not BSC/Polygon — backend will auto-detect direct rail.');
+      }
+    }
+
+    const result = await withdrawCrypto(snapSelId, coin, amt, addr, snapSelectedNetwork);
     await refreshCrypto();
     return result;
-  }, `${selCoin} withdrawal submitted`);
+  }, `${selCoin} withdrawal submitted`, (result: any) => {
+    if (!result) return null;
+    const provider = result.provider || '';
+    const isDirect = ['tronweb', 'bscweb', 'polygonweb'].includes(String(provider).toLowerCase());
+    const lines: string[] = [];
+    if (isDirect) {
+      lines.push(`Route: Direct blockchain rail (${provider.toUpperCase()}) — 0 exchange, 0 KYC, 0 Travel Rule`);
+    } else if (provider) {
+      lines.push(`Route: Exchange provider ${String(provider).toUpperCase()}`);
+    }
+    if (result.withdrawalRef) lines.push(`Ref: ${result.withdrawalRef}`);
+    if (result.txUrl) lines.push(`Tx: ${result.txUrl}`);
+    if (result.message) lines.push(result.message);
+    return lines.length ? lines.join('\n') : null;
+  });
 
 
   return (
@@ -568,6 +676,18 @@ export const WalletsPage = () => {
                 setModal('merchant-buy');
               }}
               className="rounded-xl border border-emerald-400/30 bg-emerald-500/15 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/25">Merchant Buy Crypto</button>
+            <button onClick={() => {
+                const prev = f;
+                const resolvedMerchantId =
+                  prev.merchantId?.trim() ||
+                  merchantWallet?.merchant_id?.trim() ||
+                  merchantWallet?.id?.trim() || '';
+                setF({ merchantId: resolvedMerchantId, targetCustomerId: selId || '' });
+                setModal('merchant-to-customer');
+              }}
+              className="rounded-xl border border-violet-400/30 bg-violet-500/15 px-4 py-2 text-sm font-semibold text-violet-200 transition hover:bg-violet-500/25">
+              &#8594; Send to Customer
+            </button>
             <button onClick={() => { setF({}); setModal('create-customer'); }}
               className="rounded-xl bg-blue-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-400">+ New Customer</button>
           </div>
@@ -576,16 +696,16 @@ export const WalletsPage = () => {
 
       {!isOnline && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-center gap-3">
-          <span>📡</span>
+          <span>ðŸ“¡</span>
           <div className="flex-1">
             <div className="font-semibold text-amber-800 text-sm">Offline mode</div>
-            <div className="text-amber-600 text-xs">Operations queued locally — syncing when reconnected{queuedOps>0?` (${queuedOps} pending)`:''}</div>
+            <div className="text-amber-600 text-xs">Operations queued locally â€” syncing when reconnected{queuedOps>0?` (${queuedOps} pending)`:''}</div>
           </div>
         </div>
       )}
       {isOnline && queuedOps > 0 && (
         <div className="bg-green-50 border border-green-200 rounded-xl p-3 flex items-center gap-3">
-          <span>🔄</span>
+          <span>ðŸ”„</span>
           <div className="text-green-800 text-sm font-semibold">{queuedOps} operation(s) syncing now...</div>
         </div>
       )}
@@ -604,7 +724,7 @@ export const WalletsPage = () => {
                 <div className="font-semibold">{c.name?.trim() || <span className="text-red-500 italic">(Unnamed Customer)</span>}</div>
                 {c.wallet_code && <div className="text-xs font-mono text-blue-500">{c.wallet_code}</div>}
                 {c.email && <div className="text-xs text-gray-400">{c.email}</div>}
-                {c.phone && <div className="text-xs text-gray-400">📞 {c.phone}</div>}
+                {c.phone && <div className="text-xs text-gray-400">ðŸ“ž {c.phone}</div>}
               </button>
             ))
           }
@@ -625,7 +745,7 @@ export const WalletsPage = () => {
                   <div className="rounded-2xl border border-slate-200 bg-white/80 px-4 py-3 shadow-sm">
                     <div className="text-[11px] font-semibold uppercase tracking-[0.25em] text-slate-500">Available</div>
                     <div className="mt-1 text-2xl font-semibold text-slate-900">
-                      {merchantLoading ? '…' : `$${Number(merchantWallet?.balance ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                      {merchantLoading ? 'â€¦' : `$${Number(merchantWallet?.balance ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                     </div>
                   </div>
                 </div>
@@ -637,9 +757,9 @@ export const WalletsPage = () => {
               <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.3em] text-slate-400">Customer wallet</div>
                 <div className="mt-4 text-sm text-slate-600">
-                  <div className="font-semibold text-slate-900">{sel.name?.trim() || <span className="text-red-500 italic">(Unnamed Customer — ID: {sel.id.slice(0,8)}…)</span>}</div>
+                  <div className="font-semibold text-slate-900">{sel.name?.trim() || <span className="text-red-500 italic">(Unnamed Customer â€” ID: {sel.id.slice(0,8)}â€¦)</span>}</div>
                   {sel.email && <div className="mt-1">{sel.email}</div>}
-                  {sel.phone && <div className="mt-1 text-slate-500">📞 {sel.phone}</div>}
+                  {sel.phone && <div className="mt-1 text-slate-500">ðŸ“ž {sel.phone}</div>}
                 </div>
                 <div className="mt-6 grid gap-3">
                   <div className="rounded-2xl bg-slate-50 p-4">
@@ -660,10 +780,10 @@ export const WalletsPage = () => {
 
             {/* Tabs */}
             <div className="flex gap-1 bg-gray-100 p-1 rounded-xl">
-              {(['wallet','virtual-cards','bank','crypto'] as Tab[]).map(t => (
+              {(['wallet','bank','crypto'] as Tab[]).map(t => (
                 <button key={t} onClick={()=>setTab(t)}
                   className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all ${tab===t?'bg-white shadow text-blue-600':'text-gray-500 hover:text-gray-700'}`}>
-                  {t==='wallet'?'💳 Wallet':t==='virtual-cards'?'🔐 Cards':t==='bank'?'🏦 Bank':'₿ Crypto'}
+                  {t==='wallet'?'ðŸ’³ Wallet':t==='bank'?'ðŸ¦ Bank':'â‚¿ Crypto'}
                 </button>
               ))}
             </div>
@@ -678,114 +798,15 @@ export const WalletsPage = () => {
                       {walletTxns.filter((t:any) => t.source !== 'card_topup').map((t, index) => (
                         <div key={t.id || `wallet-txn-${index}`} className="flex items-center justify-between p-3 rounded-lg bg-gray-50 border border-gray-100">
                           <div className="flex items-center gap-3">
-                            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${t.type==='credit'?'bg-green-100 text-green-700':'bg-red-100 text-red-700'}`}>{t.type==='credit'?'+':'–'}</div>
+                            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${t.type==='credit'?'bg-green-100 text-green-700':'bg-red-100 text-red-700'}`}>{t.type==='credit'?'+':'â€“'}</div>
                             <div>
                               <div className="text-sm font-semibold text-gray-800">{sourceLabel(t.source)}</div>
                               <div className="text-xs text-gray-400">{new Date(t.created_at).toLocaleString()}</div>
                             </div>
                           </div>
-                          <div className={`font-bold ${t.type==='credit'?'text-green-600':'text-red-600'}`}>{t.type==='credit'?'+':'–'}${Number(t.amount).toFixed(2)}</div>
+                          <div className={`font-bold ${t.type==='credit'?'text-green-600':'text-red-600'}`}>{t.type==='credit'?'+':'â€“'}${Number(t.amount).toFixed(2)}</div>
                         </div>
                       ))}
-                    </div>
-                }
-              </div>
-            )}
-
-            {/* VIRTUAL CARDS */}
-            {tab==='virtual-cards' && (
-              <div className="space-y-4">
-                <div className="flex justify-between items-center">
-                  <h3 className="font-bold text-gray-800">Virtual Cards</h3>
-                  <button onClick={()=>{setF({});setModal('issue-card');}} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium">+ Issue Card</button>
-                </div>
-                {cards.length === 0
-                  ? <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-400">No cards — issue one to get started</div>
-                  : <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      {cards.map((card, index) => {
-                        const frozen = card.status?.toUpperCase() === 'FROZEN';
-                        const mm = String(card.expiry_month||0).padStart(2,'0');
-                        const yy = String(card.expiry_year||0).slice(-2);
-                        const maskedParts = (card.masked_number||'**** **** **** ****').split(' ');
-                        const isFlipped = flippedCardId === card.id;
-                        return (
-                          <div key={card.id || `card-${index}`} className="flex flex-col gap-3">
-                            <div
-                              className={`wp-card-wrap wp-card-id1 cursor-pointer ${selCard?.id===card.id?'wp-card-selected':''}`}
-                              onClick={() => {
-                                setSelCard(card);
-                                setFlippedCardId(prev => prev === card.id ? null : card.id);
-                              }}
-                            >
-                              <div className={`wp-card wp-card-dark ${frozen?'wp-card-frozen':''} ${isFlipped?'wp-card-flipped':''}`}>
-                                <div className="wp-card-face">
-                                  <div className="wp-card-head">
-                                    <div style={{display:'flex',alignItems:'center',gap:'0.7em'}}>
-                                      <div className="wp-card-chip">
-                                        <div className="wp-card-chip-lines">
-                                          <span /><span /><span />
-                                          <span /><span /><span />
-                                        </div>
-                                      </div>
-                                      <div className="wp-card-brand-stack">
-                                        <div className="wp-card-label">{card.card_type||'VISA'}</div>
-                                        <div className="wp-card-pill">{frozen?'FROZEN':'ACTIVE'}</div>
-                                      </div>
-                                    </div>
-                                    <div className="wp-card-wifi"><span /><span /><span /><span /></div>
-                                  </div>
-
-                                  <div className="wp-card-strip" />
-
-                                  <div className="wp-card-number">
-                                    {maskedParts.map((s,i)=><span key={i}>{s}</span>)}
-                                  </div>
-
-                                  <div className="wp-card-front-meta">
-                                    <div>
-                                      <div className="wp-card-block-label">Cardholder</div>
-                                      <div className="wp-card-block-value">{card.cardholder_name}</div>
-                                    </div>
-                                    <div className="text-right">
-                                      <div className="wp-card-block-label">Valid Thru</div>
-                                      <div className="wp-card-block-value">{mm}/{yy}</div>
-                                    </div>
-                                  </div>
-
-                                  <div className="wp-card-foot">
-                                    <div>
-                                      <div className="wp-card-block-label">Available</div>
-                                      <div className="wp-card-block-value" style={{color:'#34d399',fontWeight:700}}>${Number(card.balance).toFixed(2)}</div>
-                                    </div>
-                                    <div className="wp-card-brand wp-brand-visa">VISA</div>
-                                  </div>
-                                </div>
-
-                                <div className="wp-card-face wp-card-face-back">
-                                  <div className="wp-card-magstripe" />
-                                  <div className="hologram-strip" />
-                                  <div className="wp-card-sig-cvv">
-                                    <div className="wp-card-signature" />
-                                    <div className="wp-card-cvv">***</div>
-                                  </div>
-                                  <div className="rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 text-sm text-slate-200">
-                                    <div className="font-semibold uppercase tracking-[0.2em] text-[10px] text-slate-400">CVV</div>
-                                    <div className="mt-1 text-xs leading-5 text-slate-300">Keep this private and never share it with anyone.</div>
-                                  </div>
-                                  <div className="absolute bottom-4 right-4 text-[11px] uppercase tracking-[0.25em] text-slate-400">Secure</div>
-                                </div>
-                              </div>
-                            </div>
-
-                            <div className="flex flex-wrap gap-2">
-                              <button onClick={e=>{e.stopPropagation();setSelCard(card);setF({});setModal('topup-card');}}
-                                className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50">Move Balance</button>
-                              <button onClick={e=>{e.stopPropagation();act(async()=>{frozen?await unfreezeCard(selId!,card.id):await freezeCard(selId!,card.id);await refreshCards();},frozen?'Card unfrozen':'Card frozen');}}
-                                className={`flex-1 rounded-xl px-3 py-2 text-sm font-semibold transition ${frozen?'bg-emerald-50 text-emerald-700 hover:bg-emerald-100':'bg-rose-50 text-rose-700 hover:bg-rose-100'}`}>{frozen?'🔓 Unfreeze':'🔒 Freeze'}</button>
-                            </div>
-                          </div>
-                        );
-                      })}
                     </div>
                 }
               </div>
@@ -806,7 +827,7 @@ export const WalletsPage = () => {
                         <div className="flex justify-between items-center">
                           <div>
                             <div className="font-bold text-gray-800">{b.bank_name}</div>
-                            <div className="text-sm text-gray-500">{b.account_holder} · •••• {b.account_number.slice(-4)}</div>
+                            <div className="text-sm text-gray-500">{b.account_holder} Â· â€¢â€¢â€¢â€¢ {b.account_number.slice(-4)}</div>
                             {b.iban && <div className="text-xs text-gray-400">IBAN: {b.iban}</div>}
                             {b.swift_code && <div className="text-xs text-gray-400">SWIFT: {b.swift_code}</div>}
                           </div>
@@ -825,7 +846,7 @@ export const WalletsPage = () => {
                     {bankPayouts.map((p, index) => (
                       <div key={p.id || `payout-${index}`} className="flex justify-between text-sm py-2 border-b border-gray-50 last:border-0">
                         <div>
-                          <div className="font-medium">{p.bank_name} •••• {String(p.account_number).slice(-4)}</div>
+                          <div className="font-medium">{p.bank_name} â€¢â€¢â€¢â€¢ {String(p.account_number).slice(-4)}</div>
                           <div className="text-xs text-gray-400">{new Date(p.created_at).toLocaleString()}</div>
                         </div>
                         <div className="text-right">
@@ -839,7 +860,7 @@ export const WalletsPage = () => {
               </div>
             )}
 
-            {/* CRYPTO — PROFESSIONAL INTERNAL WALLET EXCHANGE */}
+            {/* CRYPTO â€” PROFESSIONAL INTERNAL WALLET EXCHANGE */}
             {tab==='crypto' && (
               <div className="space-y-5">
                 {/* Money Flow Visualization */}
@@ -847,17 +868,17 @@ export const WalletsPage = () => {
                   <div className="flex items-center justify-between mb-4">
                     <div>
                       <div className="text-[10px] font-bold uppercase tracking-[0.3em] text-indigo-300">Internal Wallet Loop</div>
-                      <h3 className="mt-1 text-lg font-semibold">Money Flow · Card → Wallet → Crypto</h3>
+                      <h3 className="mt-1 text-lg font-semibold">Money Flow Â· Card â†’ Wallet â†’ Crypto</h3>
                     </div>
-                    <div className="text-xs text-slate-400">Atomic · Offline-hardened · Ledger-attested</div>
+                    <div className="text-xs text-slate-400">Atomic Â· Offline-hardened Â· Ledger-attested</div>
                   </div>
                   <div className="grid grid-cols-5 gap-2 items-center">
                     {[
-                      {label:'Customer Card', sub:'Debit / Credit', icon:'💳', amt:null, color:'from-sky-500/20 to-sky-500/5', border:'border-sky-400/30'},
-                      {label:'Top-Up Engine', sub:'Auth → Ledger', icon:'⚡', amt:null, color:'from-violet-500/20 to-violet-500/5', border:'border-violet-400/30'},
-                      {label:'Fiat Wallet', sub:'USD Balance', icon:'🏦', amt:balance.balance, color:'from-emerald-500/20 to-emerald-500/5', border:'border-emerald-400/30'},
-                      {label:'Spot Engine', sub:'Internal Swap', icon:'🔁', amt:null, color:'from-amber-500/20 to-amber-500/5', border:'border-amber-400/30'},
-                      {label:'Crypto Vault', sub:'Cold-internal', icon:'🪙', amt:cryptoWallets.reduce((s:number,w)=>s+Number(w.balance)*(coinPriceMap[w.crypto_coin]||0),0), color:'from-orange-500/20 to-orange-500/5', border:'border-orange-400/30'},
+                      {label:'Customer Card', sub:'Debit / Credit', icon:'ðŸ’³', amt:null, color:'from-sky-500/20 to-sky-500/5', border:'border-sky-400/30'},
+                      {label:'Top-Up Engine', sub:'Auth â†’ Ledger', icon:'âš¡', amt:null, color:'from-violet-500/20 to-violet-500/5', border:'border-violet-400/30'},
+                      {label:'Fiat Wallet', sub:'USD Balance', icon:'ðŸ¦', amt:balance.balance, color:'from-emerald-500/20 to-emerald-500/5', border:'border-emerald-400/30'},
+                      {label:'Spot Engine', sub:'Internal Swap', icon:'ðŸ”', amt:null, color:'from-amber-500/20 to-amber-500/5', border:'border-amber-400/30'},
+                      {label:'Crypto Vault', sub:'Cold-internal', icon:'ðŸª™', amt:cryptoWallets.reduce((s:number,w)=>s+Number(w.balance)*(coinPriceMap[w.crypto_coin]||0),0), color:'from-orange-500/20 to-orange-500/5', border:'border-orange-400/30'},
                     ].map((node, i, arr) => (
                       <React.Fragment key={`flow-node-${i}`}>
                         <div className={`relative rounded-2xl border ${node.border} bg-gradient-to-br ${node.color} p-3 backdrop-blur-sm`}>
@@ -901,7 +922,7 @@ export const WalletsPage = () => {
                           ).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
                         </div>
                         <div className="mt-1 text-xs text-slate-500">
-                          Fiat ${Number(balance.balance).toLocaleString(undefined,{minimumFractionDigits:2})} · Crypto ${cryptoWallets.reduce((s:number,w)=>s+Number(w.balance)*(coinPriceMap[w.crypto_coin]||0),0).toLocaleString(undefined,{minimumFractionDigits:2})}
+                          Fiat ${Number(balance.balance).toLocaleString(undefined,{minimumFractionDigits:2})} Â· Crypto ${cryptoWallets.reduce((s:number,w)=>s+Number(w.balance)*(coinPriceMap[w.crypto_coin]||0),0).toLocaleString(undefined,{minimumFractionDigits:2})}
                         </div>
                       </div>
                       <div className="flex gap-2">
@@ -923,7 +944,7 @@ export const WalletsPage = () => {
                           onClick={()=>{setSelCoin(coin); if(isOnline) getCryptoPrice(coin).then(r=>setCoinPriceMap(p=>({...p,[coin]:r.price})));}}
                           className={`group cursor-pointer rounded-xl px-3 py-2 border transition-all ${selCoin===coin?'border-emerald-400 bg-emerald-50 shadow-sm':'border-slate-100 bg-slate-50 hover:border-slate-200 hover:bg-white'}`}>
                           <div className="flex items-center gap-2">
-                            <span className="text-lg leading-none">{COIN_ICONS[coin]||'🪙'}</span>
+                            <span className="text-lg leading-none">{COIN_ICONS[coin]||'ðŸª™'}</span>
                             <div>
                               <div className="text-[11px] font-bold text-slate-800">{coin}</div>
                               <div className="text-[11px] font-semibold text-slate-500 tabular-nums">${(coinPriceMap[coin]||0).toLocaleString(undefined,{maximumFractionDigits:coinPriceMap[coin]&&coinPriceMap[coin]>100?2:6})}</div>
@@ -935,23 +956,23 @@ export const WalletsPage = () => {
                   </div>
 
                   <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 to-white p-5 shadow-sm">
-                    <div className="text-[10px] font-bold uppercase tracking-[0.3em] text-slate-400">Spot Engine · Status</div>
+                    <div className="text-[10px] font-bold uppercase tracking-[0.3em] text-slate-400">Spot Engine Â· Status</div>
                     <div className="mt-3 space-y-2.5">
                       <div className="flex items-center justify-between rounded-xl bg-white border border-slate-100 px-3 py-2">
                         <span className="text-xs text-slate-600">Engine Mode</span>
-                        <span className="rounded-full bg-emerald-100 text-emerald-700 px-2 py-0.5 text-[10px] font-bold">INTERNAL · NO FEES</span>
+                        <span className="rounded-full bg-emerald-100 text-emerald-700 px-2 py-0.5 text-[10px] font-bold">INTERNAL Â· NO FEES</span>
                       </div>
                       <div className="flex items-center justify-between rounded-xl bg-white border border-slate-100 px-3 py-2">
                         <span className="text-xs text-slate-600">Price Source</span>
-                        <span className="text-xs font-semibold text-slate-800">CoinGecko · Spot</span>
+                        <span className="text-xs font-semibold text-slate-800">CoinGecko Â· Spot</span>
                       </div>
                       <div className="flex items-center justify-between rounded-xl bg-white border border-slate-100 px-3 py-2">
                         <span className="text-xs text-slate-600">Settlement</span>
-                        <span className="text-xs font-semibold text-emerald-700">Instant · Atomic</span>
+                        <span className="text-xs font-semibold text-emerald-700">Instant Â· Atomic</span>
                       </div>
                       <div className="flex items-center justify-between rounded-xl bg-white border border-slate-100 px-3 py-2">
                         <span className="text-xs text-slate-600">Ledger</span>
-                        <span className="text-xs font-semibold text-indigo-700">Double-entry · DB Tx</span>
+                        <span className="text-xs font-semibold text-indigo-700">Double-entry Â· DB Tx</span>
                       </div>
                     </div>
                   </div>
@@ -965,7 +986,7 @@ export const WalletsPage = () => {
                   </div>
                   {cryptoWallets.length === 0 ? (
                     <div className="p-12 text-center">
-                      <div className="mx-auto w-16 h-16 rounded-2xl bg-gradient-to-br from-slate-100 to-slate-50 flex items-center justify-center text-3xl mb-4">🪙</div>
+                      <div className="mx-auto w-16 h-16 rounded-2xl bg-gradient-to-br from-slate-100 to-slate-50 flex items-center justify-center text-3xl mb-4">ðŸª™</div>
                       <div className="text-sm font-semibold text-slate-700 mb-1">No assets held</div>
                       <div className="text-xs text-slate-400 mb-4">Buy BTC, ETH, SOL or 9 other assets directly from your wallet.</div>
                       <button onClick={()=>{if(isOnline){setF({});setModal('buy-crypto');}}}
@@ -989,11 +1010,11 @@ export const WalletsPage = () => {
                           <div key={w.id || `vault-${index}`} className="grid grid-cols-12 gap-2 px-5 py-3.5 items-center hover:bg-slate-50/50 transition">
                             <div className="col-span-3 flex items-center gap-3">
                               <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-slate-900 to-slate-700 flex items-center justify-center text-white text-lg shadow-sm">
-                                {COIN_ICONS[w.crypto_coin]||'🪙'}
+                                {COIN_ICONS[w.crypto_coin]||'ðŸª™'}
                               </div>
                               <div>
                                 <div className="font-bold text-slate-900 text-sm">{w.crypto_coin}</div>
-                                <div className="text-[11px] text-slate-400">Internal Wallet · {selectedNetworkMap[w.crypto_coin]||'primary'}</div>
+                                <div className="text-[11px] text-slate-400">Internal Wallet Â· {selectedNetworkMap[w.crypto_coin]||'primary'}</div>
                               </div>
                             </div>
                             <div className="col-span-3 text-right">
@@ -1029,15 +1050,15 @@ export const WalletsPage = () => {
                     <div className="flex items-center justify-between mb-4">
                       <div>
                         <div className="text-[10px] font-bold uppercase tracking-[0.3em] text-emerald-600">Express Buy</div>
-                        <h3 className="mt-1 font-bold text-slate-900">Instant Swap · Fiat → Crypto</h3>
+                        <h3 className="mt-1 font-bold text-slate-900">Instant Swap Â· Fiat â†’ Crypto</h3>
                       </div>
-                      <div className="w-9 h-9 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-600">↗</div>
+                      <div className="w-9 h-9 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-600">â†—</div>
                     </div>
                     <div className="mb-3">
                       <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Asset</label>
                       <select value={selCoin} onChange={async e=>{setSelCoin(e.target.value); if(isOnline){const r=await getCryptoPrice(e.target.value); setCoinPrice(r.price); setCoinPriceMap(p=>({...p,[e.target.value]:r.price}));}}}
                         className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500">
-                        {COINS.map(c=><option key={c} value={c}>{COIN_ICONS[c]||'🪙'} {c} · ${(coinPriceMap[c]||0).toLocaleString(undefined,{maximumFractionDigits:coinPriceMap[c]&&coinPriceMap[c]>100?2:6})}</option>)}
+                        {COINS.map(c=><option key={c} value={c}>{COIN_ICONS[c]||'ðŸª™'} {c} Â· ${(coinPriceMap[c]||0).toLocaleString(undefined,{maximumFractionDigits:coinPriceMap[c]&&coinPriceMap[c]>100?2:6})}</option>)}
                       </select>
                     </div>
                     <div className="mb-2">
@@ -1076,7 +1097,7 @@ export const WalletsPage = () => {
                     <div className="rounded-xl bg-slate-900 text-white p-3 mb-3">
                       <div className="flex items-center justify-between mb-1">
                         <span className="text-[10px] uppercase tracking-wider text-emerald-300/80">You receive</span>
-                        <span className="text-[10px] uppercase tracking-wider text-slate-400">≈</span>
+                        <span className="text-[10px] uppercase tracking-wider text-slate-400">â‰ˆ</span>
                       </div>
                       <div className="flex items-baseline gap-2">
                         <div className="text-2xl font-extrabold tabular-nums">{f.cryptoAmount ? Number(f.cryptoAmount).toLocaleString(undefined,{maximumFractionDigits:8}) : '0.00000000'}</div>
@@ -1104,7 +1125,7 @@ export const WalletsPage = () => {
                       <span className="text-xs text-slate-400">{cryptoTxns.length} records</span>
                     </div>
                     {cryptoTxns.length === 0 ? (
-                      <div className="p-10 text-center text-xs text-slate-400">No crypto transactions yet — use the Express Buy panel above.</div>
+                      <div className="p-10 text-center text-xs text-slate-400">No crypto transactions yet â€” use the Express Buy panel above.</div>
                     ) : (
                       <div className="max-h-96 overflow-y-auto divide-y divide-slate-50">
                         {cryptoTxns.map((t, index) => {
@@ -1112,20 +1133,20 @@ export const WalletsPage = () => {
                           return (
                             <div key={t.id || `ledger-${index}`} className="px-5 py-3.5 flex items-center gap-3 hover:bg-slate-50/50 transition">
                               <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-white text-lg font-bold shadow-sm ${isBuy?'bg-gradient-to-br from-emerald-500 to-emerald-600':'bg-gradient-to-br from-rose-500 to-rose-600'}`}>
-                                {isBuy?'↗':'↘'}
+                                {isBuy?'â†—':'â†˜'}
                               </div>
                               <div className="flex-1 min-w-0">
                                 <div className="flex items-center gap-2">
                                   <span className="text-sm font-bold text-slate-900">{isBuy?'Bought':'Sold'} {t.crypto_coin}</span>
                                   <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${t.status==='completed'?'bg-emerald-100 text-emerald-700':'bg-amber-100 text-amber-700'}`}>{String(t.status||'PENDING').toUpperCase()}</span>
                                 </div>
-                                <div className="text-[11px] text-slate-400">{new Date(t.created_at).toLocaleString()} · Rate ${Number(t.exchange_rate).toLocaleString()}</div>
+                                <div className="text-[11px] text-slate-400">{new Date(t.created_at).toLocaleString()} Â· Rate ${Number(t.exchange_rate).toLocaleString()}</div>
                               </div>
                               <div className="text-right">
                                 <div className={`text-sm font-bold tabular-nums ${isBuy?'text-emerald-700':'text-rose-700'}`}>
-                                  {isBuy?'+':'–'}{Number(t.crypto_amount).toLocaleString(undefined,{maximumFractionDigits:8})} {t.crypto_coin}
+                                  {isBuy?'+':'â€“'}{Number(t.crypto_amount).toLocaleString(undefined,{maximumFractionDigits:8})} {t.crypto_coin}
                                 </div>
-                                <div className="text-[11px] text-slate-500 tabular-nums">{isBuy?'–':'+'}${Number(t.fiat_amount).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+                                <div className="text-[11px] text-slate-500 tabular-nums">{isBuy?'â€“':'+'}${Number(t.fiat_amount).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
                               </div>
                             </div>
                           );
@@ -1144,7 +1165,7 @@ export const WalletsPage = () => {
         )}
       </div>
 
-      {/* ══ MODALS ══ */}
+      {/* â•â• MODALS â•â• */}
       {modal==='create-customer' && <ModalShell onClose={closeAll} busy={busy} title="New Customer" onConfirm={handleCreateCustomer} confirmLabel="Create">{inp('name','Full Name','text',true)}{inp('email','Email (optional)','email')}{inp('phone','Phone (optional)','tel')}</ModalShell>}
       {modal==='topup' && <ModalShell onClose={closeAll} busy={busy} title="Top Up Wallet (Card Required)" onConfirm={handleTopup} confirmLabel="Top Up" confirmColor="bg-green-600 hover:bg-green-700">
         <p className="text-sm text-gray-500">Balance: <strong>{balance.currency} {Number(balance.balance).toFixed(2)}</strong></p>
@@ -1157,7 +1178,7 @@ export const WalletsPage = () => {
         <div className="mt-4">
           <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Card Number</label>
           <input type="tel" value={f.topupPan||''} onChange={e=>setF(p=>({...p,topupPan: formatCardNumber(e.target.value)}))}
-            placeholder="•••• •••• •••• ••••" maxLength={23} autoComplete="cc-number" inputMode="numeric"
+            placeholder="â€¢â€¢â€¢â€¢ â€¢â€¢â€¢â€¢ â€¢â€¢â€¢â€¢ â€¢â€¢â€¢â€¢" maxLength={23} autoComplete="cc-number" inputMode="numeric"
             className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-green-500/20 focus:border-green-500" />
         </div>
         <div className="mt-2 grid grid-cols-2 gap-3">
@@ -1175,36 +1196,17 @@ export const WalletsPage = () => {
           </div>
         </div>
         <p className="text-sm text-gray-500 mt-3">Enter a real card. Your wallet will only be credited after a real authorization response from a configured processor.</p>
-        <p className="text-xs text-amber-600 mt-2">⚠ Card details alone are not enough; the server now requires an authorization signal before crediting the wallet.</p>
+        <p className="text-xs text-amber-600 mt-2">âš  Card details alone are not enough; the server now requires an authorization signal before crediting the wallet.</p>
       </ModalShell>}
       {modal==='debit' && <ModalShell onClose={closeAll} busy={busy} title="Debit Wallet" onConfirm={handleDebit} confirmLabel="Debit" confirmColor="bg-red-600 hover:bg-red-700"><p className="text-sm text-gray-500">Available: <strong>${Number(balance.balance).toFixed(2)}</strong></p>{inp('amount','Amount','number',true)}</ModalShell>}
       {modal==='transfer' && (
-        <ModalShell onClose={closeAll} busy={busy} title="Wallet → Wallet Transfer" onConfirm={handleTransfer} confirmLabel="Send" confirmColor="bg-indigo-600 hover:bg-indigo-700">
+        <ModalShell onClose={closeAll} busy={busy} title="Wallet â†’ Wallet Transfer" onConfirm={handleTransfer} confirmLabel="Send" confirmColor="bg-indigo-600 hover:bg-indigo-700">
           <p className="text-sm text-gray-500">From: <strong>{sel?.name?.trim() || '(Unnamed Customer)'}</strong></p>
           <select value={f.receiverId||''} onChange={e=>setF(p=>({...p,receiverId:e.target.value}))} className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm">
             <option value="">Select recipient...</option>
             {customers.filter(c=>c.id!==selId).map((c, index)=><option key={c.id || `recipient-${index}`} value={c.id}>{c.name?.trim() || '(Unnamed Customer)'}</option>)}
           </select>
           {inp('amount','Amount (USD)','number',true)}{inp('note','Note (optional)')}
-        </ModalShell>
-      )}
-      {modal==='issue-card' && (
-        <ModalShell onClose={closeAll} busy={busy} title="Issue Virtual Card" onConfirm={handleIssueCard} confirmLabel="Issue" confirmColor="bg-slate-700 hover:bg-slate-800">
-          {inp('name',`Cardholder (default: ${sel?.name||''})`)}
-          <select value={f.currency||'USD'} onChange={e=>setF(p=>({...p,currency:e.target.value}))} className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm">
-            {['USD','EUR','GBP','AED','SAR','INR','CAD','AUD'].map(c=><option key={c}>{c}</option>)}
-          </select>
-        </ModalShell>
-      )}
-      {modal==='topup-card' && selCard && (
-        <ModalShell onClose={closeAll} busy={busy} title={`Move Wallet → Card ···· ${selCard.masked_number.slice(-4)}`} onConfirm={handleTopupCard} confirmLabel="Move Funds" confirmColor="bg-blue-600 hover:bg-blue-700">
-          <p className="text-sm text-gray-500">This transfers funds from the customer’s fiat wallet onto the selected virtual card.</p>
-          <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
-            <div>Wallet: <strong>{modalBalanceLoading ? 'Loading…' : `$${Number(balance.balance).toFixed(2)}`}</strong></div>
-            <div className="mt-1">Card: <strong>{modalBalanceLoading ? 'Loading…' : `$${Number(selCard.balance ?? 0).toFixed(2)}`}</strong></div>
-          </div>
-          <button type="button" onClick={() => setF(p => ({ ...p, amount: String(Math.max(0, Number(balance.balance) || 0)) }))} className="mt-3 rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-white">Use full wallet balance</button>
-          {inp('amount','Amount','number',true)}
         </ModalShell>
       )}
       {modal==='add-bank' && (
@@ -1221,7 +1223,7 @@ export const WalletsPage = () => {
           <p className="text-sm text-gray-500">Available: <strong>${Number(balance.balance).toFixed(2)}</strong></p>
           {bankAccounts.length===0 ? <p className="text-red-500 text-sm">Add a bank account first</p>
             : <select value={selBank} onChange={e=>setSelBank(e.target.value)} className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm">
-                {bankAccounts.map((b, index)=><option key={b.id || `bank-option-${index}`} value={b.id}>{b.bank_name} •••• {b.account_number.slice(-4)}</option>)}
+                {bankAccounts.map((b, index)=><option key={b.id || `bank-option-${index}`} value={b.id}>{b.bank_name} â€¢â€¢â€¢â€¢ {b.account_number.slice(-4)}</option>)}
               </select>}
           {inp('amount','Amount','number',true)}
           {f.amount && <p className="text-sm text-green-700">Net: ${(parseFloat(f.amount||'0')*0.995).toFixed(2)} (fee 0.5%)</p>}
@@ -1249,7 +1251,7 @@ export const WalletsPage = () => {
                   <div>
                     <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-indigo-500">Destination</div>
                     <div className="mt-0.5 text-sm font-semibold text-slate-800 flex items-center gap-1.5">
-                      <span>{COIN_ICONS[selCoin]||'🪙'}</span> {selCoin} Internal Vault
+                      <span>{COIN_ICONS[selCoin]||'ðŸª™'}</span> {selCoin} Internal Vault
                     </div>
                   </div>
                   <div className="text-right">
@@ -1263,7 +1265,7 @@ export const WalletsPage = () => {
                 <label className="block text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500 mb-1.5">Asset</label>
                 <select value={selCoin} onChange={async e=>{setSelCoin(e.target.value); try{const r=await getCryptoPrice(e.target.value); setCoinPrice(r.price); setCoinPriceMap(p=>({...p,[e.target.value]:r.price}));}catch{}}}
                   className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm font-semibold bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500">
-                  {COINS.map(c=><option key={c} value={c}>{COIN_ICONS[c]||'🪙'} {c} {coinPriceMap[c]?`· $${coinPriceMap[c].toLocaleString(undefined,{maximumFractionDigits:coinPriceMap[c]>100?2:6})}`:''}</option>)}
+                  {COINS.map(c=><option key={c} value={c}>{COIN_ICONS[c]||'ðŸª™'} {c} {coinPriceMap[c]?`Â· $${coinPriceMap[c].toLocaleString(undefined,{maximumFractionDigits:coinPriceMap[c]>100?2:6})}`:''}</option>)}
                 </select>
               </div>
 
@@ -1304,10 +1306,10 @@ export const WalletsPage = () => {
                 <div className="rounded-xl bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-white p-4 shadow-lg">
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-400/30 to-emerald-500/10 flex items-center justify-center">↗</div>
+                      <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-400/30 to-emerald-500/10 flex items-center justify-center">â†—</div>
                       <div>
                         <div className="text-[10px] uppercase tracking-[0.2em] text-emerald-300/80 font-bold">You receive</div>
-                        <div className="text-[10px] text-slate-400">Instant · Internal Settlement</div>
+                        <div className="text-[10px] text-slate-400">Instant Â· Internal Settlement</div>
                       </div>
                     </div>
                     <span className="rounded-full bg-emerald-400/15 text-emerald-300 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider border border-emerald-400/20">No Fee</span>
@@ -1338,6 +1340,73 @@ export const WalletsPage = () => {
           </ModalShell>
         );
       })()}
+      {modal==='merchant-to-customer' && (
+        <ModalShell
+          onClose={closeAll} busy={busy}
+          title="Send Funds to Customer"
+          onConfirm={handleMerchantToCustomer}
+          confirmLabel="Send Funds"
+          confirmColor="bg-violet-600 hover:bg-violet-700"
+        >
+          {/* Merchant balance preview */}
+          <div className="rounded-xl bg-violet-50 border border-violet-100 p-4 flex items-center justify-between">
+            <div>
+              <div className="text-[10px] font-bold uppercase tracking-widest text-violet-500">Merchant Balance</div>
+              <div className="text-xl font-bold text-violet-800">
+                ${Number(merchantWallet?.balance ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </div>
+            </div>
+            <div className="text-3xl">&#128176;</div>
+          </div>
+
+          {/* Customer selector */}
+          <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mt-1">Select Customer</label>
+          <select
+            value={f.targetCustomerId || ''}
+            onChange={e => setF(p => ({ ...p, targetCustomerId: e.target.value }))}
+            className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 text-sm outline-none transition"
+          >
+            <option value="">-- Choose a customer --</option>
+            {customers.map(c => (
+              <option key={c.id} value={c.id}>
+                {c.name}{c.wallet_code ? ` (${c.wallet_code})` : ''}
+              </option>
+            ))}
+          </select>
+
+          {/* Amount */}
+          <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Amount (USD)</label>
+          <input
+            type="number" min="0.01" step="0.01" placeholder="0.00"
+            value={f.amount || ''}
+            onChange={e => setF(p => ({ ...p, amount: e.target.value }))}
+            className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 text-sm outline-none transition"
+          />
+
+          {/* Optional note */}
+          <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Note (optional)</label>
+          <input
+            type="text" placeholder="e.g. Bonus credit, refund..."
+            value={f.note || ''}
+            onChange={e => setF(p => ({ ...p, note: e.target.value }))}
+            className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 text-sm outline-none transition"
+          />
+
+          {/* Live preview */}
+          {f.targetCustomerId && f.amount && parseFloat(f.amount) > 0 && (() => {
+            const cust = customers.find(c => c.id === f.targetCustomerId);
+            const amt = parseFloat(f.amount);
+            return (
+              <div className="rounded-xl bg-green-50 border border-green-100 p-3 text-sm">
+                <div className="font-semibold text-green-800">
+                  &#10003; Send <span className="text-green-700">${amt.toFixed(2)}</span> to <span className="text-green-700">{cust?.name}</span>
+                </div>
+                {cust?.wallet_code && <div className="text-xs text-green-600 mt-0.5">Wallet: {cust.wallet_code}</div>}
+              </div>
+            );
+          })()}
+        </ModalShell>
+      )}
       {modal==='merchant-buy' && (
         <ModalShell onClose={closeAll} busy={busy} title="Merchant Buy Crypto" onConfirm={handleMerchantBuy} confirmLabel="Buy" confirmColor="bg-green-600 hover:bg-green-700">
           <p className="text-sm text-gray-500">Merchant: <strong>{f.merchantId||'(not set)'}</strong></p>
@@ -1352,7 +1421,7 @@ export const WalletsPage = () => {
           {inp('amount','USD amount to spend','number',true)}
           {coinPrice>0 && f.amount && <div className="rounded-xl border border-green-100 bg-green-50 p-3 text-sm">
             <div className="text-xl font-extrabold text-green-600">{(parseFloat(f.amount)/coinPrice).toFixed(8)} {selCoin}</div>
-            <div className="mt-1 text-xs text-gray-500">Network: {selectedNetwork} · Spot rate: ${coinPrice.toLocaleString()} / {selCoin}</div>
+            <div className="mt-1 text-xs text-gray-500">Network: {selectedNetwork} Â· Spot rate: ${coinPrice.toLocaleString()} / {selCoin}</div>
           </div>}
         </ModalShell>
       )}
@@ -1370,19 +1439,19 @@ export const WalletsPage = () => {
                   <div>
                     <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-rose-600">Crypto Vault</div>
                     <div className="mt-0.5 text-sm font-semibold text-slate-800 flex items-center gap-1.5">
-                      <span>{COIN_ICONS[selCoin]||'🪙'}</span> {selCoin} Balance
+                      <span>{COIN_ICONS[selCoin]||'ðŸª™'}</span> {selCoin} Balance
                     </div>
                   </div>
                   <div className="text-right">
                     <div className="text-[10px] uppercase tracking-wider text-slate-400">Holding</div>
                     <div className="text-sm font-bold text-slate-900 tabular-nums">{balance.toLocaleString(undefined,{maximumFractionDigits:8})} {selCoin}</div>
-                    <div className="text-[10px] text-slate-400 tabular-nums">≈ ${(balance*price).toLocaleString(undefined,{maximumFractionDigits:2})}</div>
+                    <div className="text-[10px] text-slate-400 tabular-nums">â‰ˆ ${(balance*price).toLocaleString(undefined,{maximumFractionDigits:2})}</div>
                   </div>
                 </div>
                 <div className="flex items-center justify-between pt-3 border-t border-rose-100/60">
                   <div>
                     <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-emerald-600">Credit</div>
-                    <div className="mt-0.5 text-sm font-semibold text-slate-800">Fiat Wallet · USD</div>
+                    <div className="mt-0.5 text-sm font-semibold text-slate-800">Fiat Wallet Â· USD</div>
                   </div>
                   <div className="text-right">
                     <div className="text-[10px] uppercase tracking-wider text-slate-400">Spot</div>
@@ -1397,7 +1466,7 @@ export const WalletsPage = () => {
                   className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm font-semibold bg-white focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500">
                   {cryptoWallets.filter(w=>Number(w.balance)>0).length===0
                     ? <option value="">No crypto balances available</option>
-                    : cryptoWallets.filter(w=>Number(w.balance)>0).map((w,i)=><option key={w.id||`sell-opt-${i}`} value={w.crypto_coin}>{COIN_ICONS[w.crypto_coin]} {w.crypto_coin} · {Number(w.balance).toLocaleString(undefined,{maximumFractionDigits:6})}</option>)
+                    : cryptoWallets.filter(w=>Number(w.balance)>0).map((w,i)=><option key={w.id||`sell-opt-${i}`} value={w.crypto_coin}>{COIN_ICONS[w.crypto_coin]} {w.crypto_coin} Â· {Number(w.balance).toLocaleString(undefined,{maximumFractionDigits:6})}</option>)
                   }
                 </select>
               </div>
@@ -1439,10 +1508,10 @@ export const WalletsPage = () => {
                 <div className="rounded-xl bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-white p-4 shadow-lg">
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-rose-400/30 to-rose-500/10 flex items-center justify-center">↘</div>
+                      <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-rose-400/30 to-rose-500/10 flex items-center justify-center">â†˜</div>
                       <div>
                         <div className="text-[10px] uppercase tracking-[0.2em] text-rose-300/80 font-bold">Fiat You Receive</div>
-                        <div className="text-[10px] text-slate-400">Instant · Internal Settlement</div>
+                        <div className="text-[10px] text-slate-400">Instant Â· Internal Settlement</div>
                       </div>
                     </div>
                     <span className="rounded-full bg-emerald-400/15 text-emerald-300 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider border border-emerald-400/20">No Fee</span>
@@ -1484,57 +1553,211 @@ export const WalletsPage = () => {
           confirmLabel={`Send ${selCoin}`}
           confirmColor="bg-gradient-to-br from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500"
         >
-          <div className="space-y-4">
-            {/* Crypto selection */}
-            <div>
-              <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Asset</label>
-              <select value={selCoin} onChange={e => { setSelCoin(e.target.value); setSelectedNetwork(getNetworkOptions(e.target.value)[0]); }}
-                className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-orange-500/20">
-                {cryptoWallets.filter(w => Number(w.balance) > 0).map((w, i) => (
-                  <option key={w.id || i} value={w.crypto_coin}>
-                    {COIN_ICONS[w.crypto_coin]} {w.crypto_coin} · Balance: {Number(w.balance).toFixed(6)}
-                  </option>
-                ))}
-              </select>
-            </div>
+          {(() => {
+            const currentWal = cryptoWallets.find(w => w.crypto_coin === selCoin);
+            const bal = Number(currentWal?.balance || 0);
+            const addr = (f.address || '').trim();
+            const isUsdt = selCoin === 'USDT';
+            const looksTron = addr.startsWith('T') && addr.length >= 34;
+            const looksEvm = /^0x[a-fA-F0-9]{40}$/.test(addr);
+            const directRails = DIRECT_RAIL_NETWORKS[selCoin] || [];
+            const isDirectRail = directRails.includes(selectedNetwork);
+            let autoSwitchHint: React.ReactNode = null;
 
-            {/* Network */}
-            <div>
-              <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Network</label>
-              <select value={selectedNetwork} onChange={e => setSelectedNetwork(e.target.value)}
-                className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-orange-500/20">
-                {getNetworkOptions(selCoin).map(net => <option key={net} value={net}>{net.toUpperCase()}</option>)}
-              </select>
-              {selCoin === 'USDT' && selectedNetwork === 'tron' && (
-                <p className="text-xs text-emerald-600 mt-1 font-medium">✅ TRC-20 network selected (low fees)</p>
-              )}
-            </div>
+            if (isUsdt && looksTron && selectedNetwork !== 'tron') {
+              autoSwitchHint = (
+                <button type="button"
+                  onClick={() => setSelectedNetwork('tron')}
+                  className="text-xs w-full mt-1 text-left text-cyan-700 bg-cyan-50 border border-cyan-200 rounded-lg px-2.5 py-1.5 hover:bg-cyan-100 transition">
+                  Detected TronLink/T-address → click to switch to TRON (TRC-20) direct rail
+                </button>
+              );
+            } else if (isUsdt && looksEvm && !['bsc', 'polygon'].includes(selectedNetwork)) {
+              autoSwitchHint = (
+                <div className="flex gap-1.5 w-full mt-1">
+                  <button type="button"
+                    onClick={() => setSelectedNetwork('bsc')}
+                    className="text-xs flex-1 text-left text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 hover:bg-amber-100 transition">
+                    EVM 0x detected → BSC (BEP-20)
+                  </button>
+                  <button type="button"
+                    onClick={() => setSelectedNetwork('polygon')}
+                    className="text-xs flex-1 text-left text-purple-700 bg-purple-50 border border-purple-200 rounded-lg px-2.5 py-1.5 hover:bg-purple-100 transition">
+                    Polygon (ERC-20)
+                  </button>
+                </div>
+              );
+            }
 
-            {/* Destination address */}
-            <div>
-              <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Destination Address</label>
-              <input type="text" placeholder={selCoin === 'USDT' && selectedNetwork === 'tron' ? 'TRC-20 address (starts with T...)' : 'Wallet address'}
-                value={f.address || ''} onChange={e => setF(p => ({ ...p, address: e.target.value }))}
-                className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-orange-500/20" />
-            </div>
+            return (
+              <div className="space-y-4">
+                {/* Available balance banner */}
+                <div className="rounded-xl bg-slate-900 text-white p-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400 font-semibold">Available</div>
+                      <div className="mt-1 text-2xl font-extrabold tabular-nums">
+                        {bal.toFixed(8)} <span className="text-lg text-slate-400">{selCoin}</span>
+                      </div>
+                    </div>
+                    <button type="button" onClick={() => setF(p => ({ ...p, amount: String(bal) }))}
+                      disabled={bal <= 0}
+                      className="rounded-lg bg-white/10 hover:bg-white/20 disabled:opacity-40 px-3 py-2 text-xs font-bold text-white border border-white/15 transition">
+                      MAX
+                    </button>
+                  </div>
+                </div>
 
-            {/* Amount */}
-            <div>
-              <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Amount</label>
-              <div className="relative">
-                <input type="number" min="0" step="0.000001" placeholder="0.000000"
-                  value={f.amount || ''} onChange={e => setF(p => ({ ...p, amount: e.target.value }))}
-                  className="w-full px-4 py-3.5 rounded-xl border border-slate-200 bg-white text-xl font-extrabold focus:outline-none focus:ring-2 focus:ring-orange-500/20" />
-                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-sm">{selCoin}</span>
+                {/* Crypto selection */}
+                <div>
+                  <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Asset</label>
+                  <select value={selCoin} onChange={e => { setSelCoin(e.target.value); setSelectedNetwork(getNetworkOptions(e.target.value)[0]); }}
+                    className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-orange-500/20">
+                    {cryptoWallets.filter(w => Number(w.balance) > 0).map((w, i) => (
+                      <option key={w.id || i} value={w.crypto_coin}>
+                        {COIN_ICONS[w.crypto_coin]} {w.crypto_coin} · Balance: {Number(w.balance).toFixed(6)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Network */}
+                <div>
+                  <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Network</label>
+                  <select value={selectedNetwork} onChange={e => setSelectedNetwork(e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-orange-500/20">
+                    {getNetworkOptions(selCoin).map(net => {
+                      const isDirect = (DIRECT_RAIL_NETWORKS[selCoin] || []).includes(net);
+                      return (
+                        <option key={net} value={net}>
+                          {net.toUpperCase()}{isDirect ? ' ⚡ Direct Rail' : ' (Exchange)'}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  {selCoin === 'USDT' && selectedNetwork === 'tron' && (
+                    <p className="text-xs text-emerald-600 mt-1.5 font-medium">✅ TRC-20 selected — Direct blockchain rail. 0 exchange, 0 KYC, 0 Travel Rule.</p>
+                  )}
+                  {selCoin === 'USDT' && selectedNetwork === 'bsc' && (
+                    <p className="text-xs text-amber-600 mt-1.5 font-medium">✅ BEP-20 selected — Direct BSC blockchain rail. 0 exchange, 0 KYC.</p>
+                  )}
+                  {selCoin === 'USDT' && selectedNetwork === 'polygon' && (
+                    <p className="text-xs text-purple-600 mt-1.5 font-medium">✅ Polygon selected — Direct Polygon blockchain rail. 0 exchange, 0 KYC.</p>
+                  )}
+                  {selCoin === 'USDT' && !['tron', 'bsc', 'polygon'].includes(selectedNetwork) && (
+                    <p className="text-xs text-amber-700 mt-1.5 font-medium">⚠️ Exchange-mediated path. For TronLink/Trust Wallet USDT, choose TRON/BSC/Polygon above for instant direct rail.</p>
+                  )}
+                </div>
+
+                {/* Destination address */}
+                <div>
+                  <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Destination Address (TronLink / Trust Wallet)</label>
+                  <input type="text"
+                    placeholder={
+                      selCoin === 'USDT' && selectedNetwork === 'tron'
+                        ? 'TronLink TRC-20 address (starts with T...)'
+                        : selCoin === 'USDT' && (selectedNetwork === 'bsc' || selectedNetwork === 'polygon')
+                        ? 'Trust Wallet 0x address (BEP-20 / Polygon ERC-20)'
+                        : 'Wallet address'
+                    }
+                    value={f.address || ''}
+                    onChange={e => setF(p => ({ ...p, address: e.target.value }))}
+                    className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-orange-500/20" />
+                  {autoSwitchHint}
+                </div>
+
+                {/* Amount */}
+                <div>
+                  <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Amount</label>
+                  <div className="relative">
+                    <input type="number" min="0" step="0.000001" placeholder="0.000000"
+                      value={f.amount || ''} onChange={e => setF(p => ({ ...p, amount: e.target.value }))}
+                      className="w-full px-4 py-3.5 rounded-xl border border-slate-200 bg-white text-xl font-extrabold focus:outline-none focus:ring-2 focus:ring-orange-500/20" />
+                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-sm">{selCoin}</span>
+                  </div>
+                  <div className="flex gap-2 mt-2">
+                    {[25, 50, 75, 100].map(pct => (
+                      <button key={pct} type="button"
+                        onClick={() => setF(p => ({ ...p, amount: String(Number((bal * pct / 100).toFixed(8))) }))}
+                        disabled={bal <= 0}
+                        className="flex-1 rounded-lg border border-slate-200 bg-white disabled:opacity-40 text-xs font-bold text-slate-600 hover:bg-slate-50 py-1.5 transition">
+                        {pct}%
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Deduction source + delivery preview (DIRECT RAIL ONLY) */}
+                {isDirectRail && (() => {
+                  const amt = parseFloat(f.amount || '0') || 0;
+                  const fee = selectedNetwork === 'tron'
+                    ? 'TRX gas (hot wallet pays ~0.3 TRX)'
+                    : selectedNetwork === 'bsc'
+                    ? 'BNB gas (hot wallet pays ~0.0005 BNB)'
+                    : 'MATIC gas (hot wallet pays ~0.01 MATIC)';
+                  const receives = amt > 0 ? amt : 0;
+                  const remaining = amt > 0 ? Number((bal - amt).toFixed(8)) : bal;
+                  return (
+                    <div className="rounded-xl bg-slate-50 border border-slate-200 p-3.5 space-y-2 text-xs">
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-500 uppercase tracking-wide text-[10px] font-semibold">Deduction Source</span>
+                        <span className="font-bold text-slate-800">Customer Internal Balance</span>
+                      </div>
+                      <div className="h-px bg-slate-200" />
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-500">Deducted from this customer</span>
+                        <span className="font-extrabold text-slate-900 tabular-nums">
+                          {amt.toFixed(8)} <span className="text-slate-400 font-bold">{selCoin}</span>
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-500">Customer balance after</span>
+                        <span className="font-bold text-slate-600 tabular-nums">
+                          {remaining.toFixed(8)} <span className="text-slate-400 font-bold">{selCoin}</span>
+                        </span>
+                      </div>
+                      <div className="h-px bg-slate-200" />
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-500 uppercase tracking-wide text-[10px] font-semibold">Delivery</span>
+                        <span className="font-bold text-emerald-700">Exact amount</span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-500">Recipient receives (Trx/Trust Wallet)</span>
+                        <span className="font-extrabold text-emerald-700 tabular-nums">
+                          {receives.toFixed(8)} <span className="text-emerald-500 font-bold">{selCoin}</span>
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-500">Network fee</span>
+                        <span className="font-semibold text-emerald-700">{fee} · Platform pays</span>
+                      </div>
+                      <div className="flex justify-between items-center pt-1">
+                        <span className="text-slate-500 uppercase tracking-wide text-[10px] font-semibold">Physical delivery</span>
+                        <span className="font-semibold text-slate-700">Hot wallet → {selectedNetwork.toUpperCase()} chain</span>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Route / info banner */}
+                <div className={`rounded-xl border p-3 text-xs ${
+                  isDirectRail
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                    : 'bg-amber-50 border-amber-200 text-amber-800'
+                }`}>
+                  {isDirectRail
+                    ? <>⚡ <strong>Direct blockchain rail</strong> via {selectedNetwork.toUpperCase()}. Customer internal balance is deducted; hot wallet delivers USDT on-chain. Customer receives the EXACT withdrawal amount. Network fees ({selectedNetwork === 'tron' ? 'TRX' : selectedNetwork === 'bsc' ? 'BNB' : 'MATIC'} gas) are paid by the platform hot wallet — nothing is subtracted from the customer's USDT.</>
+                    : <>⚠️ <strong>Exchange-mediated path</strong> selected. Withdrawal will attempt {selectedNetwork.toUpperCase()} via exchange. If you are sending to TronLink (T-address) or Trust Wallet (0x-address), choose TRON / BSC / Polygon above for guaranteed instant delivery with 0 exchange friction.</>
+                  }
+                </div>
+
+                {/* Irreversible warning */}
+                <div className="rounded-xl bg-red-50 border border-red-200 p-3 text-xs text-red-800">
+                  ⛔ Crypto withdrawals are <strong>irreversible</strong>. Triple-check the address ({addr?.slice(0,10) || '...'}{addr ? '…' : ''}) and network ({selectedNetwork.toUpperCase()}) before confirming.
+                </div>
               </div>
-            </div>
-
-            {/* Warning */}
-            <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">
-              ⚠️ Crypto withdrawals are <strong>irreversible</strong>. Double-check the address and network before confirming.
-              Withdrawal will be sent via Binance.
-            </div>
-          </div>
+            );
+          })()}
         </ModalShell>
       )}
     </div>

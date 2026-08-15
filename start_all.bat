@@ -26,14 +26,14 @@ echo   Android  : http://%PC_IP%:7000/
 echo.
 
 :: ── Kill any Node on 7000/7001 ───────────────────────────────────────────────
-echo  [1/4] Stopping old processes...
+echo  [1/5] Stopping old processes...
 powershell -NoProfile -Command ^
   "$ports=7000,7001; foreach($p in $ports){ try{ $c=Get-NetTCPConnection -LocalPort $p -State Listen -EA Stop; foreach($x in $c){ $proc=Get-Process -Id $x.OwningProcess -EA SilentlyContinue; if($proc -and $proc.ProcessName -eq 'node'){ Stop-Process -Id $proc.Id -Force }}} catch{} }" >nul 2>&1
 timeout /t 2 /nobreak >nul
 echo     Done.
 
 :: ── Firewall rule ─────────────────────────────────────────────────────────────
-echo  [2/4] Firewall rule for Android access...
+echo  [2/5] Firewall rule for Android access...
 netsh advfirewall firewall show rule name="POS Backend 7000" >nul 2>&1
 if errorlevel 1 (
     netsh advfirewall firewall add rule name="POS Backend 7000" dir=in action=allow protocol=TCP localport=7000 >nul 2>&1
@@ -44,12 +44,23 @@ powershell -NoProfile -Command ^
   "$env='%BACKEND%\.env'; $ip='%PC_IP%'; if(Test-Path $env){ $c=Get-Content $env -Raw; $new='ALLOWED_ORIGINS=http://localhost:7001,http://'+$ip+':7001'; $c=$c -replace 'ALLOWED_ORIGINS=.*',$new; Set-Content $env $c }" >nul 2>&1
 echo     Done.
 
+:: ── Build Backend (compile TypeScript so latest fixes are live) ──────────────
+echo  [3/5] Building backend (compiling TypeScript)...
+pushd "%BACKEND%"
+call npm run build >nul 2>&1
+if errorlevel 1 (
+    echo     Build had warnings — starting in dev mode with ts-node instead.
+) else (
+    echo     Build OK.
+)
+popd
+
 :: ── Start Backend ─────────────────────────────────────────────────────────────
-echo  [3/4] Starting backend on :7000...
+echo  [4/5] Starting backend on :7000...
 start "POS Backend :7000" cmd /k "title POS Backend :7000 && cd /d "%BACKEND%" && npm run dev"
 
 :: ── Start Frontend ────────────────────────────────────────────────────────────
-echo  [4/4] Starting frontend on :7001...
+echo  [5/5] Starting frontend on :7001...
 start "POS Frontend :7001" cmd /k "title POS Frontend :7001 && cd /d "%CLIENT%" && npm run dev -- --host 0.0.0.0 --port 7001"
 
 :: ── Wait for backend ─────────────────────────────────────────────────────────
@@ -77,6 +88,10 @@ echo   API       : http://localhost:7000
 echo   Android   : http://%PC_IP%:7000/
 echo.
 echo   Login: admin / admin1234
+echo.
+echo  ── TRON Hot Wallet ───────────────────────
+powershell -NoProfile -Command ^
+  "try{ $r=(Invoke-WebRequest -Uri 'https://api.trongrid.io/v1/accounts/TFZXzaXXgk3uCcCWbUWKZAydsc95D8GZBP' -UseBasicParsing -TimeoutSec 6).Content|ConvertFrom-Json; $d=$r.data[0]; $trx=[math]::Round($d.balance/1000000,2); $usdt=0; foreach($t in $d.trc20){ if($t.'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'){$usdt=[math]::Round($t.'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'/1000000,2)}}; Write-Host '   TRX  (gas)  :' $trx 'TRX'; Write-Host '   USDT (pool) :' $usdt 'USDT' } catch { Write-Host '   (Could not reach TronGrid to check balance)' }" 2>nul
 echo  ==========================================
 echo.
 

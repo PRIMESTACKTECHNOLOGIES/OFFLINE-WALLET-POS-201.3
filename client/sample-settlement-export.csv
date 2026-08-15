@@ -1,0 +1,2 @@
+﻿name,recipientEmail,paymentReference,referenceNumber,receiverType,amountCurrency,amount,sourceCurrency,targetCurrency,accountHolderName,bankName,accountNumber,IBAN,swiftCode,nationality,dateOfBirth,addressCountryCode,addressCity,addressFirstLine,addressState,transferPurpose
+Merchant,support@example.com,Settlement STL-1,STL-1,PERSON,USD,100.00,USD,USD,Merchant,,,,,,US,,,,SERVICES

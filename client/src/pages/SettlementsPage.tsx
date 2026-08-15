@@ -125,7 +125,14 @@ const StatCard = ({ title, value, subtext, icon, colorClass }: StatCardProps) =>
   </div>
 );
 
-const BatchDrawer = ({ batch, onClose }: { batch: Batch, onClose: () => void }) => {
+interface BatchDrawerProps {
+  batch: Batch;
+  onClose: () => void;
+  cashoutLoading: boolean;
+  onCashout: (batch: Batch) => Promise<void>;
+}
+
+const BatchDrawer = ({ batch, onClose, cashoutLoading, onCashout }: BatchDrawerProps) => {
   if (!batch) return null;
   return (
     <div className="fixed inset-0 z-50 overflow-hidden" role="dialog" aria-modal="true">
@@ -223,23 +230,7 @@ const BatchDrawer = ({ batch, onClose }: { batch: Batch, onClose: () => void }) 
               <button className="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">Export CSV</button>
               {batch.status === 'UPLOADED' && (
                 <button 
-                  onClick={async () => {
-                    try {
-                      setCashoutLoading(true);
-                      const result = await cashoutBraintree([{ batchId: batch.id, id: batch.id }]);
-                      if (result.synced > 0) {
-                        showToast(`✓ Cashout successful! Synced ${result.synced} transactions`, "success");
-                        // Refresh batches
-                        await loadBatches();
-                      } else {
-                        showToast(`✗ Cashout failed`, "error");
-                      }
-                    } catch (err: any) {
-                      showToast(`✗ Error: ${err.message}`, "error");
-                    } finally {
-                      setCashoutLoading(false);
-                    }
-                  }}
+                  onClick={() => onCashout(batch)}
                   disabled={cashoutLoading}
                   className="px-4 py-2 border border-transparent rounded-md text-sm font-medium text-white bg-green-600 hover:bg-green-700 disabled:bg-gray-400"
                 >
@@ -342,6 +333,23 @@ export function SettlementsPage() {
       showToast("Failed to load batches", "error");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleBatchCashout = async (batch: Batch) => {
+    try {
+      setCashoutLoading(true);
+      const result = await cashoutBraintree([{ batchId: batch.id, id: batch.id }]);
+      if (result && Number(result.synced ?? 0) > 0) {
+        showToast(`✓ Cashout successful! Synced ${result.synced} transactions`, "success");
+        await loadBatches();
+      } else {
+        showToast(`✗ Cashout failed`, "error");
+      }
+    } catch (err: any) {
+      showToast(`✗ Error: ${err?.message ?? String(err)}`, "error");
+    } finally {
+      setCashoutLoading(false);
     }
   };
 
@@ -717,7 +725,12 @@ export function SettlementsPage() {
 
       {/* Drawers */}
       {selectedBatch && (
-        <BatchDrawer batch={selectedBatch} onClose={() => setSelectedBatch(null)} />
+        <BatchDrawer
+          batch={selectedBatch}
+          onClose={() => setSelectedBatch(null)}
+          cashoutLoading={cashoutLoading}
+          onCashout={handleBatchCashout}
+        />
       )}
     </div>
   );

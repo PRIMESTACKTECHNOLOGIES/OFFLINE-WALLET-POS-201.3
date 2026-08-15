@@ -5,11 +5,13 @@ import { v4 as uuidv4 } from "uuid";
 export async function settleCardTransaction(
   merchantId: string,
   amount: number,
-  authRef: string
+  authRef: string,
+  currency: string = 'USD'
 ) {
   if (!merchantId) throw new Error("merchantId required");
   if (amount <= 0) throw new Error("amount must be positive");
   if (!authRef) throw new Error("authRef required");
+  const ccy = String(currency || 'USD').toUpperCase().trim();
 
   // Processor capture endpoint
   const captureUrl = process.env.CARD_PROCESSOR_CAPTURE_URL;
@@ -20,7 +22,7 @@ export async function settleCardTransaction(
     captureUrl,
     {
       amount,
-      currency: "USD",
+      currency: ccy,
       authorizationReference: authRef
     },
     { timeout: 8000 }
@@ -32,10 +34,10 @@ export async function settleCardTransaction(
 
   const captureId = res.data.captureId || res.data.id || uuidv4();
 
-  // Get or create merchant wallet
+  // Get or create merchant wallet for the specific currency
   const walletRes = await db.query(
-    "SELECT * FROM merchant_wallets WHERE merchant_id = ?",
-    [merchantId]
+    "SELECT * FROM merchant_wallets WHERE merchant_id = ? AND currency = ?",
+    [merchantId, ccy]
   );
   let wallet = walletRes.rows[0];
 
@@ -43,8 +45,8 @@ export async function settleCardTransaction(
     const id = uuidv4();
     await db.query(
       `INSERT INTO merchant_wallets (id, merchant_id, balance, currency)
-       VALUES (?, ?, 0, 'USD')`,
-      [id, merchantId]
+       VALUES (?, ?, 0, ?)`,
+      [id, merchantId, ccy]
     );
     wallet = (await db.query("SELECT * FROM merchant_wallets WHERE id = ?", [id])).rows[0];
   }
@@ -57,15 +59,16 @@ export async function settleCardTransaction(
     [amount, wallet.id]
   );
 
-  // Log merchant wallet transaction
+  // Log merchant wallet transaction WITH CURRENCY
   await db.query(
     `INSERT INTO merchant_wallet_transactions
-     (id, wallet_id, type, amount, source, reference, description)
-     VALUES (?, ?, 'credit', ?, 'card_settlement', ?, ?)`,
+     (id, wallet_id, type, amount, currency, source, reference, description)
+     VALUES (?, ?, 'credit', ?, ?, 'card_settlement', ?, ?)`,
     [
       txnId,
       wallet.id,
       amount,
+      ccy,
       captureId,
       `Card settlement for auth ${authRef}`
     ]
@@ -75,8 +78,8 @@ export async function settleCardTransaction(
   await db.query(
     `INSERT INTO settlements
      (id, merchant_id, amount, currency, processor_ref, status)
-     VALUES (?, ?, ?, 'USD', ?, 'COMPLETED')`,
-    [uuidv4(), merchantId, amount, captureId]
+     VALUES (?, ?, ?, ?, ?, 'COMPLETED')`,
+    [uuidv4(), merchantId, amount, ccy, captureId]
   );
 
   return {
@@ -84,6 +87,7 @@ export async function settleCardTransaction(
     merchantWalletId: wallet.id,
     transactionId: txnId,
     captureId,
-    settledAmount: amount
+    settledAmount: amount,
+    currency: ccy,
   };
 }

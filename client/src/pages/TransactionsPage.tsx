@@ -124,32 +124,7 @@ export const TransactionsPage = () => {
         console.warn("Failed to fetch server transactions", e);
       }
 
-      // Fetch local dashboard transactions (Offline ones)
-      let localData: Transaction[] = [];
-      try {
-        const stored = localStorage.getItem('dashboard_transactions');
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          localData = parsed.map((t: any) => ({
-            id: t.localTxnId || `local_${t.timestamp}`,
-            merchantId: 'MRC-1001',
-            terminalId: 'WEB-TERMINAL',
-            amountMinor: Math.round(t.amount * 100),
-            currency: 'USD',
-            status: t.status === 'PENDING' ? 'OFFLINE_APPROVED' : (t.status === 'SYNCED' ? 'APPROVED' : 'ERROR'),
-            txnTimestamp: new Date(t.timestamp).toISOString(),
-            stan: t.stan,
-            cardLast4: t.cardLast4,
-            settlementCode: t.settlementCode
-          }));
-        }
-      } catch (e) {
-        console.error("Failed to parse local transactions", e);
-      }
-
-      // Merge and sort
-      const combined = [...serverData, ...localData];
-      const sorted = combined.sort((a, b) => new Date(b.txnTimestamp).getTime() - new Date(a.txnTimestamp).getTime());
+      const sorted = [...serverData].sort((a, b) => new Date(b.txnTimestamp).getTime() - new Date(a.txnTimestamp).getTime());
       setTransactions(sorted);
     } catch (e) {
       console.error(e);
@@ -205,50 +180,156 @@ export const TransactionsPage = () => {
   const stats = useMemo(() => {
     const totalCount = filteredTxns.length;
     const totalVolume = filteredTxns.reduce((sum, t) => sum + (t.amountMinor || 0), 0) / 100;
-    const approvedCount = filteredTxns.filter(t => t.status === 'APPROVED').length;
+    const approvedCount = filteredTxns.filter(t => t.status === 'APPROVED' || t.status === 'SYNCED').length;
     const approvalRate = totalCount > 0 ? (approvedCount / totalCount) * 100 : 0;
 
-    // Generate simple chart data (last 7 data points or so)
+    // Volume chart data: last 10 transactions (real)
     const volumeData = filteredTxns.slice(0, 10).map(t => t.amountMinor / 100).reverse();
-    const countData: number[] = []; // Fixed: Removed mock trend data
+
+    // Period-over-period volume delta (real comparison)
+    const now = Date.now();
+    const periodMs = dateRange === 'TODAY' ? 24 * 60 * 60 * 1000
+                  : dateRange === 'WEEK' ? 7 * 24 * 60 * 60 * 1000
+                  : dateRange === 'MONTH' ? 30 * 24 * 60 * 60 * 1000
+                  : 365 * 24 * 60 * 60 * 1000;
+    const periodStart = now - periodMs;
+    const prevStart = periodStart - periodMs;
+
+    const currentPeriodVolume = filteredTxns
+      .filter(t => new Date(t.txnTimestamp).getTime() >= periodStart)
+      .reduce((s, t) => s + (t.amountMinor || 0), 0) / 100;
+    const prevPeriodVolume = filteredTxns
+      .filter(t => {
+        const d = new Date(t.txnTimestamp).getTime();
+        return d >= prevStart && d < periodStart;
+      })
+      .reduce((s, t) => s + (t.amountMinor || 0), 0) / 100;
+
+    const volumeDeltaPct = prevPeriodVolume > 0
+      ? ((currentPeriodVolume - prevPeriodVolume) / prevPeriodVolume) * 100
+      : 0;
+
+    // Count chart data: up to 7 real chronological bins of txn counts
+    let countData: number[] = [];
+    try {
+      const bins = 7;
+      if (totalCount >= bins) {
+        const sorted = [...filteredTxns].sort((a, b) =>
+          new Date(a.txnTimestamp).getTime() - new Date(b.txnTimestamp).getTime()
+        );
+        const perBin = Math.ceil(sorted.length / bins);
+        for (let i = 0; i < bins; i++) {
+          countData.push(sorted.slice(i * perBin, (i + 1) * perBin).length);
+        }
+      } else if (totalCount > 0) {
+        countData = Array(Math.min(bins, totalCount)).fill(0).map((_, i) =>
+          i === 0 ? totalCount : 0
+        );
+      }
+    } catch {
+      countData = totalCount > 0 ? [totalCount] : [];
+    }
+
+    // Approval rate chart data: up to 7 real points from filtered transactions grouped chronologically
+    let approvalChartData: number[] = [];
+    try {
+      const bins = 7;
+      if (totalCount >= bins) {
+        const sorted = [...filteredTxns].sort((a, b) =>
+          new Date(a.txnTimestamp).getTime() - new Date(b.txnTimestamp).getTime()
+        );
+        const perBin = Math.ceil(sorted.length / bins);
+        for (let i = 0; i < bins; i++) {
+          const slice = sorted.slice(i * perBin, (i + 1) * perBin);
+          const sliceApp = slice.filter(t => t.status === 'APPROVED' || t.status === 'SYNCED').length;
+          const sliceRate = slice.length > 0 ? Math.round((sliceApp / slice.length) * 100) : 0;
+          approvalChartData.push(sliceRate);
+        }
+      } else if (totalCount > 0) {
+        approvalChartData = Array(Math.min(bins, totalCount)).fill(0).map(() => Math.round(approvalRate));
+      }
+    } catch {
+      approvalChartData = totalCount > 0 ? [Math.round(approvalRate)] : [];
+    }
 
     return {
       totalCount,
       totalVolume,
       approvalRate,
       volumeData,
-      countData
+      countData,
+      approvalChartData,
+      volumeDeltaPct,
+      currentPeriodVolume,
+      prevPeriodVolume
     };
-  }, [filteredTxns]);
+  }, [filteredTxns, dateRange]);
 
-  const handleExport = () => {
-    const headers = ["Txn ID", "Date", "Terminal", "Amount", "Status", "STAN", "Batch ID"];
-    const rows = filteredTxns.map(t => [
-      t.id,
-      new Date(t.txnTimestamp).toISOString(),
-      t.terminalId,
-      (t.amountMinor / 100).toFixed(2),
-      t.status,
-      t.stan || '',
-      t.batchId || ''
+  const escapeCsvValue = (value: unknown) => {
+    const stringValue = String(value ?? "");
+    const needsQuotes = /[",\n]/.test(stringValue);
+    return needsQuotes ? `"${stringValue.replace(/"/g, '""')}"` : stringValue;
+  };
+
+  const exportTransactions = (txns: Transaction[], fileName: string) => {
+    // Wise-compatible batch payment CSV format
+    const headers = [
+      "name",
+      "recipientEmail",
+      "paymentReference",
+      "referenceNumber",
+      "receiverType",
+      "amount",
+      "sourceCurrency",
+      "targetCurrency",
+      "batchId",
+      "stan",
+      "authMode",
+      "entryMode",
+      "status",
+      "date"
+    ];
+    const rows = txns.map(t => [
+      t.merchantId || 'Merchant',              // name
+      '',                                       // recipientEmail
+      `REF-${t.id}`,                            // paymentReference
+      t.id,                                     // referenceNumber
+      'BUSINESS',                               // receiverType
+      (t.amountMinor / 100).toFixed(2),         // amount
+      t.currency || 'USD',                      // sourceCurrency
+      t.currency || 'USD',                      // targetCurrency
+      t.batchId || '',                          // batchId
+      t.stan || '',                             // stan
+      t.authMode || '',                         // authMode
+      t.entryMode || '',                        // entryMode
+      t.status,                                 // status
+      new Date(t.txnTimestamp).toISOString(),   // date
     ]);
-    
+
     const csvContent = [
-      headers.join(","),
-      ...rows.map(row => row.join(","))
+      headers.map(escapeCsvValue).join(","),
+      ...rows.map(row => row.map(escapeCsvValue).join(","))
     ].join("\n");
-    
+
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const link = document.createElement("a");
     if (link.download !== undefined) {
       const url = URL.createObjectURL(blob);
       link.setAttribute("href", url);
-      link.setAttribute("download", `transactions_export_${new Date().toISOString().slice(0,10)}.csv`);
+      link.setAttribute("download", fileName);
       link.style.visibility = 'hidden';
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
     }
+  };
+
+  const handleExport = () => {
+    exportTransactions(filteredTxns, `transactions_export_${new Date().toISOString().slice(0,10)}.csv`);
+  };
+
+  const handleExportSingleTransaction = (txn: Transaction) => {
+    exportTransactions([txn], `transaction_${txn.id}.csv`);
   };
 
   if (loading) return (
@@ -293,9 +374,12 @@ export const TransactionsPage = () => {
           title="Total Volume" 
           value={new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(stats.totalVolume)} 
           subtext={
-            <span className="flex items-center text-green-600">
-              <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>
-              +12.5% vs last period
+            <span className={`flex items-center ${stats.volumeDeltaPct >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+              <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                   style={{ transform: stats.volumeDeltaPct >= 0 ? 'rotate(0deg)' : 'rotate(180deg)' }}>
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+              </svg>
+              {stats.volumeDeltaPct >= 0 ? '+' : ''}{stats.volumeDeltaPct.toFixed(1)}% vs last period
             </span>
           }
           icon={<svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>}
@@ -318,14 +402,20 @@ export const TransactionsPage = () => {
           title="Approval Rate" 
           value={`${stats.approvalRate.toFixed(1)}%`} 
           subtext={
-            <span className="flex items-center text-green-600">
-              <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
-              Optimal Performance
+            <span className={`flex items-center ${stats.approvalRate >= 95 ? 'text-green-600' : stats.approvalRate >= 85 ? 'text-amber-600' : 'text-red-600'}`}>
+              <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                {stats.approvalRate >= 85
+                  ? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  : <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />}
+              </svg>
+              {stats.approvalRate >= 95 ? 'Optimal Performance'
+               : stats.approvalRate >= 85 ? 'Stable — Monitor Edge Cases'
+               : 'Attention — Elevated Decline Rate'}
             </span>
           }
           icon={<svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>}
           colorClass="text-green-600"
-          chartData={[85, 88, 92, 90, 95, 94, 96]}
+          chartData={stats.approvalChartData}
         />
       </div>
 
@@ -423,6 +513,11 @@ export const TransactionsPage = () => {
                         <div className="text-xs text-gray-600 font-medium">
                           {t.cardBrand || (t.panMasked ? 'VISA' : 'UNKNOWN')}
                         </div>
+                        {t.readerSource && (
+                          <span className="ml-1 inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                            {t.readerSource === 'NFC_CONTACTLESS' ? 'NFC' : t.readerSource === 'EMV_CHIP' ? 'EMV' : 'CARD'}
+                          </span>
+                        )}
                       </div>
                     </td>
                     <td className="px-6 py-4 text-sm font-bold text-gray-900 tracking-tight">
@@ -442,13 +537,26 @@ export const TransactionsPage = () => {
                       {t.invoiceId || t.stan || t.id.substring(0, 8)}
                     </td>
                     <td className="px-6 py-4 text-right">
-                      <button 
-                        onClick={() => setSelectedTxn(t)}
-                        className="text-gray-400 hover:text-blue-600 transition-colors p-1 rounded-md hover:bg-blue-50"
-                        title="View Details"
-                      >
-                        <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
-                      </button>
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleExportSingleTransaction(t);
+                          }}
+                          className="inline-flex items-center rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:bg-gray-50"
+                          title="Export this transaction"
+                        >
+                          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" className="mr-1"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                          CSV
+                        </button>
+                        <button 
+                          onClick={() => setSelectedTxn(t)}
+                          className="text-gray-400 hover:text-blue-600 transition-colors p-1 rounded-md hover:bg-blue-50"
+                          title="View Details"
+                        >
+                          <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -557,6 +665,24 @@ export const TransactionsPage = () => {
                   <div className="flex justify-between text-sm">
                     <span className="text-gray-500">Card Brand</span>
                     <span className="text-gray-900 font-medium">{selectedTxn.cardBrand}</span>
+                  </div>
+                )}
+                {selectedTxn.readerSource && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-500">Entry Mode</span>
+                    <span className="text-gray-900 font-medium">{selectedTxn.readerSource}</span>
+                  </div>
+                )}
+                {selectedTxn.cvmResult && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-500">CVM</span>
+                    <span className="text-gray-900 font-medium">{selectedTxn.cvmResult}</span>
+                  </div>
+                )}
+                {typeof selectedTxn.pinVerified === 'boolean' && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-500">PIN Verified</span>
+                    <span className="text-gray-900 font-medium">{selectedTxn.pinVerified ? 'Yes' : 'No'}</span>
                   </div>
                 )}
                 {selectedTxn.invoiceId && (

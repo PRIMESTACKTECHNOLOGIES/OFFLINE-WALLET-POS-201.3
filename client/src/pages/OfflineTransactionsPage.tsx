@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
 import { useToast } from "../components/ui/Toast";
 import { Skeleton, TableSkeleton } from "../components/ui/Skeleton";
+import { generateLocalTxnId, generateStan } from "../lib/crypto";
+import { syncEMVTransactions } from "../lib/emv/emv-pos-bridge";
 
 // --- Icons ---
 const Icons = {
@@ -11,7 +13,6 @@ const Icons = {
   Filter: () => <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" /></svg>,
 };
 
-// --- Mock Data ---
 interface OfflineTransaction {
   id: string;
   amount: number;
@@ -23,13 +24,6 @@ interface OfflineTransaction {
   terminalId: string;
   authCode: string;
 }
-
-const MOCK_TRANSACTIONS: OfflineTransaction[] = [
-  { id: 'off_1', amount: 45.50, currency: 'USD', timestamp: new Date(Date.now() - 1000 * 60 * 15).toISOString(), cardLast4: '4242', cardType: 'Visa', status: 'STORED', terminalId: 'T101', authCode: 'OFF001' },
-  { id: 'off_2', amount: 120.00, currency: 'USD', timestamp: new Date(Date.now() - 1000 * 60 * 45).toISOString(), cardLast4: '8888', cardType: 'Mastercard', status: 'STORED', terminalId: 'T102', authCode: 'OFF002' },
-  { id: 'off_3', amount: 12.99, currency: 'USD', timestamp: new Date(Date.now() - 1000 * 60 * 120).toISOString(), cardLast4: '1234', cardType: 'Amex', status: 'FAILED', terminalId: 'T101', authCode: 'OFF003' },
-  { id: 'off_4', amount: 89.95, currency: 'USD', timestamp: new Date(Date.now() - 1000 * 60 * 60 * 5).toISOString(), cardLast4: '9012', cardType: 'Visa', status: 'SYNCING', terminalId: 'T103', authCode: 'OFF004' },
-];
 
 // --- Components ---
 interface StatCardProps {
@@ -55,6 +49,7 @@ const StatusBadge = ({ status }: { status: string }) => {
   const styles: Record<string, string> = {
     STORED: "bg-amber-50 text-amber-700 border-amber-100",
     SYNCING: "bg-blue-50 text-blue-700 border-blue-100",
+    SYNCED: "bg-emerald-50 text-emerald-700 border-emerald-100",
     FAILED: "bg-red-50 text-red-700 border-red-100",
   };
   return (
@@ -69,70 +64,80 @@ export const OfflineTransactionsPage = () => {
   const [loading, setLoading] = useState(true);
   const { showToast } = useToast();
 
-  useEffect(() => {
-    // Load real transactions from localStorage (shared with POSPageSecure)
-    const loadRealTransactions = () => {
-      try {
-        const stored = localStorage.getItem('dashboard_transactions');
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          // Map TransactionRecord to OfflineTransaction interface
-          const mapped: OfflineTransaction[] = parsed.map((t: any, index: number) => ({
-            id: t.localTxnId || `off_${index}`,
-            amount: t.amount,
-            currency: 'USD',
-            timestamp: new Date(t.timestamp).toISOString(),
-            cardLast4: t.cardLast4,
-            cardType: 'Card',
-            status: t.status === 'PENDING' ? 'STORED' : (t.status === 'SYNCED' ? 'SYNCED' : 'FAILED'),
-            terminalId: 'WEB-TERMINAL',
-            authCode: t.settlementCode || 'N/A'
-          }));
-          // Sort by timestamp descending
-          mapped.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-          setTransactions(mapped);
-        } else {
-          setTransactions([]);
-        }
-      } catch (e) {
-        console.error("Failed to load real transactions:", e);
+  const loadTransactions = () => {
+    try {
+      const stored = localStorage.getItem('dashboard_transactions');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        const mapped: OfflineTransaction[] = parsed.map((t: any, index: number) => ({
+          id: t.localTxnId || `off_${index}`,
+          amount: Number(t.amount || 0),
+          currency: 'USD',
+          timestamp: new Date(t.timestamp).toISOString(),
+          cardLast4: t.cardLast4 || '0000',
+          cardType: 'Card',
+          status: t.status === 'PENDING' ? 'STORED' : (t.status === 'SYNCED' ? 'SYNCED' : 'FAILED'),
+          terminalId: 'WEB-TERMINAL',
+          authCode: t.settlementCode || 'N/A'
+        }));
+        mapped.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        setTransactions(mapped);
+      } else {
         setTransactions([]);
-      } finally {
-        setLoading(false);
       }
-    };
+    } catch (e) {
+      console.error("Failed to load real transactions:", e);
+      setTransactions([]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    loadRealTransactions();
-    
-    // Listen for storage changes in other tabs/windows
-    window.addEventListener('storage', loadRealTransactions);
-    return () => window.removeEventListener('storage', loadRealTransactions);
+  useEffect(() => {
+    loadTransactions();
+    window.addEventListener('storage', loadTransactions);
+    return () => window.removeEventListener('storage', loadTransactions);
   }, []);
 
-  const handleSyncAll = () => {
+  const handleAddTestTransaction = () => {
+    showToast('Test transaction creation is disabled. Only real persisted transactions are shown.', 'info');
+  };
+
+  const handleSyncAll = async () => {
     const pending = transactions.filter(t => t.status === 'STORED');
     if (pending.length === 0) {
       showToast("No pending transactions to sync", "info");
       return;
     }
-    
-    showToast(`Syncing ${pending.length} transactions to host...`, "info");
-    
-    // Simulate sync process
-    setTimeout(() => {
-      const stored = localStorage.getItem('dashboard_transactions');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        const updated = parsed.map((t: any) => ({
-          ...t,
-          status: t.status === 'PENDING' ? 'SYNCED' : t.status
-        }));
-        localStorage.setItem('dashboard_transactions', JSON.stringify(updated));
-        // Trigger local update
-        window.dispatchEvent(new Event('storage'));
-        showToast("All transactions synced successfully!", "success");
+    showToast(`Syncing ${pending.length} transaction(s)...`, "info");
+    try {
+      const storedSettings = localStorage.getItem('merchantConfig');
+      const config = storedSettings ? JSON.parse(storedSettings) : {};
+      const result = await syncEMVTransactions(
+        config.merchantId || 'MRC-1001',
+        config.terminalId || 'WEB-TERMINAL',
+        config.secretKey  || ''
+      );
+      if (result.synced > 0) {
+        showToast(`✅ Synced ${result.synced} transaction(s)${result.settlementCode ? ` — Code: ${result.settlementCode}` : ''}`, "success");
+        // Refresh the list
+        const stored = localStorage.getItem('dashboard_transactions');
+        if (stored) {
+          const updated = JSON.parse(stored).map((t: any) => ({
+            ...t,
+            status: t.status === 'PENDING' ? 'SYNCED' : t.status,
+            settlementCode: result.settlementCode || t.settlementCode
+          }));
+          localStorage.setItem('dashboard_transactions', JSON.stringify(updated));
+          window.dispatchEvent(new Event('storage'));
+          loadTransactions();
+        }
+      } else {
+        showToast("Nothing synced — check connection", "error");
       }
-    }, 2000);
+    } catch (e: any) {
+      showToast(`Sync failed: ${e.message}`, "error");
+    }
   };
 
   const totalOfflineAmount = transactions.reduce((acc, tx) => acc + tx.amount, 0);
@@ -170,7 +175,13 @@ export const OfflineTransactionsPage = () => {
           </h1>
           <p className="text-sm text-gray-500 mt-1">View and manage transactions stored locally on terminals.</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
+          <button
+            onClick={handleAddTestTransaction}
+            className="px-4 py-2 bg-amber-600 text-white rounded-lg text-sm font-medium hover:bg-amber-700 shadow-sm"
+          >
+            Create Test Offline Txn
+          </button>
           <button 
             onClick={handleSyncAll}
             className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 shadow-sm flex items-center gap-2"

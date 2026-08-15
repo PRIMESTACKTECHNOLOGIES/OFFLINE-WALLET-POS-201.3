@@ -104,10 +104,9 @@ export const OnboardingPage = () => {
 
   const handleComplete = async () => {
     setLoading(true);
-    // Simulate API call
-    await new Promise(r => setTimeout(r, 1500));
+    await Promise.resolve();
     setLoading(false);
-    navigate("/"); // Go to Dashboard
+    navigate("/");
   };
 
   const updateData = (section: keyof OnboardingData, field: string, value: string | boolean) => {

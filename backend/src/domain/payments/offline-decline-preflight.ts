@@ -1,0 +1,151 @@
+import { parseTlv } from './emv-tlv-parser';
+
+export interface PreflightPayload {
+  amountMinor: number;
+  currency: string;
+  pan?: string;
+  expiry?: string;
+  cvv?: string;
+  emv?: Record<string, unknown>;
+  terminalId?: string;
+  merchantId?: string;
+  stan?: string;
+}
+
+export interface PreflightResult {
+  declined: boolean;
+  reason?: string;
+  code?: string;
+}
+
+function parseHexTlvToTagMap(hex: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  try {
+    // Strip spaces / punctuation, enforce even length
+    const clean = String(hex || '').replace(/[^0-9A-Fa-f]/g, '');
+    if (!clean || clean.length % 2 !== 0) return result;
+    const buf = Buffer.from(clean, 'hex');
+    const map = parseTlv(buf); // keyed by tag e.g. '95', values are Buffer
+    for (const [tag, val] of Object.entries(map)) {
+      try {
+        result[String(tag).toUpperCase()] = (val as Buffer).toString('hex');
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch {
+    /* ignore malformed */
+  }
+  return result;
+}
+
+/**
+ * ══ HARD DECLINE PREFLIGHT — NO DEMO, NO STAND-IN, NO MOCK APPROVALS ═════════
+ *
+ * Single source of truth used by BOTH:
+ *   (a) payments.service.processPosTransaction (real time card charges)
+ *   (b) api.router /pos/offline-sale (SyncWorker offline batch uploads)
+ *
+ * If ANY of these 5 conditions match → DECLINE. Never approve.
+ *
+ *   1. Card details wrong → bad PAN length, bad Luhn, invalid expiry, invalid CVV
+ *   2. Card has no balance / account empty / issuer AAC cryptogram (AAC = decline)
+ *   3. Card blocked → hotlist / revocation / PIN locked / issuer auth failed
+ *   4. Card NOT allowed OFFLINE → TVR go-online bits, no EMV TC, AIP offline-not-supported
+ *   5. Card NOT allowed for INTERNATIONAL transfers → TVR byte5 bit2
+ * ═══════════════════════════════════════════════════════════════════════════════
+ */
+export function syncOfflinePreflight(payload: PreflightPayload): PreflightResult {
+  const pan = String(payload.pan || '').replace(/\s+/g, '');
+  const exp = String(payload.expiry || '').replace(/\D/g, '');
+
+  // ── 1. Wrong details ────────────────────────────────────────────────────
+  if (pan) {
+    if (pan.length < 13 || pan.length > 19) return { declined: true, reason: 'Card details wrong: invalid PAN length', code: 'PAN_INVALID' };
+    if (/^\d+$/.test(pan)) {
+      let s = 0, dbl = false;
+      for (let i = pan.length - 1; i >= 0; i--) {
+        let d = parseInt(pan[i], 10);
+        if (dbl) { d *= 2; if (d > 9) d -= 9; }
+        s += d; dbl = !dbl;
+      }
+      if (s % 10 !== 0) return { declined: true, reason: 'Card details wrong: PAN failed Luhn check', code: 'PAN_LUHN_FAIL' };
+    }
+  }
+  if (exp) {
+    const mm = parseInt(exp.slice(0, 2), 10);
+    if (exp.length !== 4 || !(mm >= 1 && mm <= 12)) return { declined: true, reason: 'Card details wrong: invalid expiry', code: 'EXPIRY_INVALID' };
+  }
+  const cvv = String(payload.cvv || '').replace(/\D/g, '');
+  if (payload.cvv && (cvv.length < 3 || cvv.length > 4)) return { declined: true, reason: 'Card details wrong: invalid CVV', code: 'CVV_INVALID' };
+
+  // Decode EMV
+  let tags: Record<string, string> = {};
+  try {
+    const tlvHex = String(payload.emv?.field55 || payload.emv?.field55Hex || payload.emv?.tlvRaw || payload.emv?.TLV || '').trim();
+    if (tlvHex) tags = parseHexTlvToTagMap(tlvHex);
+    Object.assign(tags, {
+      tvr: String(payload.emv?.tvr || payload.emv?.TVR || tags['95'] || '').toLowerCase(),
+      aip: String(payload.emv?.aip || payload.emv?.AIP || tags['82'] || '').toLowerCase(),
+      cryptogramType: String(payload.emv?.cryptogramType || payload.emv?.cryptogram || '').toUpperCase(),
+      cid: String(payload.emv?.cid || payload.emv?.CID || tags['9F27'] || '').toLowerCase(),
+    });
+  } catch {
+    tags = {};
+  }
+
+  // ── 2. No balance / issuer AAC ──────────────────────────────────────────
+  const cType = (tags.cryptogramType || '').toUpperCase();
+  const cidByte = tags.cid ? parseInt(tags.cid.slice(0, 2), 16) : null;
+  if (cType === 'AAC') return { declined: true, reason: 'Issuer declined: AAC cryptogram (account empty / blocked / stop payment)', code: 'CARD_BLOCKED_AAC' };
+  if (cidByte !== null && (cidByte & 0xC0) === 0x00) return { declined: true, reason: 'Issuer declined: CID=00 (AAC — insufficient funds / account empty)', code: 'CARD_BLOCKED_CID_AAC' };
+
+  // ── TC GATE: If EMV chip already produced a TC cryptogram (CID=0x80) the
+  //    issuer OFFICIALLY approved this offline per EMV kernel rules.
+  //    "Offline not allowed" checks (TVR/AIP) below MUST NOT override a real
+  //    TC approval. This is the core of YOUR OWN OFFLINE ACQUIRER: the chip's
+  //    decision is final for offline-capable transactions.
+  const isTcApproved = cType === 'TC' || (cidByte !== null && (cidByte & 0xC0) === 0x80);
+
+  // TVR decode
+  const tvr = (tags.tvr || '').padEnd(10, '0').slice(0, 10);
+  if (tvr) {
+    const b1 = parseInt(tvr.slice(0, 2), 16);
+    const b2 = parseInt(tvr.slice(2, 4), 16);
+    const b3 = parseInt(tvr.slice(4, 6), 16);
+    const b4 = parseInt(tvr.slice(6, 8), 16);
+    const b5 = parseInt(tvr.slice(8, 10), 16);
+
+    // ── 3. Card blocked / hot list ───────────────────────────────────────
+    if ((b2 & 0x01) === 0x01) return { declined: true, reason: 'Card blocked: appears on hot card / revocation list', code: 'CARD_BLOCKED_HOTLIST' };
+    if ((b2 & 0x02) === 0x02) return { declined: true, reason: 'Card blocked: PIN try limit exceeded', code: 'CARD_BLOCKED_PIN_LOCKED' };
+    if ((b4 & 0x01) === 0x01) return { declined: true, reason: 'Card blocked: issuer authentication failed', code: 'CARD_BLOCKED_ISSUER_AUTH' };
+    if ((b1 & 0x20) === 0x20 || (b1 & 0x40) === 0x40) return { declined: true, reason: 'Card details wrong: SDA/DDA/CDA integrity check failed (card tampered)', code: 'EMV_AUTH_FAILED' };
+
+    // ══ ONLY IF NOT TC-APPROVED (above gate) apply offline-disallowed rules ══
+    if (!isTcApproved) {
+      // ── 4. Not allowed offline ───────────────────────────────────────
+      if ((b3 & 0x01) === 0x01) return { declined: true, reason: 'Card not allowed for offline transactions (online required)', code: 'OFFLINE_NOT_ALLOWED' };
+      if ((b1 & 0x80) === 0x80) return { declined: true, reason: 'Card requires online authorization (offline stand-in forbidden)', code: 'OFFLINE_NOT_ALLOWED_TVR' };
+      if ((b2 & 0x80) === 0x80) return { declined: true, reason: 'Card not allowed offline: offline PIN required but PIN not entered', code: 'OFFLINE_NOT_ALLOWED_PIN_REQUIRED' };
+    }
+
+    // ── 5. Not allowed international (ALWAYS enforced even for TC) ──────
+    if ((b5 & 0x02) === 0x02) return { declined: true, reason: 'Card not allowed for international transfers', code: 'INTERNATIONAL_NOT_ALLOWED' };
+  }
+
+  // ── 4. AIP offline support check (skip if TC approved, card offline OK) ──
+  //    (TC from chip already certifies this card works offline.)
+  const aipByte = tags.aip ? parseInt(tags.aip.slice(0, 2), 16) : null;
+  if (!isTcApproved && aipByte !== null && (aipByte & 0x02) === 0x00 && pan && /^\d+$/.test(pan)) {
+    // AIP bit1=0 means offline data auth not supported → must go online.
+    return { declined: true, reason: 'Card not allowed offline: AIP indicates online-only card', code: 'OFFLINE_NOT_ALLOWED_AIP' };
+  }
+
+  return { declined: false };
+}
+
+/**
+ * Legacy name — same function. Used by api.router's old `require()`.
+ */
+export const offlineEmvDeclinePreflight = syncOfflinePreflight;

@@ -3,18 +3,6 @@ import { db } from "../../config/db";
 import { v4 as uuidv4 } from 'uuid';
 import { validateTransition, createLedgerEntry, persistLedgerEntry, type TransactionState } from '../ledger/ledger.service';
 
-interface VirtualCardDetails {
-  cardNumber?: string;
-  maskedNumber?: string;
-  expiryMonth?: number;
-  expiryYear?: number;
-  cvv?: string;
-  cardholderName?: string;
-  cardType?: string;
-  currency?: string;
-  dailyLimit?: number;
-}
-
 export class WalletsService {
 
   private normalizeCurrency(c: any): string {
@@ -74,6 +62,7 @@ export class WalletsService {
     const wallet = await this.getOrCreateMerchantWallet(merchantId, ccy);
     const transactionId = uuidv4();
     const now = new Date().toISOString();
+    const prevBalance = Number(wallet.balance || 0);
 
     await db.query(
       `UPDATE merchant_wallets SET balance = balance + ?, updated_at = ? WHERE id = ?`,
@@ -93,7 +82,7 @@ export class WalletsService {
     } catch (err) {
       console.error('Failed to persist ledger entry for merchant credit', err);
     }
-    return { success: true, transactionId, status: 'COMPLETED', ledgerEntryId, currency: ccy };
+    return { success: true, transactionId, status: 'COMPLETED', ledgerEntryId, currency: ccy, balanceAfter: prevBalance + amount };
   }
 
   // ── Fiat wallet ops ──────────────────────────────────────────────────────────
@@ -337,7 +326,63 @@ export class WalletsService {
     };
   }
 
-  // ── Wallet-to-Wallet Transfer ─────────────────────────────────────────────
+  // ── Merchant → Customer fiat transfer ────────────────────────────────────
+  async merchantToCustomerTransfer(merchantId: string, customerId: string, amount: number, note?: string, currency: string = 'USD') {
+    const ccy = this.normalizeCurrency(currency);
+    if (!merchantId) throw new Error('merchantId is required');
+    if (!customerId) throw new Error('customerId is required');
+    if (amount <= 0) throw new Error('Amount must be positive');
+
+    // Verify customer exists
+    const custRes = await db.query('SELECT id, name FROM customers WHERE id = ?', [customerId]);
+    if (!custRes.rows.length) throw new Error(`Customer ${customerId} not found`);
+
+    // Lock and debit merchant wallet
+    const merchantWallet = await this.getOrCreateMerchantWallet(merchantId, ccy);
+    const balRes = await db.query('SELECT balance FROM merchant_wallets WHERE id = ?', [merchantWallet.id]);
+    const balance = Number(balRes.rows[0]?.balance ?? 0);
+    if (balance < amount) throw new Error(`Insufficient merchant wallet balance. Have $${balance.toFixed(2)}, need $${amount.toFixed(2)}`);
+
+    const transferId = uuidv4();
+    const ref = `MCT-${transferId.slice(0, 8).toUpperCase()}`;
+    const now = new Date().toISOString();
+    const description = note || `Merchant credit to customer ${custRes.rows[0].name}`;
+
+    // Debit merchant
+    await db.query(
+      'UPDATE merchant_wallets SET balance = balance - ?, updated_at = ? WHERE id = ?',
+      [amount, now, merchantWallet.id]
+    );
+    await db.query(
+      `INSERT INTO merchant_wallet_transactions (id, wallet_id, type, amount, currency, source, reference)
+       VALUES (?, ?, 'debit', ?, ?, 'merchant_to_customer', ?)`,
+      [uuidv4(), merchantWallet.id, amount, ccy, ref]
+    );
+
+    // Credit customer fiat wallet
+    const customerWallet = await this.getOrCreateWallet(customerId, ccy);
+    await db.query(
+      'UPDATE customer_wallets SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [amount, customerWallet.id]
+    );
+    await db.query(
+      `INSERT INTO wallet_transactions (id, wallet_id, type, amount, currency, source, reference, description)
+       VALUES (?, ?, 'credit', ?, ?, 'merchant_credit', ?, ?)`,
+      [uuidv4(), customerWallet.id, amount, ccy, ref, description]
+    );
+
+    return {
+      success: true,
+      transferId,
+      reference: ref,
+      amount,
+      currency: ccy,
+      merchantId,
+      customerId,
+      customerName: custRes.rows[0].name,
+      note: description,
+    };
+  }
   async walletTransfer(senderCustomerId: string, receiverCustomerId: string, amount: number, note?: string, currency: string = 'USD') {
     const ccy = this.normalizeCurrency(currency);
     if (senderCustomerId === receiverCustomerId) throw new Error('Cannot transfer to yourself');
@@ -440,150 +485,12 @@ export class WalletsService {
     )).rows;
   }
 
-  // ── Virtual Cards ─────────────────────────────────────────────────────────
-  async generateCardCredentials(cardType: string = 'VISA') {
-    const cardNumber = this.generateCardNumber(cardType);
-    const masked = '*'.repeat(Math.max(0, cardNumber.length - 4)) + cardNumber.slice(-4);
-    const now = new Date();
-    const expiryMonth = now.getMonth() + 1;
-    const expiryYear = now.getFullYear() + 3;
-    const cvv = String(Math.floor(100 + Math.random() * 900));
-    return { cardNumber, maskedNumber: masked, expiryMonth, expiryYear, cvv, cardType };
-  }
-
-  async issueVirtualCard(customerId: string, details: string | VirtualCardDetails, currency: string = 'USD') {
-    const resolved = typeof details === 'string'
-      ? { cardholderName: details, currency }
-      : { ...details, currency: details.currency || currency };
-
-    const generated = await this.generateCardCredentials(resolved.cardType || 'VISA');
-    const cardNumber = resolved.cardNumber || generated.cardNumber;
-    const masked = resolved.maskedNumber || generated.maskedNumber;
-    const expiryMonth = Number(resolved.expiryMonth ?? generated.expiryMonth);
-    const expiryYear = Number(resolved.expiryYear ?? generated.expiryYear);
-    const cvv = String(resolved.cvv ?? generated.cvv);
-    const cardholderName = resolved.cardholderName || 'Customer';
-    const cardType = resolved.cardType || generated.cardType;
-    const dailyLimit = Number(resolved.dailyLimit ?? 1000);
-
-    const id = uuidv4();
-    await db.query(
-      `INSERT INTO virtual_cards (id, customer_id, card_number, masked_number, expiry_month, expiry_year, cvv, cardholder_name, card_type, status, balance, currency, daily_limit)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', 0, ?, ?)`,
-      [id, customerId, cardNumber, masked, expiryMonth, expiryYear, cvv, cardholderName, cardType, currency, dailyLimit]
-    );
-
-    return {
-      id, cardNumber, maskedNumber: masked,
-      expiryMonth, expiryYear, cvv,
-      cardholderName, cardType, status: 'ACTIVE',
-      balance: 0, currency, dailyLimit
-    };
-  }
-
-  async getVirtualCards(customerId: string) {
-    const cards = (await db.query(
-      'SELECT id, masked_number, expiry_month, expiry_year, cardholder_name, card_type, status, balance, currency, daily_limit, daily_spent, created_at FROM virtual_cards WHERE customer_id = ? ORDER BY created_at DESC',
-      [customerId]
-    )).rows;
-    return cards;
-  }
-
-  async topupVirtualCard(customerId: string, cardId: string, amount: number, currency: string = 'USD') {
-    const ccy = this.normalizeCurrency(currency);
-    if (amount <= 0) throw new Error('Amount must be positive');
-    const wallet = await this.getOrCreateWallet(customerId, ccy);
-    const balRes = await db.query('SELECT balance FROM customer_wallets WHERE id = ?', [wallet.id]);
-    if (Number(balRes.rows[0]?.balance ?? 0) < amount) throw new Error(`Insufficient ${ccy} wallet balance`);
-
-    // Debit wallet, credit card
-    await db.query('UPDATE customer_wallets SET balance = balance - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [amount, wallet.id]);
-    await db.query('UPDATE virtual_cards SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND customer_id = ?', [amount, cardId, customerId]);
-    await db.query(
-      `INSERT INTO wallet_transactions (id, wallet_id, type, amount, currency, source, reference) VALUES (?, ?, 'debit', ?, ?, 'virtual_card_topup', ?)`,
-      [uuidv4(), wallet.id, amount, ccy, cardId]
-    );
-    return { success: true, amount, currency: ccy };
-  }
-
-  async freezeVirtualCard(customerId: string, cardId: string) {
-    await db.query("UPDATE virtual_cards SET status = 'FROZEN', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND customer_id = ?", [cardId, customerId]);
-    return { success: true };
-  }
-
-  async unfreezeVirtualCard(customerId: string, cardId: string) {
-    await db.query("UPDATE virtual_cards SET status = 'ACTIVE', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND customer_id = ?", [cardId, customerId]);
-    return { success: true };
-  }
-
-  private generateCardNumber(cardType: string = 'VISA'): string {
-    const prefix = cardType.toUpperCase().includes('MASTERCARD') ? '5' : '4';
-    let num = prefix + Array.from({ length: 14 }, () => Math.floor(Math.random() * 10)).join('');
-    // Luhn checksum
-    let sum = 0;
-    for (let i = 0; i < num.length; i++) {
-      let d = parseInt(num[num.length - 1 - i]);
-      if (i % 2 === 1) { d *= 2; if (d > 9) d -= 9; }
-      sum += d;
-    }
-    const check = (10 - (sum % 10)) % 10;
-    return num + check;
-  }
-
   // ── Crypto ────────────────────────────────────────────────────────────────
   async getCryptoPrice(cryptoCoin: string): Promise<number> {
     const coin = cryptoCoin.toUpperCase();
-
-    // 1. Try Binance first (live keys configured)
-    try {
-      const { buyAssetWithUsd } = await import('../../exchange/binance.service');
-      const symbol = coin === 'USDT' ? 'BTCUSDT' : `${coin}USDT`;
-      const apiKey = process.env.BINANCE_API_KEY?.trim();
-      const apiSecret = process.env.BINANCE_API_SECRET?.trim();
-      const baseUrl = process.env.BINANCE_BASE_URL?.trim() || 'https://api.binance.com';
-
-      if (apiKey && apiSecret && !apiKey.includes('your_')) {
-        const res = await (await import('axios')).default.get(
-          `${baseUrl}/api/v3/ticker/price?symbol=${symbol}`,
-          { headers: { 'X-MBX-APIKEY': apiKey }, timeout: 5000 }
-        );
-        const price = parseFloat(res.data?.price ?? '0');
-        if (price > 0) {
-          if (coin === 'USDT') return 1.0;
-          return price;
-        }
-      }
-    } catch {
-      // fall through to CoinGecko
-    }
-
-    // 2. CoinGecko fallback
-    const coinMap: Record<string, string> = {
-      BTC: 'bitcoin', ETH: 'ethereum', USDT: 'tether', SOL: 'solana',
-      DOGE: 'dogecoin', BNB: 'binancecoin', XRP: 'ripple', ADA: 'cardano',
-      AVAX: 'avalanche-2', DOT: 'polkadot', MATIC: 'matic-network', LINK: 'chainlink'
-    };
-    const id = coinMap[coin];
-    if (id) {
-      try {
-        const res = await (await import('axios')).default.get(
-          `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`,
-          { timeout: 5000 }
-        );
-        const price = res.data?.[id]?.usd;
-        if (price) return price;
-      } catch { /* ignore */ }
-    }
-
-    return this.getFallbackPrice(coin);
-  }
-
-  private getFallbackPrice(coin: string): number {
-    const fallback: Record<string, number> = {
-      BTC: 67000, ETH: 3400, USDT: 1.00, SOL: 145, DOGE: 0.12,
-      BNB: 580, XRP: 0.55, ADA: 0.45, AVAX: 28, DOT: 6.5, MATIC: 0.7, LINK: 14
-    };
-    return fallback[coin.toUpperCase()] ?? 1;
+    const xr = await import('../../exchange/exchange-router.service');
+    const result = await xr.getBestPrice(coin);
+    return result.priceUsd;
   }
 
   async getOrCreateCryptoWallet(customerId: string, cryptoCoin: string) {
@@ -598,79 +505,144 @@ export class WalletsService {
     return (await db.query('SELECT * FROM customer_crypto_wallets WHERE customer_id = ? ORDER BY crypto_coin', [customerId])).rows;
   }
 
-  async buyCryptoWithMerchant(merchantId: string, cryptoCoin: string, fiatAmount: number, network?: string) {
+  async getAllCustomersCryptoWallets() {
+    const res = await db.query(`
+      SELECT c.id AS customer_id, c.name, c.email, c.phone,
+             w.id AS wallet_id, w.crypto_coin, w.balance, w.crypto_address, w.status, w.created_at, w.updated_at
+      FROM customer_crypto_wallets w
+      LEFT JOIN customers c ON c.id = w.customer_id
+      ORDER BY w.crypto_coin, datetime(w.created_at) DESC
+    `);
+    const rows = res.rows;
+    const totals: Record<string, { totalBalance: number; customerCount: number; wallets: any[] }> = {};
+    rows.forEach((r: any) => {
+      const coin = r.crypto_coin;
+      if (!totals[coin]) totals[coin] = { totalBalance: 0, customerCount: 0, wallets: [] };
+      totals[coin].totalBalance += Number(r.balance || 0);
+      totals[coin].wallets.push(r);
+    });
+    const seen: Record<string, Set<string>> = {};
+    Object.keys(totals).forEach(coin => {
+      seen[coin] = new Set();
+      totals[coin].wallets.forEach((w: any) => {
+        if (w.customer_id && !seen[coin].has(w.customer_id)) {
+          seen[coin].add(w.customer_id);
+          totals[coin].customerCount++;
+        }
+      });
+    });
+    return {
+      totalWallets: rows.length,
+      byCoin: totals,
+      wallets: rows,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  async buyCryptoWithMerchant(
+    merchantId: string,
+    cryptoCoin: string,
+    fiatAmount: number,
+    network?: string,
+    opts?: { allow_simulation?: boolean }
+  ) {
     const coin = cryptoCoin.toUpperCase();
     const merchantWallet = await this.getOrCreateMerchantWallet(merchantId);
     const balanceRes = await db.query('SELECT balance FROM merchant_wallets WHERE id = ?', [merchantWallet.id]);
     const balance = Number(balanceRes.rows[0]?.balance ?? 0);
     if (balance < fiatAmount) throw new Error(`Insufficient merchant wallet balance. Have $${balance}, need $${fiatAmount}`);
 
-    // Get live price
     const exchangeRate = await this.getCryptoPrice(coin);
     let cryptoAmount = fiatAmount / exchangeRate;
-    let binanceOrderId: string | null = null;
-    let providerMode = 'internal';
+    let exchangeOrderId: string | null = null;
+    let providerMode: string = 'internal';
+    let isMockExecuted: boolean = false;
 
-    // Try live Binance buy
     try {
-      const { buyAssetWithUsd } = await import('../../exchange/binance.service');
-      const order = await buyAssetWithUsd(coin, fiatAmount);
-      if (order && !order.mock) {
-        const filled = order.fills?.[0];
-        cryptoAmount = parseFloat(String(order.executedQty ?? cryptoAmount));
-        binanceOrderId = String(order.order_id || '');
-        providerMode = 'binance_live';
-        console.log(`[Crypto] Binance order filled: ${cryptoAmount} ${coin} orderId=${binanceOrderId}`);
+      const xr = await import('../../exchange/exchange-router.service');
+      const order = await xr.buyAssetBestEffort(coin, fiatAmount, { allow_simulation: opts?.allow_simulation ?? false });
+      if (order) {
+        if (order.mock === false || !order.mock) {
+          const filled = order.fills?.[0];
+          cryptoAmount = parseFloat(String(order.executedQty ?? order.executed_qty ?? cryptoAmount));
+          exchangeOrderId = String(order.order_id || (order as any).orderId || '');
+          providerMode = order.provider || 'live';
+          console.log(`[Crypto] Merchant buy filled: ${cryptoAmount} ${coin} via ${providerMode} orderId=${exchangeOrderId}`);
+        } else if (order.mock === true && opts?.allow_simulation === true) {
+          cryptoAmount = parseFloat(String(order.executedQty ?? order.executed_qty ?? cryptoAmount));
+          exchangeOrderId = String(order.order_id || (order as any).orderId || `SIM-${Date.now()}`);
+          providerMode = 'simulation';
+          isMockExecuted = true;
+          console.warn(`[Crypto] Merchant buy SIMULATION (explicit allow_simulation=true): ${cryptoAmount} ${coin} NOT bought on any exchange. Fiat debited internally only. ORDER=${exchangeOrderId}`);
+        } else {
+          // Should not happen because buyAssetBestEffort now throws if !allow_simulation,
+          // but guard anyway.
+          throw new Error('Mock/simulation fallback rejected. No live crypto exchange executed successfully.');
+        }
       }
-    } catch (binErr: any) {
-      console.warn(`[Crypto] Binance buy failed, using internal price: ${binErr?.message}`);
+    } catch (exErr: any) {
+      const msg = String(exErr?.message || 'Exchange failure').slice(0, 500);
+      // Surface NO_LIVE_PROVIDER / CRYPTO_PURCHASE_BLOCKED / blocked errors directly to
+      // the user — do NOT silently "internal account" them.
+      const isBlocked =
+        Boolean(exErr?.blocked) ||
+        /NO_LIVE_CRYPTO_EXCHANGE_CONFIGURED|CRYPTO_PURCHASE_BLOCKED/.test(msg);
+      if (isBlocked) {
+        throw new Error(msg);
+      }
+      // For any other error we still do NOT silently proceed. Tell operator exactly what happened.
+      throw new Error(`Merchant crypto purchase aborted. ${msg}`);
     }
 
-    // Debit merchant fiat wallet
+    const sourceDesc = isMockExecuted ? 'crypto_purchase_simulated' : 'crypto_purchase';
     await db.query(
       'UPDATE merchant_wallets SET balance = balance - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
       [fiatAmount, merchantWallet.id]
     );
     await db.query(
-      `INSERT INTO merchant_wallet_transactions (id, wallet_id, type, amount, source, reference) VALUES (?, ?, 'debit', ?, 'crypto_purchase', ?)`,
-      [uuidv4(), merchantWallet.id, fiatAmount, binanceOrderId || uuidv4()]
+      `INSERT INTO merchant_wallet_transactions (id, wallet_id, type, amount, source, reference) VALUES (?, ?, 'debit', ?, ?, ?)`,
+      [uuidv4(), merchantWallet.id, fiatAmount, sourceDesc, exchangeOrderId || uuidv4()]
     );
 
-    // Credit merchant crypto balance
     const existingCrypto = await db.query(
-      'SELECT id, amount FROM merchant_crypto_balances WHERE merchant_id = ? AND asset = ?',
+      'SELECT id, amount, is_mock FROM merchant_crypto_balances WHERE merchant_id = ? AND asset = ?',
       [merchantId, coin]
     );
     if (existingCrypto.rows.length > 0) {
       await db.query(
-        'UPDATE merchant_crypto_balances SET amount = amount + ?, updated_at = CURRENT_TIMESTAMP WHERE merchant_id = ? AND asset = ?',
-        [cryptoAmount, merchantId, coin]
+        'UPDATE merchant_crypto_balances SET amount = amount + ?, is_mock = ?, updated_at = CURRENT_TIMESTAMP WHERE merchant_id = ? AND asset = ?',
+        [cryptoAmount, isMockExecuted ? 1 : 0, merchantId, coin]
       );
     } else {
       await db.query(
-        'INSERT INTO merchant_crypto_balances (id, merchant_id, asset, amount, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)',
-        [uuidv4(), merchantId, coin, cryptoAmount]
+        'INSERT INTO merchant_crypto_balances (id, merchant_id, asset, amount, is_mock, updated_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)',
+        [uuidv4(), merchantId, coin, cryptoAmount, isMockExecuted ? 1 : 0]
       );
     }
 
-    // Record transaction
     await db.query(
-      `INSERT INTO crypto_transactions (id, customer_id, crypto_coin, transaction_type, fiat_amount, crypto_amount, fiat_currency, exchange_rate, source, provider_mode, status)
-       VALUES (?, ?, ?, 'buy', ?, ?, 'USD', ?, 'merchant_wallet', ?, 'completed')`,
-      [uuidv4(), merchantId, coin, fiatAmount, cryptoAmount, exchangeRate, providerMode]
+      `INSERT INTO crypto_transactions (id, customer_id, crypto_coin, transaction_type, fiat_amount, crypto_amount, fiat_currency, exchange_rate, source, provider_mode, status, is_mock)
+       VALUES (?, ?, ?, 'buy', ?, ?, 'USD', ?, 'merchant_wallet', ?, 'completed', ?)`,
+      [uuidv4(), merchantId, coin, fiatAmount, cryptoAmount, exchangeRate, providerMode, isMockExecuted ? 1 : 0]
     );
 
     return {
       success: true,
+      mode: isMockExecuted ? 'simulation' : 'live',
+      is_mock: isMockExecuted,
       cryptoAmount,
       cryptoCoin: coin,
       exchangeRate,
       fiatAmount,
       merchantId,
       providerMode,
-      binanceOrderId,
+      binanceOrderId: exchangeOrderId,
+      exchangeOrderId,
       network: network || 'primary',
-      transactionId: binanceOrderId || uuidv4()
+      transactionId: exchangeOrderId || uuidv4(),
+      warning: isMockExecuted
+        ? '⚠️ SIMULATION ONLY. Real crypto was NOT purchased. Your wallet USD was debited internally for operator UI testing. Set BINANCE_API_KEY+SECRET or KuCoin keys for live execution.'
+        : undefined,
     };
   }
 
@@ -680,43 +652,38 @@ export class WalletsService {
     const cryptoWallet = await this.getOrCreateCryptoWallet(customerId, coin);
     const exchangeRate = await this.getCryptoPrice(coin);
     let cryptoAmount = fiatAmount / exchangeRate;
-    let binanceOrderId: string | null = null;
+    let exchangeOrderId: string | null = null;
     let providerMode = 'internal';
 
     const wallet = await this.getOrCreateWallet(customerId, ccy);
     const balRes = await db.query('SELECT balance FROM customer_wallets WHERE id = ?', [wallet.id]);
     if (Number(balRes.rows[0]?.balance ?? 0) < fiatAmount) throw new Error(`Insufficient ${ccy} wallet balance`);
 
-    // Try live Binance buy (converts fiat amount to USD first if AED)
     try {
-      const { buyAssetWithUsd } = await import('../../exchange/binance.service');
-      // Convert AED to USD for Binance (approx 3.67 AED = 1 USD)
+      const xr = await import('../../exchange/exchange-router.service');
       const usdAmount = ccy === 'AED' ? fiatAmount / 3.67 : fiatAmount;
       if (coin !== 'USDT') {
-        const order = await buyAssetWithUsd(coin, usdAmount);
+        const order = await xr.buyAssetBestEffort(coin, usdAmount);
         if (order && !order.mock) {
           cryptoAmount = parseFloat(String(order.executedQty ?? cryptoAmount));
-          binanceOrderId = String(order.order_id || '');
-          providerMode = 'binance_live';
-          console.log(`[Crypto] Customer Binance buy: ${cryptoAmount} ${coin} orderId=${binanceOrderId}`);
+          exchangeOrderId = String(order.order_id || '');
+          providerMode = order.provider;
+          console.log(`[Crypto] Customer buy: ${cryptoAmount} ${coin} via ${providerMode} orderId=${exchangeOrderId}`);
         }
       } else {
-        // USDT — internal conversion (1 USDT ≈ 1 USD)
         cryptoAmount = usdAmount;
         providerMode = 'internal_usdt';
       }
-    } catch (binErr: any) {
-      console.warn(`[Crypto] Binance buy skipped, internal: ${binErr?.message}`);
+    } catch (exErr: any) {
+      console.warn(`[Crypto] Customer live buy skipped, internal: ${exErr?.message}`);
     }
 
-    // Debit fiat wallet
     await db.query('UPDATE customer_wallets SET balance = balance - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [fiatAmount, wallet.id]);
     await db.query(
       `INSERT INTO wallet_transactions (id, wallet_id, type, amount, currency, source, reference, description) VALUES (?, ?, 'debit', ?, ?, 'crypto_purchase', ?, ?)`,
-      [uuidv4(), wallet.id, fiatAmount, ccy, binanceOrderId || uuidv4(), `Bought ${cryptoAmount.toFixed(8)} ${coin} @ ${exchangeRate} [${providerMode}]`]
+      [uuidv4(), wallet.id, fiatAmount, ccy, exchangeOrderId || uuidv4(), `Bought ${cryptoAmount.toFixed(8)} ${coin} @ ${exchangeRate} [${providerMode}]`]
     );
 
-    // Credit crypto wallet
     await db.query('UPDATE customer_crypto_wallets SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [cryptoAmount, cryptoWallet.id]);
     await db.query(
       `INSERT INTO crypto_transactions (id, customer_id, crypto_coin, transaction_type, fiat_amount, crypto_amount, fiat_currency, exchange_rate, source, provider_mode, status)
@@ -732,7 +699,8 @@ export class WalletsService {
       fiatAmount,
       fiat_currency: ccy,
       providerMode,
-      binanceOrderId,
+      binanceOrderId: exchangeOrderId,
+      exchangeOrderId,
       network: network || 'primary'
     };
   }
@@ -761,8 +729,362 @@ export class WalletsService {
     return { success: true, fiatAmount, exchangeRate, cryptoAmount, network: network || 'primary', fiat_currency: ccy };
   }
 
+  async swapCrypto(
+    customerId: string,
+    fromCoin: string,
+    toCoin: string,
+    amount: number,
+    opts: {
+      amountIsFrom?: boolean;
+      mode?: 'internal' | 'binance_live' | 'live_exchange';
+      network?: string;
+      slippageBps?: number;
+    } = {}
+  ) {
+    const from = fromCoin.toUpperCase();
+    const to = toCoin.toUpperCase();
+    if (from === to) throw new Error('Cannot swap same coin');
+    if (!amount || amount <= 0) throw new Error('Amount must be positive');
+
+    const amountIsFrom = opts.amountIsFrom !== false;
+    const mode = opts.mode || 'internal';
+    const slippageBps = opts.slippageBps ?? 100;
+
+    const fromWallet = await this.getOrCreateCryptoWallet(customerId, from);
+    const toWallet = await this.getOrCreateCryptoWallet(customerId, to);
+
+    const fromPriceUsd = await this.getCryptoPrice(from);
+    const toPriceUsd = await this.getCryptoPrice(to);
+    if (!toPriceUsd || toPriceUsd <= 0) throw new Error(`Cannot price ${to}`);
+    if (!fromPriceUsd || fromPriceUsd <= 0) throw new Error(`Cannot price ${from}`);
+
+    const crossRate = fromPriceUsd / toPriceUsd;
+
+    let fromAmount: number;
+    let expectedToAmount: number;
+
+    if (amountIsFrom) {
+      fromAmount = amount;
+      expectedToAmount = fromAmount * crossRate;
+    } else {
+      expectedToAmount = amount;
+      fromAmount = expectedToAmount / crossRate;
+    }
+
+    if (Number(fromWallet.balance) < fromAmount) {
+      throw new Error(`Insufficient ${from} balance: have ${Number(fromWallet.balance).toFixed(8)}, need ${fromAmount.toFixed(8)}`);
+    }
+
+    let providerMode = 'internal';
+    let sellOrderId: string | null = null;
+    let buyOrderId: string | null = null;
+    let receivedToAmount = expectedToAmount;
+    let soldFromAmount = fromAmount;
+    let usdtIntermediate = fromAmount * fromPriceUsd;
+
+    if (mode === 'binance_live' || mode === 'live_exchange') {
+      try {
+        const xr = await import('../../exchange/exchange-router.service');
+        if (from !== 'USDT') {
+          const sellResp = await xr.sellAssetBestEffort(from, fromAmount);
+          if (sellResp && !sellResp.mock) {
+            soldFromAmount = sellResp.executedQty || soldFromAmount;
+            usdtIntermediate = sellResp.usdt_received || usdtIntermediate;
+            sellOrderId = sellResp.order_id || null;
+            providerMode = sellResp.provider;
+          }
+        }
+        if (to !== 'USDT') {
+          const buyResp = await xr.buyAssetBestEffort(to, usdtIntermediate);
+          if (buyResp && !buyResp.mock) {
+            receivedToAmount = buyResp.executedQty || receivedToAmount;
+            buyOrderId = buyResp.order_id || null;
+            providerMode = buyResp.provider;
+          }
+        } else {
+          receivedToAmount = usdtIntermediate;
+        }
+      } catch (exErr: any) {
+        throw new Error(`Live exchange swap failed (balances unchanged): ${exErr?.message || exErr}`);
+      }
+
+      const minExpectedTo = expectedToAmount * (1 - slippageBps / 10000);
+      if (receivedToAmount < minExpectedTo) {
+        throw new Error(
+          `Swap slippage exceeded ${slippageBps} bps: expected ${expectedToAmount.toFixed(8)} ${to}, received ${receivedToAmount.toFixed(8)} ${to}. Refund manually from the exchange if orders executed.`
+        );
+      }
+    }
+
+    await db.query('UPDATE customer_crypto_wallets SET balance = balance - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [soldFromAmount, fromWallet.id]);
+    await db.query('UPDATE customer_crypto_wallets SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [receivedToAmount, toWallet.id]);
+
+    const swapId = uuidv4();
+    const swapRef = `SWAP-${swapId.slice(0, 8).toUpperCase()}`;
+
+    await db.query(
+      `INSERT INTO crypto_transactions (id, customer_id, crypto_coin, transaction_type, fiat_amount, crypto_amount, fiat_currency, exchange_rate, source, provider_mode, status, reference, tx_hash)
+       VALUES (?, ?, ?, 'sell', ?, ?, 'USD', ?, ?, ?, 'completed', ?, ?)`,
+      [
+        uuidv4(),
+        customerId,
+        from,
+        soldFromAmount * fromPriceUsd,
+        soldFromAmount,
+        fromPriceUsd,
+        `swap:${from}->${to}`,
+        providerMode,
+        swapRef,
+        sellOrderId || null,
+      ]
+    );
+
+    await db.query(
+      `INSERT INTO crypto_transactions (id, customer_id, crypto_coin, transaction_type, fiat_amount, crypto_amount, fiat_currency, exchange_rate, source, provider_mode, status, reference, tx_hash)
+       VALUES (?, ?, ?, 'buy', ?, ?, 'USD', ?, ?, ?, 'completed', ?, ?)`,
+      [
+        uuidv4(),
+        customerId,
+        to,
+        receivedToAmount * toPriceUsd,
+        receivedToAmount,
+        toPriceUsd,
+        `swap:${from}->${to}`,
+        providerMode,
+        swapRef,
+        buyOrderId || null,
+      ]
+    );
+
+    return {
+      success: true,
+      swapId,
+      swapRef,
+      fromCoin: from,
+      toCoin: to,
+      fromAmount: soldFromAmount,
+      toAmount: receivedToAmount,
+      fromPriceUsd,
+      toPriceUsd,
+      crossRate,
+      usdtValue: usdtIntermediate,
+      providerMode,
+      mode,
+      sellOrderId,
+      buyOrderId,
+      network: opts.network || providerMode,
+    };
+  }
+
+  async swapCryptoWithMerchant(
+    merchantId: string,
+    fromCoin: string,
+    toCoin: string,
+    amount: number,
+    opts: {
+      amountIsFrom?: boolean;
+      mode?: 'internal' | 'binance_live' | 'live_exchange';
+      network?: string;
+      slippageBps?: number;
+    } = {}
+  ) {
+    const from = fromCoin.toUpperCase();
+    const to = toCoin.toUpperCase();
+    if (from === to) throw new Error('Cannot swap same coin');
+    if (!amount || amount <= 0) throw new Error('Amount must be positive');
+
+    const amountIsFrom = opts.amountIsFrom !== false;
+    const mode = opts.mode || 'internal';
+    const slippageBps = opts.slippageBps ?? 100;
+
+    const fromBalRes = await db.query(
+      'SELECT * FROM merchant_crypto_balances WHERE merchant_id = ? AND asset = ?',
+      [merchantId, from]
+    );
+    const fromWallet = fromBalRes.rows[0];
+    if (!fromWallet || Number(fromWallet.amount) <= 0) throw new Error(`No ${from} balance for merchant`);
+
+    const toBalRes = await db.query(
+      'SELECT * FROM merchant_crypto_balances WHERE merchant_id = ? AND asset = ?',
+      [merchantId, to]
+    );
+
+    const fromPriceUsd = await this.getCryptoPrice(from);
+    const toPriceUsd = await this.getCryptoPrice(to);
+    if (!toPriceUsd || toPriceUsd <= 0) throw new Error(`Cannot price ${to}`);
+    if (!fromPriceUsd || fromPriceUsd <= 0) throw new Error(`Cannot price ${from}`);
+
+    const crossRate = fromPriceUsd / toPriceUsd;
+
+    let fromAmount: number;
+    let expectedToAmount: number;
+
+    if (amountIsFrom) {
+      fromAmount = amount;
+      expectedToAmount = fromAmount * crossRate;
+    } else {
+      expectedToAmount = amount;
+      fromAmount = expectedToAmount / crossRate;
+    }
+
+    if (Number(fromWallet.amount) < fromAmount) {
+      throw new Error(`Insufficient ${from} balance: have ${Number(fromWallet.amount).toFixed(8)}, need ${fromAmount.toFixed(8)}`);
+    }
+
+    let providerMode = 'internal';
+    let sellOrderId: string | null = null;
+    let buyOrderId: string | null = null;
+    let receivedToAmount = expectedToAmount;
+    let soldFromAmount = fromAmount;
+    let usdtIntermediate = fromAmount * fromPriceUsd;
+
+    if (mode === 'binance_live' || mode === 'live_exchange') {
+      try {
+        const xr = await import('../../exchange/exchange-router.service');
+        if (from !== 'USDT') {
+          const sellResp = await xr.sellAssetBestEffort(from, fromAmount);
+          if (sellResp && !sellResp.mock) {
+            soldFromAmount = sellResp.executedQty || soldFromAmount;
+            usdtIntermediate = sellResp.usdt_received || usdtIntermediate;
+            sellOrderId = sellResp.order_id || null;
+            providerMode = sellResp.provider;
+          }
+        }
+        if (to !== 'USDT') {
+          const buyResp = await xr.buyAssetBestEffort(to, usdtIntermediate);
+          if (buyResp && !buyResp.mock) {
+            receivedToAmount = buyResp.executedQty || receivedToAmount;
+            buyOrderId = buyResp.order_id || null;
+            providerMode = buyResp.provider;
+          }
+        } else {
+          receivedToAmount = usdtIntermediate;
+        }
+      } catch (exErr: any) {
+        throw new Error(`Live exchange swap failed (balances unchanged): ${exErr?.message || exErr}`);
+      }
+
+      const minExpectedTo = expectedToAmount * (1 - slippageBps / 10000);
+      if (receivedToAmount < minExpectedTo) {
+        throw new Error(
+          `Swap slippage exceeded ${slippageBps} bps: expected ${expectedToAmount.toFixed(8)} ${to}, received ${receivedToAmount.toFixed(8)} ${to}. Refund manually from the exchange if orders executed.`
+        );
+      }
+    }
+
+    await db.query('UPDATE merchant_crypto_balances SET amount = amount - ?, updated_at = CURRENT_TIMESTAMP WHERE merchant_id = ? AND asset = ?', [soldFromAmount, merchantId, from]);
+
+    if (toBalRes.rows.length > 0) {
+      await db.query('UPDATE merchant_crypto_balances SET amount = amount + ?, updated_at = CURRENT_TIMESTAMP WHERE merchant_id = ? AND asset = ?', [receivedToAmount, merchantId, to]);
+    } else {
+      await db.query('INSERT INTO merchant_crypto_balances (id, merchant_id, asset, amount, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)', [uuidv4(), merchantId, to, receivedToAmount]);
+    }
+
+    const swapId = uuidv4();
+    const swapRef = `MSWAP-${swapId.slice(0, 8).toUpperCase()}`;
+
+    await db.query(
+      `INSERT INTO crypto_transactions (id, customer_id, crypto_coin, transaction_type, fiat_amount, crypto_amount, fiat_currency, exchange_rate, source, provider_mode, status, reference, tx_hash)
+       VALUES (?, ?, ?, 'sell', ?, ?, 'USD', ?, ?, ?, 'completed', ?, ?)`,
+      [
+        uuidv4(),
+        merchantId,
+        from,
+        soldFromAmount * fromPriceUsd,
+        soldFromAmount,
+        fromPriceUsd,
+        `merchant_swap:${from}->${to}`,
+        providerMode,
+        swapRef,
+        sellOrderId || null,
+      ]
+    );
+
+    await db.query(
+      `INSERT INTO crypto_transactions (id, customer_id, crypto_coin, transaction_type, fiat_amount, crypto_amount, fiat_currency, exchange_rate, source, provider_mode, status, reference, tx_hash)
+       VALUES (?, ?, ?, 'buy', ?, ?, 'USD', ?, ?, ?, 'completed', ?, ?)`,
+      [
+        uuidv4(),
+        merchantId,
+        to,
+        receivedToAmount * toPriceUsd,
+        receivedToAmount,
+        toPriceUsd,
+        `merchant_swap:${from}->${to}`,
+        providerMode,
+        swapRef,
+        buyOrderId || null,
+      ]
+    );
+
+    return {
+      success: true,
+      swapId,
+      swapRef,
+      merchantId,
+      fromCoin: from,
+      toCoin: to,
+      fromAmount: soldFromAmount,
+      toAmount: receivedToAmount,
+      fromPriceUsd,
+      toPriceUsd,
+      crossRate,
+      usdtValue: usdtIntermediate,
+      providerMode,
+      mode,
+      sellOrderId,
+      buyOrderId,
+      network: opts.network || providerMode,
+    };
+  }
+
+  private getFallbackPrice(coin: string): number {
+    const fallback: Record<string, number> = {
+      BTC: 67000, ETH: 3400, USDT: 1.00, SOL: 145, DOGE: 0.12,
+      BNB: 580, XRP: 0.55, ADA: 0.45, AVAX: 28, DOT: 6.5, MATIC: 0.7, LINK: 14,
+      TRX: 0.12,
+    };
+    return fallback[coin.toUpperCase()] ?? 1;
+  }
+
   async getCryptoTransactions(customerId: string) {
     return (await db.query('SELECT * FROM crypto_transactions WHERE customer_id = ? ORDER BY created_at DESC LIMIT 100', [customerId])).rows;
+  }
+
+  async debitMerchantWallet(merchantId: string, amount: number, source: string, reference?: string, currency: string = 'USD') {
+    if (!merchantId) throw new Error('merchantId required for debitMerchantWallet');
+    const amountNum = Number(amount);
+    if (!isFinite(amountNum) || amountNum <= 0) throw new Error(`Invalid amount ${amount}`);
+    const ccy = this.normalizeCurrency(currency);
+    const wallet = await this.getOrCreateMerchantWallet(merchantId, ccy);
+    const balRes = await db.query('SELECT balance FROM merchant_wallets WHERE id = ?', [wallet.id]);
+    const currentBalance = Number(balRes.rows[0]?.balance ?? 0);
+    if (currentBalance < amountNum) {
+      throw new Error(`Insufficient ${ccy} merchant wallet balance. Have ${currentBalance.toFixed(2)}, need ${amountNum.toFixed(2)}.`);
+    }
+    const transactionId = uuidv4();
+    const now = new Date().toISOString();
+
+    await db.query(
+      `UPDATE merchant_wallets SET balance = balance - ?, updated_at = ? WHERE id = ?`,
+      [amountNum, now, wallet.id]
+    );
+    await db.query(
+      `INSERT INTO merchant_wallet_transactions (id, wallet_id, type, amount, currency, source, reference, created_at)
+       VALUES (?, ?, 'debit', ?, ?, ?, ?, ?)`,
+      [transactionId, wallet.id, amountNum, ccy, source || 'merchant_debit', reference || null, now]
+    );
+    let ledgerEntryId: string | null = null;
+    try {
+      const ledgerEntry = createLedgerEntry(transactionId, 'debit', amountNum, ccy, 'AUTHORIZED', `Merchant wallet debit: ${reference || source || 'merchant_debit'}`);
+      validateTransition('PENDING', ledgerEntry.status as TransactionState);
+      await persistLedgerEntry(ledgerEntry, db.query.bind(db));
+      ledgerEntryId = ledgerEntry.id;
+    } catch (err) {
+      console.error('Failed to persist ledger entry for merchant debit', err);
+    }
+    const finalBalance = currentBalance - amountNum;
+    return { success: true, transactionId, status: 'COMPLETED', ledgerEntryId, currency: ccy, balanceAfter: finalBalance };
   }
 }
 

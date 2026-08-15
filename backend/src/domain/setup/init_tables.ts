@@ -3,6 +3,12 @@ import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { v4 as uuidv4 } from 'uuid';
 
+/** Parse "ALTER TABLE x ADD COLUMN colName TYPE ...DEFAULT..." SQL → [table, colName, fullSQL] */
+const parseAddCol = (sql: string): [string, string, string] => {
+  const m = sql.match(/ALTER\s+TABLE\s+"?([A-Za-z0-9_]+)"?\s+ADD\s+COLUMN\s+"?([A-Za-z0-9_]+)"?/i);
+  return m ? [m[1], m[2], sql] : ['', '', sql];
+};
+
 export const initTables = async () => {
   try {
 
@@ -11,45 +17,70 @@ export const initTables = async () => {
 
 
     // ── Run migrations FIRST (add missing columns to existing tables) ─────────
-    const migrations = [
+    // Declarative list of ADD COLUMN migrations — applied only if the target column
+    // is not already present (checked via PRAGMA table_info — avoids "duplicate column"
+    // errors and noisy console output).
+    const migrations: Array<[string, string, string]> = [
       // pos2013_batches — columns added over time
-      `ALTER TABLE pos2013_batches ADD COLUMN total_amount_minor INTEGER DEFAULT 0`,
-      `ALTER TABLE pos2013_batches ADD COLUMN signature TEXT`,
-      `ALTER TABLE pos2013_batches ADD COLUMN nonce TEXT`,
-      `ALTER TABLE pos2013_batches ADD COLUMN upload_timestamp TEXT DEFAULT CURRENT_TIMESTAMP`,
-      `ALTER TABLE pos2013_batches ADD COLUMN processed_at TEXT`,
-      `ALTER TABLE pos2013_batches ADD COLUMN batch_seq INTEGER`,
-      `ALTER TABLE pos2013_batches ADD COLUMN batch_file TEXT`,
-      `ALTER TABLE pos2013_batches ADD COLUMN protocol_version TEXT DEFAULT '201.3'`,
-      `ALTER TABLE pos2013_batches ADD COLUMN settlement_code TEXT`,
+      parseAddCol(`ALTER TABLE pos2013_batches ADD COLUMN total_amount_minor INTEGER DEFAULT 0`),
+      parseAddCol(`ALTER TABLE pos2013_batches ADD COLUMN signature TEXT`),
+      parseAddCol(`ALTER TABLE pos2013_batches ADD COLUMN nonce TEXT`),
+      parseAddCol(`ALTER TABLE pos2013_batches ADD COLUMN upload_timestamp TEXT DEFAULT CURRENT_TIMESTAMP`),
+      parseAddCol(`ALTER TABLE pos2013_batches ADD COLUMN processed_at TEXT`),
+      parseAddCol(`ALTER TABLE pos2013_batches ADD COLUMN batch_seq INTEGER`),
+      parseAddCol(`ALTER TABLE pos2013_batches ADD COLUMN batch_file TEXT`),
+      parseAddCol(`ALTER TABLE pos2013_batches ADD COLUMN protocol_version TEXT DEFAULT '201.3'`),
+      parseAddCol(`ALTER TABLE pos2013_batches ADD COLUMN settlement_code TEXT`),
       // pos2013_transactions — columns added over time
-      `ALTER TABLE pos2013_transactions ADD COLUMN auth_code TEXT`,
-      `ALTER TABLE pos2013_transactions ADD COLUMN local_txn_id TEXT NOT NULL DEFAULT ''`,
-      `ALTER TABLE pos2013_transactions ADD COLUMN txn_type TEXT`,
-      `ALTER TABLE pos2013_transactions ADD COLUMN auth_mode TEXT`,
-      `ALTER TABLE pos2013_transactions ADD COLUMN entry_mode TEXT`,
-      `ALTER TABLE pos2013_transactions ADD COLUMN card_brand TEXT`,
-      `ALTER TABLE pos2013_transactions ADD COLUMN reader_source TEXT`,
-      `ALTER TABLE pos2013_transactions ADD COLUMN cvm_result TEXT`,
-      `ALTER TABLE pos2013_transactions ADD COLUMN pin_verified INTEGER DEFAULT 0`,
+      parseAddCol(`ALTER TABLE pos2013_transactions ADD COLUMN auth_code TEXT`),
+      parseAddCol(`ALTER TABLE pos2013_transactions ADD COLUMN local_txn_id TEXT NOT NULL DEFAULT ''`),
+      parseAddCol(`ALTER TABLE pos2013_transactions ADD COLUMN txn_type TEXT`),
+      parseAddCol(`ALTER TABLE pos2013_transactions ADD COLUMN auth_mode TEXT`),
+      parseAddCol(`ALTER TABLE pos2013_transactions ADD COLUMN entry_mode TEXT`),
+      parseAddCol(`ALTER TABLE pos2013_transactions ADD COLUMN card_brand TEXT`),
+      parseAddCol(`ALTER TABLE pos2013_transactions ADD COLUMN reader_source TEXT`),
+      parseAddCol(`ALTER TABLE pos2013_transactions ADD COLUMN cvm_result TEXT`),
+      parseAddCol(`ALTER TABLE pos2013_transactions ADD COLUMN pin_verified INTEGER DEFAULT 0`),
       // merchant_settings extended fields
-      `ALTER TABLE merchant_settings ADD COLUMN features TEXT`,
-      `ALTER TABLE merchant_settings ADD COLUMN extended_settings TEXT`,
-      `ALTER TABLE merchant_settings ADD COLUMN terminal_id TEXT`,
+      parseAddCol(`ALTER TABLE merchant_settings ADD COLUMN features TEXT`),
+      parseAddCol(`ALTER TABLE merchant_settings ADD COLUMN extended_settings TEXT`),
+      parseAddCol(`ALTER TABLE merchant_settings ADD COLUMN terminal_id TEXT`),
       // admin_users fields
-      `ALTER TABLE admin_users ADD COLUMN two_factor_enabled INTEGER DEFAULT 0`,
-      // New tables columns
-      `ALTER TABLE virtual_cards ADD COLUMN daily_spent REAL DEFAULT 0.00`,
+      parseAddCol(`ALTER TABLE admin_users ADD COLUMN two_factor_enabled INTEGER DEFAULT 0`),
       // POS idempotency table columns (safe for existing databases)
-      `ALTER TABLE pos_idempotency ADD COLUMN result_json TEXT`,
-      `ALTER TABLE pos_idempotency ADD COLUMN created_at TEXT DEFAULT CURRENT_TIMESTAMP`,
+      parseAddCol(`ALTER TABLE pos_idempotency ADD COLUMN result_json TEXT`),
+      parseAddCol(`ALTER TABLE pos_idempotency ADD COLUMN created_at TEXT DEFAULT CURRENT_TIMESTAMP`),
+      parseAddCol(`ALTER TABLE pos_idempotency ADD COLUMN updated_at TEXT DEFAULT CURRENT_TIMESTAMP`),
+      // terminals — offline floor limit + ensure offline_enabled present
+      parseAddCol(`ALTER TABLE terminals ADD COLUMN floor_limit REAL DEFAULT 0`),
+      parseAddCol(`ALTER TABLE terminals ADD COLUMN offline_enabled INTEGER DEFAULT 0`),
+      // bank_accounts — support merchant-owned accounts (polymorphic owner via merchant_id XOR customer_id)
+      parseAddCol(`ALTER TABLE bank_accounts ADD COLUMN merchant_id TEXT`),
+      parseAddCol(`ALTER TABLE bank_accounts ADD COLUMN account_type TEXT DEFAULT 'CHECKING'`),
+      parseAddCol(`ALTER TABLE bank_accounts ADD COLUMN bank_address TEXT`),
+      // bank_payouts — add provider_ref for Wise tracking
+      parseAddCol(`ALTER TABLE bank_payouts ADD COLUMN provider_ref TEXT`),
+      parseAddCol(`ALTER TABLE bank_payouts ADD COLUMN provider TEXT`),
+      parseAddCol(`ALTER TABLE bank_payouts ADD COLUMN updated_at TEXT DEFAULT CURRENT_TIMESTAMP`),
+      // wallet_transactions — native currency column (AED stays AED, USD stays USD)
+      parseAddCol(`ALTER TABLE wallet_transactions ADD COLUMN currency TEXT DEFAULT 'USD'`),
+      // merchant_wallet_transactions — native currency column
+      parseAddCol(`ALTER TABLE merchant_wallet_transactions ADD COLUMN currency TEXT DEFAULT 'USD'`),
+      // customer_wallets — wallet_code (if not present from earlier schemas)
+      parseAddCol(`ALTER TABLE customer_wallets ADD COLUMN wallet_code TEXT`),
     ];
 
-    for (const sql of migrations) {
+    for (const [table, col, sql] of migrations) {
       try {
+        if (!table || !col) continue;
+        const pragma = await db.query(`PRAGMA table_info("${table}")`);
+        const rows: any[] = pragma?.rows ?? [];
+        const colLower = col.toLowerCase();
+        const exists = rows.some((r: any) => String(r.name || '').toLowerCase() === colLower);
+        if (exists) continue;
         await db.query(sql);
       } catch (_) {
-        // "duplicate column name" — column already exists, safe to ignore
+        // any unexpected error on ALTER (e.g. table missing) → silently skip.
       }
     }
 
@@ -179,7 +210,8 @@ export const initTables = async () => {
       CREATE TABLE IF NOT EXISTS pos_idempotency (
         idempotency_key TEXT PRIMARY KEY,
         result_json TEXT NOT NULL,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
@@ -258,6 +290,7 @@ export const initTables = async () => {
         name TEXT,
         terminal_secret TEXT,
         offline_enabled INTEGER DEFAULT 0,
+        floor_limit REAL DEFAULT 0,
         last_batch_at TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -338,7 +371,7 @@ export const initTables = async () => {
       );
     `);
 
-    // Customer Wallets Table
+    // Customer Wallets Table — one wallet per (customer, currency) so AED stays AED, USD stays USD
     await db.query(`
       CREATE TABLE IF NOT EXISTS customer_wallets (
         id TEXT PRIMARY KEY,
@@ -346,19 +379,23 @@ export const initTables = async () => {
         balance REAL NOT NULL DEFAULT 0.00,
         currency TEXT DEFAULT 'USD',
         status TEXT NOT NULL DEFAULT 'active',
+        wallet_code TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE (customer_id)
+        UNIQUE (customer_id, currency)
       );
     `);
+    // Performance index
+    try { await db.query(`CREATE INDEX IF NOT EXISTS idx_cw_customer_ccy ON customer_wallets(customer_id, currency)`); } catch(_) {}
 
-    // Wallet Transactions Table (Ledger)
+    // Wallet Transactions Table (Ledger) with native currency column
     await db.query(`
       CREATE TABLE IF NOT EXISTS wallet_transactions (
         id TEXT PRIMARY KEY,
         wallet_id TEXT NOT NULL,
         type TEXT NOT NULL,
         amount REAL NOT NULL,
+        currency TEXT DEFAULT 'USD',
         source TEXT NOT NULL,
         reference TEXT,
         description TEXT,
@@ -368,27 +405,31 @@ export const initTables = async () => {
       );
     `);
 
-    // Merchant Wallets Table
+    // Merchant Wallets Table — one wallet per (merchant, currency)
     await db.query(`
       CREATE TABLE IF NOT EXISTS merchant_wallets (
         id TEXT PRIMARY KEY,
-        merchant_id TEXT UNIQUE NOT NULL,
+        merchant_id TEXT NOT NULL,
         balance REAL NOT NULL DEFAULT 0.00,
         currency TEXT DEFAULT 'USD',
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (merchant_id, currency)
       );
     `);
+    try { await db.query(`CREATE INDEX IF NOT EXISTS idx_mw_merchant_ccy ON merchant_wallets(merchant_id, currency)`); } catch(_) {}
 
-    // Merchant Wallet Transactions Table
+    // Merchant Wallet Transactions Table with native currency column
     await db.query(`
       CREATE TABLE IF NOT EXISTS merchant_wallet_transactions (
         id TEXT PRIMARY KEY,
         wallet_id TEXT NOT NULL,
         type TEXT NOT NULL,
         amount REAL NOT NULL,
+        currency TEXT DEFAULT 'USD',
         source TEXT NOT NULL,
         reference TEXT,
+        description TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
       );
     `);
@@ -484,9 +525,16 @@ export const initTables = async () => {
         reference TEXT,
         tx_hash TEXT, -- On-chain tx hash if applicable
         status TEXT NOT NULL DEFAULT 'pending',
+        is_mock INTEGER NOT NULL DEFAULT 0,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
       );
     `);
+    try {
+      await db.query(`ALTER TABLE crypto_transactions ADD COLUMN provider_mode TEXT`);
+    } catch (_) { /* ignore exists */ }
+    try {
+      await db.query(`ALTER TABLE crypto_transactions ADD COLUMN is_mock INTEGER NOT NULL DEFAULT 0`);
+    } catch (_) { /* ignore exists */ }
 
     // Merchant Crypto Balances Table
     await db.query(`
@@ -495,49 +543,57 @@ export const initTables = async () => {
         merchant_id TEXT NOT NULL,
         asset TEXT NOT NULL,
         amount REAL NOT NULL DEFAULT 0.0,
+        is_mock INTEGER NOT NULL DEFAULT 0,
         meta TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
-    // Virtual Cards Table
-    await db.query(`
-      CREATE TABLE IF NOT EXISTS virtual_cards (
-        id TEXT PRIMARY KEY,
-        customer_id TEXT NOT NULL,
-        card_number TEXT NOT NULL,
-        masked_number TEXT NOT NULL,
-        expiry_month INTEGER NOT NULL,
-        expiry_year INTEGER NOT NULL,
-        cvv TEXT NOT NULL,
-        cardholder_name TEXT NOT NULL,
-        card_type TEXT DEFAULT 'VISA',
-        status TEXT DEFAULT 'ACTIVE',
-        balance REAL DEFAULT 0.00,
-        currency TEXT DEFAULT 'USD',
-        daily_limit REAL DEFAULT 1000.00,
-        daily_spent REAL DEFAULT 0.00,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
+    try {
+      await db.query(`ALTER TABLE merchant_crypto_balances ADD COLUMN is_mock INTEGER NOT NULL DEFAULT 0`);
+    } catch (_) { /* column exists — ignore */ }
 
     // Bank Accounts Table (for wallet-to-bank transfers)
+    //   Polymorphic ownership: EITHER customer_id (customer account) OR merchant_id (merchant account)
+    //   is_default=1 is the inbuilt default payout destination for the given owner
     await db.query(`
       CREATE TABLE IF NOT EXISTS bank_accounts (
         id TEXT PRIMARY KEY,
-        customer_id TEXT NOT NULL,
+        customer_id TEXT,
+        merchant_id TEXT,
         bank_name TEXT NOT NULL,
         account_holder TEXT NOT NULL,
         account_number TEXT NOT NULL,
         routing_number TEXT,
+        account_type TEXT DEFAULT 'CHECKING',
         iban TEXT,
         swift_code TEXT,
+        bank_address TEXT,
         currency TEXT DEFAULT 'USD',
         is_default INTEGER DEFAULT 0,
         verified INTEGER DEFAULT 0,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Merchant Payouts Table (merchant wallet → external bank)
+    //   Written by bank.router.ts /payout/bank endpoint. Tracks Wise transfer lifecycle.
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS merchant_payouts (
+        id TEXT PRIMARY KEY,
+        merchant_id TEXT NOT NULL,
+        amount REAL NOT NULL,
+        currency TEXT DEFAULT 'USD',
+        bank_account TEXT NOT NULL,
+        status TEXT DEFAULT 'pending',
+        provider TEXT,
+        provider_reference TEXT,
+        meta TEXT,
+        error_message TEXT,
+        completed_at TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       );
     `);
 

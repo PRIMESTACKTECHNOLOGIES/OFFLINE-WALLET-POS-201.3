@@ -14,14 +14,16 @@ import { DeviceSecurityPage } from "./pages/DeviceSecurityPage";
 import { OfflineTransactionsPage } from "./pages/OfflineTransactionsPage";
 import { PaymentMethodsPage } from "./pages/PaymentMethodsPage";
 import { ReceiptsPage } from "./pages/ReceiptsPage";
-import { POSPage } from "./pages/POSPage";
+import { WalletsPage } from "./pages/WalletsPage";
+import { CustomerEntryPage } from "./pages/CustomerEntryPage";
 import { POSPageSecure } from "./pages/POSPageSecure";
+import { POSPage } from "./pages/POSPage";
 import { LoginPage } from "./pages/LoginPage";
 import { OnboardingPage } from "./pages/OnboardingPage";
-import type { ReactElement } from "react";
+import { Toast } from "./components/Toast";
 
-// TEMPORARY: Bypass auth for testing - REMOVE AFTER FIX
-const BYPASS_AUTH = true;
+import type { ReactElement } from "react";
+const BYPASS_AUTH = false;
 
 function ProtectedRoute({ children }: { children: ReactElement }) {
   const token = localStorage.getItem("token");
@@ -50,9 +52,13 @@ function DashboardLayoutWrapper() {
 function App() {
   return (
     <NotificationProvider>
+      <Toast />
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/onboarding" element={<ProtectedRoute><OnboardingPage /></ProtectedRoute>} />
+
+        {/* PUBLIC — full screen for customer, no sidebar */}
+        <Route path="/customer-entry" element={<CustomerEntryPage />} />
         
         {/* Protected Dashboard Routes with Layout */}
         <Route element={<ProtectedRoute><DashboardLayoutWrapper /></ProtectedRoute>}>
@@ -72,6 +78,10 @@ function App() {
           <Route path="/offline-transactions" element={<OfflineTransactionsPage />} />
           <Route path="/payment-methods" element={<PaymentMethodsPage />} />
           <Route path="/receipts" element={<ReceiptsPage />} />
+          <Route path="/wallets" element={<WalletsPage />} />
+          <Route path="/wallet" element={<Navigate to="/wallets" replace />} />
+          <Route path="/customer-wallet" element={<Navigate to="/wallets" replace />} />
+          <Route path="/customer-wallets" element={<Navigate to="/wallets" replace />} />
         </Route>
         
         {/* Catch all - redirect to overview */}

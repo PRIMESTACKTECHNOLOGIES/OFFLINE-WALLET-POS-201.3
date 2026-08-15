@@ -7,9 +7,6 @@ dotenv.config({ path: path.join(__dirname, '../../.env') });
 import sqlite3 from 'sqlite3';
 import { open, Database } from 'sqlite';
 
-// Enable verbose mode for debugging
-sqlite3.verbose();
-
 // Always resolve DB path relative to the backend root (where .env lives)
 // __dirname is backend/src/config — go up 2 levels to backend/
 const BACKEND_ROOT = path.join(__dirname, '../..');
@@ -23,6 +20,15 @@ if (!fs.existsSync(DB_DIR)) {
 }
 
 console.log('[DB] Connected:', DB_PATH);
+
+/** @internal Returns true if a PRAGMA table_info(...) result already has the column. */
+const columnExists = (pragmaRows: any[], colName: string) => {
+  const n = colName.toLowerCase();
+  return pragmaRows.some((r: any) => String(r.name || '').toLowerCase() === n);
+};
+
+/** @internal Parse a raw "colName TYPE ... DEFAULT ..." column definition → bare column name. */
+const extractColumnName = (colDef: string) => colDef.trim().split(/\s+/)[0].trim();
 
 class DbAdapter {
   private dbPromise: Promise<Database> | null = null;
@@ -38,13 +44,13 @@ class DbAdapter {
         driver: sqlite3.Database
       });
       const db = await this.dbPromise;
-      await db.run('PRAGMA foreign_keys = ON;'); // Enable foreign keys
+      await db.run('PRAGMA foreign_keys = ON;');
 
       // ── Runtime schema guarantees (fire-and-forget safe for live dbs) ──────────
       // init_tables runs migrations inside app boot, but if an old pre-existing
       // SQLite file is attached mid-process these columns won't exist yet.
-      // We therefore explicitly add any required missing columns on every startup
-      // (SQLite ALTER TABLE for columns that already exist throws — we catch).
+      // We therefore explicitly add any required missing columns on every startup.
+      // PRAGMA table_info is used to avoid "duplicate column name" errors and noisy logs.
       const guarantees: Array<[string, string]> = [
         ['customer_wallets', 'wallet_code TEXT'],
         ['merchant_pos_settlements', 'settled_at TEXT'],
@@ -67,9 +73,12 @@ class DbAdapter {
       ];
       for (const [table, def] of guarantees) {
         try {
-          await db.run(`ALTER TABLE ${table} ADD COLUMN ${def}`);
+          const colName = extractColumnName(def);
+          const info = await db.all(`PRAGMA table_info("${table}")`);
+          if (Array.isArray(info) && columnExists(info, colName)) continue;
+          await db.run(`ALTER TABLE "${table}" ADD COLUMN ${def}`);
         } catch (_) {
-          // "duplicate column name" → already present, safe to ignore.
+          // any unexpected error on ALTER (e.g. table missing) → silently skip.
         }
       }
       // Backfill any NULL wallet_code rows — deterministic unique IDs per row.
@@ -89,10 +98,8 @@ class DbAdapter {
 
   async query(text: string, params: any[] = []): Promise<any> {
     const db = await this.initDb();
-    
+
     // Convert Postgres $1, $2 syntax to SQLite ? syntax
-    // Note: This is a simple replacement and assumes params are ordered correctly.
-    // Ideally, we should parse the SQL properly, but for this project scope, regex is usually enough.
     let sqliteText = text;
     let paramIndex = 1;
     while (sqliteText.includes(`$${paramIndex}`)) {
@@ -101,10 +108,6 @@ class DbAdapter {
     }
     // Also replace any remaining $N (if skipped or out of order, though unlikely in simple queries)
     sqliteText = sqliteText.replace(/\$\d+/g, '?');
-
-    // Handle "RETURNING *" which SQLite supports in newer versions, but let's be safe
-    // For now, let's assume SQLite 3.35+ which supports RETURNING.
-    // If not, we might need to adjust queries.
 
     const command = sqliteText.trim().toUpperCase().split(/\s+/)[0];
 
@@ -117,7 +120,14 @@ class DbAdapter {
         return { rows: [], rowCount: result.changes };
       }
     } catch (err: any) {
-      console.error('SQLite Error:', err.message, '\nQuery:', sqliteText, '\nParams:', params);
+      const msg: string = String(err?.message || '').toLowerCase();
+      const isExpected = msg.includes('duplicate column name')
+        || msg.includes('already exists')
+        || msg.includes('no such table')
+        || msg.includes('index');
+      if (!isExpected) {
+        console.error('SQLite Error:', err.message, '\nQuery:', sqliteText, '\nParams:', params);
+      }
       throw err;
     }
   }
