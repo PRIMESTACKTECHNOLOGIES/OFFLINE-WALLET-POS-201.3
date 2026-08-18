@@ -639,12 +639,40 @@ export async function getReceipt(receiptId: string): Promise<Receipt | null> {
   return data.receipt;
 }
 
-export async function printReceipt(receiptId: string): Promise<{ receipt: Receipt; printable: string }> {
+export async function printReceipt(receiptId: string): Promise<{
+  receipt: Receipt; printable: string;
+  plainTextCustomer?: string; plainTextMerchant?: string;
+  thermalCustomer?: string; thermalMerchant?: string; thermalCombined?: string;
+}> {
   const res = await fetchWithAuth(`${BASE_URL}/merchant/v1/receipts/${receiptId}/print`);
   if (!res.ok) {
     throw new Error("Failed to get printable receipt");
   }
   return res.json();
+}
+
+export type ThermalCopy = "combined" | "customer" | "merchant";
+
+export async function generateThermalReceipt(
+  transactionId: string,
+  copy: ThermalCopy = "combined",
+  format: "txt" | "json" = "json"
+): Promise<any> {
+  const url = `${BASE_URL}/merchant/v1/receipts/thermal/${transactionId}?copy=${copy}&format=${format}`;
+  const res = await fetchWithAuth(url);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || "Failed to generate thermal receipt");
+  }
+  if (format === "txt") return res.text();
+  return res.json();
+}
+
+export function downloadThermalTxt(transactionId: string, copy: ThermalCopy = "combined") {
+  const token = localStorage.getItem("token");
+  const auth = token ? `?Authorization=Bearer%20${encodeURIComponent(token)}` : "";
+  const base = `${BASE_URL}/merchant/v1/receipts/thermal/${transactionId}?copy=${copy}`;
+  window.open(base + (auth ? "&" + auth.slice(1) : ""), "_blank", "noopener,noreferrer");
 }
 
 
@@ -876,6 +904,140 @@ export async function merchantToCustomerTransfer(
   if (!res.ok) {
     const err = await res.json().catch(() => ({} as ApiErrorPayload));
     throw new Error(err.error || 'Transfer failed');
+  }
+  return res.json();
+}
+
+// ── Transak Fiat On/Off-Ramp ──────────────────────────────────────────────────
+
+export interface TransakConfigResponse {
+  configured: boolean;
+  mode: 'staging' | 'production';
+  apiKey: string;
+  widgetUrl: string;
+  referrerDomain: string;
+  networks: string[];
+}
+
+export interface TransakWidgetSessionResponse {
+  ok: boolean;
+  sessionId: string;
+  widgetUrl: string;
+  expiresAt: string;
+  note?: string;
+}
+
+export interface TransakOrderStatusResponse {
+  ok: boolean;
+  order: {
+    id: string;
+    status: string;
+    fiatCurrency: string;
+    fiatAmount: number;
+    cryptoCurrency: string;
+    cryptoAmount: number;
+    network?: string;
+    walletAddress?: string;
+    transactionHash?: string;
+    createdAt: string;
+    updatedAt: string;
+  };
+}
+
+export interface TransakCountryState {
+  code: string;
+  name: string;
+  isAllowed: boolean;
+}
+
+export interface TransakCountryPartner {
+  name: string;
+  currencyCode: string;
+  isCardPayment: boolean;
+}
+
+export type TransakSupportedDocument =
+  | 'passport'
+  | 'driving_licence'
+  | 'national_identity_card'
+  | (string & NonNullable<unknown>);
+
+export interface TransakCountry {
+  alpha2: string;
+  alpha3: string;
+  isAllowed: boolean;
+  isLightKycAllowed?: boolean;
+  name: string;
+  currencyCode: string;
+  supportedDocuments: TransakSupportedDocument[];
+  partners?: TransakCountryPartner[];
+  states?: TransakCountryState[];
+}
+
+export interface TransakCountriesResponse {
+  ok: boolean;
+  mode?: 'staging' | 'production';
+  response: TransakCountry[];
+  error?: string;
+}
+
+export interface TransakWidgetSessionParams {
+  customerId?: string;
+  walletCode?: string;
+  partnerCustomerId?: string;
+  partnerOrderId?: string;
+  partnerMetaData?: Record<string, any> | string;
+  defaultCryptoCurrency?: string;
+  defaultNetwork?: string;
+  defaultFiatAmount?: number;
+  defaultFiatCurrency?: string;
+  fiatCurrency?: string;
+  cryptoCurrencyList?: string;
+  networks?: string;
+  walletAddress?: string;
+  email?: string;
+  redirectURL?: string;
+  productsAvailed?: 'BUY' | 'SELL' | 'BUY,SELL';
+  referralCode?: string;
+  isAutoFillUserData?: boolean;
+  excludeFiatCurrencies?: string;
+  excludeNetworks?: string;
+}
+
+export async function transakGetConfig(): Promise<TransakConfigResponse> {
+  const res = await fetchWithAuth(`${BASE_URL}/wallet/transak/config`);
+  if (!res.ok) return { configured: false, mode: 'staging', apiKey: '', widgetUrl: '', referrerDomain: '', networks: [] };
+  return res.json();
+}
+
+export async function transakCreateWidgetSession(
+  params: TransakWidgetSessionParams
+): Promise<TransakWidgetSessionResponse> {
+  const res = await fetchWithAuth(`${BASE_URL}/wallet/transak/widget-session`, {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({} as ApiErrorPayload));
+    throw new Error(e.error || 'Transak widget session creation failed');
+  }
+  return res.json();
+}
+
+export async function transakGetOrderStatus(orderId: string): Promise<TransakOrderStatusResponse> {
+  const res = await fetchWithAuth(`${BASE_URL}/wallet/transak/orders/${encodeURIComponent(orderId)}`);
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({} as ApiErrorPayload));
+    throw new Error(e.error || 'Transak order status lookup failed');
+  }
+  return res.json();
+}
+
+export async function transakGetCountries(): Promise<TransakCountriesResponse> {
+  const res = await fetchWithAuth(`${BASE_URL}/wallet/transak/countries`);
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({} as ApiErrorPayload));
+    return { ok: false, response: [], error: e.error || 'Transak countries lookup failed' };
   }
   return res.json();
 }

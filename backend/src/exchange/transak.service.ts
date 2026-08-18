@@ -1,0 +1,923 @@
+import crypto from 'crypto';
+import axios from 'axios';
+import type {
+  ExchangeProviderId,
+  BuyAssetResult,
+  SellAssetResult,
+  WithdrawAssetResult,
+  WithdrawOptions,
+  GetPriceResult,
+} from './exchange-provider.interface';
+
+export type TransakMode = 'staging' | 'production';
+
+export interface TransakConfig {
+  apiKey: string;
+  apiSecret: string;
+  baseUrl: string;
+  publicApiUrl: string;
+  widgetUrl: string;
+  referrerDomain: string;
+  webhookSecret: string;
+  mode: TransakMode;
+}
+
+export interface TransakCountryState {
+  code: string;
+  name: string;
+  isAllowed: boolean;
+}
+
+export interface TransakCountryPartner {
+  name: string;
+  currencyCode: string;
+  isCardPayment: boolean;
+}
+
+export type TransakSupportedDocument =
+  | 'passport'
+  | 'driving_licence'
+  | 'national_identity_card'
+  | (string & NonNullable<unknown>);
+
+export interface TransakCountry {
+  alpha2: string;
+  alpha3: string;
+  isAllowed: boolean;
+  isLightKycAllowed?: boolean;
+  name: string;
+  currencyCode: string;
+  supportedDocuments: TransakSupportedDocument[];
+  partners?: TransakCountryPartner[];
+  states?: TransakCountryState[];
+}
+
+export interface TransakCountriesResponse {
+  response: TransakCountry[];
+}
+
+export interface TransakWidgetParams {
+  apiKey?: string;
+  referralCode?: string;
+  referrerDomain?: string;
+  redirectURL?: string;
+  defaultCryptoCurrency?: string;
+  defaultNetwork?: string;
+  defaultFiatAmount?: number;
+  defaultFiatCurrency?: string;
+  fiatCurrency?: string;
+  cryptoCurrencyList?: string;
+  networks?: string;
+  walletAddress?: string;
+  email?: string;
+  partnerCustomerId?: string;
+  partnerOrderId?: string;
+  partnerMetaData?: Record<string, any> | string;
+  environment?: TransakMode;
+  productsAvailed?: 'BUY' | 'SELL' | 'BUY,SELL';
+  isAutoFillUserData?: boolean;
+  excludeFiatCurrencies?: string;
+  excludeNetworks?: string;
+}
+
+export interface CreateWidgetSessionResponse {
+  sessionId: string;
+  widgetUrl: string;
+  expiresAt: string;
+}
+
+export interface TransakOrder {
+  id: string;
+  status: string;
+  statusHistories: Array<{ status: string; createdAt: string }>;
+  fiatCurrency: string;
+  fiatAmount: number;
+  cryptoCurrency: string;
+  cryptoAmount: number;
+  network?: string;
+  walletAddress?: string;
+  transactionHash?: string;
+  paymentOptionId?: string;
+  partnerOrderId?: string;
+  partnerCustomerId?: string;
+  createdAt: string;
+  updatedAt: string;
+  conversionPrice?: number;
+  fee?: number;
+}
+
+export interface CreateOrderRequest {
+  requestId: string;
+  userIp?: string;
+}
+
+export interface CreateOrderResponse {
+  success: boolean;
+  orderId?: string;
+  status?: string;
+  order?: TransakOrder;
+  error?: string;
+  message?: string;
+}
+
+// ── Headless Cards / Transaction Session Interfaces ─────────────────────
+export interface TransactionSessionConfig {
+  colorMode?: 'LIGHT' | 'DARK';
+  colors?: {
+    widgetBackgroundFillColor?: string;
+    brandColor?: string;
+    textPrimaryColor?: string;
+    textSecondaryColor?: string;
+    surfaceFillColor?: string;
+    borderColor?: string;
+    redColor?: string;
+  };
+}
+
+export interface BillingAddress {
+  firstName?: string;
+  lastName?: string;
+  street?: string;
+  city?: string;
+  state?: string;
+  postCode?: string;
+  country?: string;
+}
+
+export interface CreateTransactionSessionRequest {
+  quoteId: string;
+  walletAddress: string;
+  successUrl: string;
+  failureUrl: string;
+  config?: TransactionSessionConfig;
+  billingAddress?: BillingAddress;
+}
+
+export interface TransactionSessionResponse {
+  success: boolean;
+  sessionId?: string;
+  expiresAt?: string;
+  error?: string;
+  message?: string;
+}
+
+export interface TransactionRequestStatusResponse {
+  success: boolean;
+  status?: string;
+  orderId?: string;
+  error?: string;
+  message?: string;
+}
+
+let accessTokenCache: {
+  token: string;
+  expiresAt: number;
+} | null = null;
+
+function isPlaceholder(value: string) {
+  return !value || value.includes('your_') || value.includes('REPLACE') || value.includes('example');
+}
+
+export function isConfigured(): boolean {
+  try {
+    const cfg = getTransakConfig();
+    return (cfg.mode === 'staging' || cfg.mode === 'production') && !isPlaceholder(cfg.apiKey) && !isPlaceholder(cfg.apiSecret);
+  } catch {
+    return false;
+  }
+}
+
+export function getTransakConfig(): TransakConfig {
+  const apiKey = process.env.TRANSAK_API_KEY?.trim() || '';
+  const apiSecret = process.env.TRANSAK_API_SECRET?.trim() || '';
+  const referrerDomain = process.env.TRANSAK_REFERRER_DOMAIN?.trim() || '';
+  const webhookSecret = process.env.TRANSAK_WEBHOOK_SECRET?.trim() || '';
+  const rawMode = (process.env.TRANSAK_MODE || '').toLowerCase();
+  const requestedMode = rawMode as TransakMode;
+
+  if (!apiKey || !apiSecret || isPlaceholder(apiKey) || isPlaceholder(apiSecret)) {
+    throw new Error('Transak API keys not configured. Set TRANSAK_API_KEY and TRANSAK_API_SECRET.');
+  }
+
+  let mode: TransakMode = 'staging';
+  let baseUrl = 'https://api-gateway-stg.transak.com';
+  let publicApiUrl = 'https://api-stg.transak.com';
+  let widgetUrl = 'https://global-stg.transak.com';
+
+  if (requestedMode === 'production') {
+    mode = 'production';
+    baseUrl = process.env.TRANSAK_BASE_URL?.trim() || 'https://api.transak.com';
+    publicApiUrl = process.env.TRANSAK_PUBLIC_API_URL?.trim() || 'https://api.transak.com';
+    widgetUrl = process.env.TRANSAK_WIDGET_URL?.trim() || 'https://global.transak.com';
+  } else {
+    mode = 'staging';
+    baseUrl = process.env.TRANSAK_BASE_URL?.trim() || 'https://api-gateway-stg.transak.com';
+    publicApiUrl = process.env.TRANSAK_PUBLIC_API_URL?.trim() || 'https://api-stg.transak.com';
+    widgetUrl = process.env.TRANSAK_WIDGET_URL?.trim() || 'https://global-stg.transak.com';
+  }
+
+  return { apiKey, apiSecret, baseUrl, publicApiUrl, widgetUrl, referrerDomain, webhookSecret, mode };
+}
+
+export async function generateAccessToken(forceRefresh = false): Promise<string> {
+  const cfg = getTransakConfig();
+  const now = Date.now();
+
+  if (!forceRefresh && accessTokenCache && accessTokenCache.expiresAt > now + 60000) {
+    return accessTokenCache.token;
+  }
+
+  const timestamp = Math.floor(now / 1000);
+  const nonce = crypto.randomBytes(16).toString('hex');
+  const signPayload = `${cfg.apiSecret}${timestamp}${nonce}`;
+  const signature = crypto
+    .createHash('sha256')
+    .update(signPayload)
+    .digest('hex');
+
+  try {
+    const axiosInst = (await import('axios')).default;
+    const res = await axiosInst.post(
+      `${cfg.baseUrl}/api/v2/auth/token`,
+      { apiKey: cfg.apiKey, timestamp, nonce, signature },
+      {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 10000,
+      }
+    );
+
+    const token = res.data?.accessToken || res.data?.access_token || res.data?.token;
+    const expiresIn = res.data?.expiresIn || res.data?.expires_in || 3540;
+
+    if (!token) {
+      throw new Error('Transak access token not returned in response');
+    }
+
+    accessTokenCache = {
+      token,
+      expiresAt: now + (expiresIn - 60) * 1000,
+    };
+
+    return token;
+  } catch (e: any) {
+    throw new Error(`Transak access token generation failed: ${e?.message || String(e)}`);
+  }
+}
+
+export async function createWidgetSession(
+  widgetParams: TransakWidgetParams,
+  opts?: { accessToken?: string }
+): Promise<CreateWidgetSessionResponse> {
+  const cfg = getTransakConfig();
+  const token = opts?.accessToken || (await generateAccessToken());
+
+  const params: TransakWidgetParams & { apiKey: string; environment?: TransakMode } = {
+    apiKey: cfg.apiKey,
+    referrerDomain: cfg.referrerDomain,
+    environment: cfg.mode,
+    ...widgetParams,
+  };
+
+  const axiosInst = (await import('axios')).default;
+
+  try {
+    const res = await axiosInst.post(
+      `${cfg.baseUrl}/api/v2/auth/session`,
+      { widgetParams: params },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'access-token': token,
+        },
+        timeout: 10000,
+      }
+    );
+
+    const sessionId = res.data?.sessionId || res.data?.session_id;
+    const widgetUrl = res.data?.widgetUrl || res.data?.widget_url;
+    const expiresAt = res.data?.expiresAt || res.data?.expires_at
+      || new Date(Date.now() + 5 * 60 * 1000).toISOString();
+
+    if (!widgetUrl || !sessionId) {
+      throw new Error('Transak widget session response missing sessionId or widgetUrl');
+    }
+
+    return { sessionId, widgetUrl, expiresAt };
+  } catch (e: any) {
+    const msg = e?.response?.data?.message || e?.message || String(e);
+    throw new Error(`Transak widget session creation failed: ${msg}`);
+  }
+}
+
+export async function getOrderStatus(orderId: string): Promise<TransakOrder> {
+  const cfg = getTransakConfig();
+  const token = await generateAccessToken();
+
+  const axiosInst = (await import('axios')).default;
+  const res = await axiosInst.get(
+    `${cfg.baseUrl}/api/v2/orders/${orderId}`,
+    {
+      headers: {
+        'Content-Type': 'application/json',
+        'access-token': token,
+      },
+      timeout: 10000,
+    }
+  );
+
+  return res.data as TransakOrder;
+}
+
+export async function createOrder(
+  req: CreateOrderRequest,
+  opts?: { accessToken?: string; userIp?: string }
+): Promise<CreateOrderResponse> {
+  const cfg = getTransakConfig();
+  const token = opts?.accessToken || (await generateAccessToken());
+  const userIp = opts?.userIp || req.userIp || '0.0.0.0';
+
+  const axiosInst = (await import('axios')).default;
+
+  try {
+    const res = await axiosInst.post(
+      `${cfg.baseUrl}/api/v2/orders`,
+      { requestId: req.requestId },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': cfg.apiKey,
+          'x-user-ip': userIp,
+          'access-token': token,
+        },
+        timeout: 15000,
+      }
+    );
+
+    const order = res.data?.data || res.data;
+    if (!order || !order.orderId) {
+      throw new Error('Transak createOrder: missing orderId in response');
+    }
+
+    return {
+      success: true,
+      orderId: order.orderId,
+      status: order.status,
+      order,
+    };
+  } catch (e: any) {
+    const errorMsg = e?.response?.data?.message || e?.response?.data?.error || e?.message || String(e);
+    console.error('[Transak] createOrder failed:', errorMsg, 'requestId:', req.requestId);
+    
+    return {
+      success: false,
+      error: errorMsg,
+      message: `Failed to create Transak order: ${errorMsg}`,
+    };
+  }
+}
+
+export function verifyWebhookSignature(
+  payload: string | Buffer,
+  signatureHeader: string,
+  signingSecret?: string
+): boolean {
+  const cfg = getTransakConfig();
+  const secret = signingSecret || cfg.webhookSecret;
+  if (!secret) return false;
+
+  const expected = crypto
+    .createHmac('sha256', secret)
+    .update(typeof payload === 'string' ? payload : payload.toString('utf8'))
+    .digest('hex');
+
+  return crypto.timingSafeEqual(
+    Buffer.from(expected, 'hex'),
+    Buffer.from(signatureHeader || '', 'hex')
+  );
+}
+
+// Coin → default network mapping for the quotes endpoint
+const COIN_DEFAULT_NETWORK: Record<string, string> = {
+  USDT: 'tron',
+  USDC: 'ethereum',
+  ETH:  'ethereum',
+  BTC:  'bitcoin',
+  BNB:  'bsc',
+  MATIC: 'polygon',
+  SOL:  'solana',
+};
+
+// Coin → default fiat to quote in (USD preferred, fallback USD)
+const QUOTE_FIAT = 'USD';
+
+export async function getPrice(coin: string): Promise<GetPriceResult> {
+  const symbol = (coin || '').toUpperCase();
+
+  // Stablecoins are always $1 — no need to call the API
+  if (symbol === 'USDT' || symbol === 'USDC') {
+    return { priceUsd: 1.0, provider: 'transak', symbol, timestamp: Date.now() };
+  }
+
+  const cfg = getTransakConfig();
+  const axiosInst = (await import('axios')).default;
+  const network = COIN_DEFAULT_NETWORK[symbol] || 'ethereum';
+
+  // ── Use the public quotes endpoint: GET /api/v1/pricing/public/quotes ─────
+  // This matches the API docs exactly and requires no auth token.
+  try {
+    const res = await axiosInst.get(
+      `${cfg.publicApiUrl}/api/v1/pricing/public/quotes`,
+      {
+        params: {
+          partnerApiKey: cfg.apiKey,
+          fiatCurrency:  QUOTE_FIAT,
+          cryptoCurrency: symbol,
+          network,
+          isBuyOrSell:   'BUY',
+          fiatAmount:    100,         // quote for $100 to derive unit price
+          paymentMethod: 'credit_debit_card',
+        },
+        headers: { 'x-api-key': cfg.apiKey },
+        timeout: 8000,
+      }
+    );
+
+    const quote = res.data?.response;
+    if (quote && quote.fiatAmount > 0 && quote.cryptoAmount > 0) {
+      // conversionPrice = fiat per 1 crypto unit  →  priceUsd = fiatAmount / cryptoAmount
+      const priceUsd = quote.fiatAmount / quote.cryptoAmount;
+      return {
+        priceUsd,
+        provider: 'transak',
+        symbol,
+        timestamp: Date.now(),
+        raw: {
+          quoteId:             quote.quoteId,
+          conversionPrice:     quote.conversionPrice,
+          marketConversionPrice: quote.marketConversionPrice,
+          slippage:            quote.slippage,
+          fiatAmount:          quote.fiatAmount,
+          cryptoAmount:        quote.cryptoAmount,
+          totalFee:            quote.totalFee,
+          feeDecimal:          quote.feeDecimal,
+          feeBreakdown:        quote.feeBreakdown,
+          network,
+          paymentMethod:       quote.paymentMethod,
+        },
+      };
+    }
+  } catch (e: any) {
+    // fall through to error below
+  }
+
+  throw new Error(`Transak: no price data for ${symbol} (network=${network})`);
+}
+
+export async function buyAssetWithUsd(
+  asset: string,
+  amountUsd: number
+): Promise<BuyAssetResult> {
+  const symbol = (asset || '').toUpperCase();
+  const cfg = getTransakConfig();
+
+  if (isConfigured() && cfg.mode !== 'staging') {
+    return {
+      ok: false,
+      provider: 'transak',
+      asset: symbol,
+      amount_usd: amountUsd,
+      executed_qty: 0,
+      executedQty: 0,
+      status: 'WIDGET_REQUIRED',
+      raw: { note: 'Transak fiat on-ramp requires the hosted widget flow. Use createWidgetSession() to generate a widget URL and redirect the user.' },
+    };
+  }
+
+  let price = 1.0;
+  try { price = (await getPrice(symbol)).priceUsd || 1; } catch { /* fallback */ }
+  if (price <= 0) price = 1;
+  const qty = amountUsd / price;
+
+  return {
+    ok: true,
+    provider: 'transak',
+    asset: symbol,
+    amount_usd: amountUsd,
+    executed_qty: qty,
+    executedQty: qty,
+    status: 'WIDGET_PENDING',
+    order_id: `transak-${Date.now()}`,
+  };
+}
+
+export async function sellAssetForUsdt(
+  asset: string,
+  amountBase: number
+): Promise<SellAssetResult> {
+  const symbol = (asset || '').toUpperCase();
+  const cfg = getTransakConfig();
+
+  if (isConfigured() && cfg.mode !== 'staging') {
+    return {
+      ok: false,
+      provider: 'transak',
+      asset: symbol,
+      amount_sold: amountBase,
+      executed_qty: 0,
+      executedQty: 0,
+      usdt_received: 0,
+      status: 'WIDGET_REQUIRED',
+      raw: { note: 'Transak fiat off-ramp requires the hosted widget SELL flow. Use createWidgetSession() with productsAvailed=SELL.' },
+    };
+  }
+
+  let price = 1.0;
+  try { price = (await getPrice(symbol)).priceUsd || 1; } catch { /* fallback */ }
+  const usdt = amountBase * price;
+
+  return {
+    ok: true,
+    provider: 'transak',
+    asset: symbol,
+    amount_sold: amountBase,
+    executed_qty: amountBase,
+    executedQty: amountBase,
+    usdt_received: usdt,
+    status: 'WIDGET_PENDING',
+    order_id: `transak-sell-${Date.now()}`,
+  };
+}
+
+export async function withdrawAsset(
+  asset: string,
+  address: string,
+  network: string,
+  amount: number,
+  _opts?: WithdrawOptions
+): Promise<WithdrawAssetResult> {
+  return {
+    ok: false,
+    provider: 'transak',
+    accepted: false,
+    info: 'Transak is a fiat on/off-ramp — use direct blockchain rails (tronweb, bscweb, polygonweb) or exchange withdrawals (kucoin, binance) for on-chain crypto sends.',
+  };
+}
+
+export function supportsNetwork(network: string, asset?: string): boolean {
+  const net = (network || '').toUpperCase();
+  const supported = [
+    'TRC20', 'TRON', 'TRX',
+    'BEP20', 'BSC', 'ERC20_BSC',
+    'ERC20', 'ETHEREUM', 'ETH',
+    'POLYGON', 'MATIC', 'ERC20_POLYGON',
+    'SOL', 'SOLANA',
+    'BTC', 'BITCOIN',
+  ];
+  return supported.includes(net);
+}
+
+export function hasDirectBlockchainRail(): boolean {
+  return false;
+}
+
+export async function getCountries(): Promise<TransakCountriesResponse> {
+  const cfg = getTransakConfig();
+  const url = `${cfg.publicApiUrl}/api/v2/countries`;
+  const res = await axios.get(url, {
+    headers: { 'x-api-key': cfg.apiKey || '' },
+    timeout: 20000,
+  });
+  const data = (res?.data || {}) as TransakCountriesResponse;
+  if (!Array.isArray(data.response)) {
+    throw new Error('Transak getCountries: response.response array missing, got ' + JSON.stringify(Object.keys(data)).slice(0, 200));
+  }
+  return data;
+}
+
+// ── Types for fiat currencies endpoints ──────────────────────────────────
+
+export interface TransakFiatPaymentOption {
+  id: string;
+  name: string;
+  processingTime: string;
+  icon?: string;
+  limitCurrency: string;
+  minAmount: number;
+  maxAmount: number;
+  defaultAmount: number;
+  // public API fields
+  isActive?: boolean;
+  isConverted?: boolean;
+  isPayOutAllowed?: boolean;
+  minAmountForPayOut?: number;
+  maxAmountForPayOut?: number;
+  defaultAmountForPayOut?: number;
+  // whitelabel API fields
+  isBuyAllowed?: boolean;
+  isSellAllowed?: boolean;
+  minAmountForSell?: number;
+  maxAmountForSell?: number;
+  defaultAmountForSell?: number;
+  isNftAllowed?: boolean;
+  provider?: string;
+  visaPayoutCountries?: string[];
+  mastercardPayoutCountries?: string[];
+}
+
+export interface TransakFiatCurrency {
+  symbol: string;
+  name: string;
+  isAllowed: boolean;
+  isPopular?: boolean;
+  isSellAllowed?: boolean;
+  supportingCountries?: string[];
+  logoSymbol?: string;
+  roundOff: number;
+  isPayOutAllowed?: boolean;
+  paymentOptions: TransakFiatPaymentOption[];
+  displayMessage?: string;
+  icon?: string;
+}
+
+export interface TransakFiatCurrenciesResponse {
+  response: TransakFiatCurrency[];
+}
+
+export interface TransakQuoteParams {
+  cryptoCurrency: string;
+  fiatCurrency: string;
+  isBuyOrSell: 'BUY' | 'SELL';
+  network: string;
+  fiatAmount?: number;
+  cryptoAmount?: number;
+  paymentMethod?: string;
+  quoteCountryCode?: string;
+}
+
+export interface TransakQuoteFeeBreakdown {
+  name: string;
+  value: number;
+  id: string;
+  ids: string[];
+}
+
+export interface TransakQuoteResponse {
+  quoteId: string;
+  conversionPrice: number;
+  marketConversionPrice: number;
+  slippage: number;
+  fiatCurrency: string;
+  cryptoCurrency: string;
+  paymentMethod: string;
+  fiatAmount: number;
+  cryptoAmount: number;
+  isBuyOrSell: 'BUY' | 'SELL';
+  network: string;
+  feeDecimal: number;
+  totalFee: number;
+  feeBreakdown: TransakQuoteFeeBreakdown[];
+  nonce: number;
+  cryptoLiquidityProvider: string;
+  notes: string[];
+}
+
+// ── GET /fiat/public/v1/currencies/fiat-currencies (Public API) ───────────
+// Returns all supported fiat currencies, their payment options and limits.
+// Public endpoint — only the API key header is needed, no auth token.
+export async function getFiatCurrencies(): Promise<TransakFiatCurrenciesResponse> {
+  const cfg = getTransakConfig();
+  const url = `${cfg.publicApiUrl}/fiat/public/v1/currencies/fiat-currencies`;
+  const res = await axios.get(url, {
+    headers: { 'x-api-key': cfg.apiKey || '' },
+    timeout: 20000,
+  });
+  const data = (res?.data || {}) as TransakFiatCurrenciesResponse;
+  if (!Array.isArray(data.response)) {
+    throw new Error(
+      'Transak getFiatCurrencies: response.response array missing. Got: ' +
+      JSON.stringify(Object.keys(data)).slice(0, 200)
+    );
+  }
+  return data;
+}
+
+// ── GET /api/v2/lookup/currencies/fiat-currencies (Whitelabel API) ─────────
+// Returns fiat currencies with per-payment-option isBuyAllowed / isSellAllowed
+// flags and dedicated sell limits (minAmountForSell, maxAmountForSell, etc.).
+//
+// Differences from the public API:
+//   - Requires BOTH  x-api-key  AND  x-user-ip  headers
+//   - Also needs  ?apiKey=  query param
+//   - Response shape: { data: { fiatCurrencies: [...] } }
+//   - Uses isBuyAllowed / isSellAllowed instead of isActive / isPayOutAllowed
+//
+// The result is normalised to { response: [...] } so callers treat both
+// endpoints identically.
+export async function getFiatCurrenciesWhitelabel(
+  userIp: string,
+  opts?: { apiKey?: string }
+): Promise<TransakFiatCurrenciesResponse> {
+  const cfg = getTransakConfig();
+  const key = opts?.apiKey || cfg.apiKey || '';
+
+  const res = await axios.get(
+    `${cfg.baseUrl}/api/v2/lookup/currencies/fiat-currencies`,
+    {
+      params:  { apiKey: key },
+      headers: {
+        'x-api-key': key,
+        'x-user-ip': userIp,
+      },
+      timeout: 20000,
+    }
+  );
+
+  const raw = res?.data || {};
+  // Whitelabel returns { data: { fiatCurrencies: [...] } }
+  const currencies: TransakFiatCurrency[] =
+    raw?.data?.fiatCurrencies ||
+    (Array.isArray(raw?.data) ? raw.data : []);
+
+  if (!Array.isArray(currencies)) {
+    throw new Error(
+      'Transak getFiatCurrenciesWhitelabel: unexpected response shape. Got: ' +
+      JSON.stringify(Object.keys(raw)).slice(0, 200)
+    );
+  }
+
+  // Normalise to the same shape as the public API
+  return { response: currencies };
+}
+
+// ── GET /api/v1/pricing/public/quotes ─────────────────────────────────────
+// Returns a real-time fiat↔crypto quote with full fee breakdown.
+// Public endpoint — no auth token needed, partnerApiKey passed as query param.
+//
+// Rules (from Transak docs):
+//   BUY:  fiatAmount OR cryptoAmount required (if both, cryptoAmount takes precedence)
+//   SELL: cryptoAmount REQUIRED; fiatAmount is ignored if passed
+export async function getQuote(params: TransakQuoteParams): Promise<TransakQuoteResponse> {
+  const cfg = getTransakConfig();
+
+  const queryParams: Record<string, string | number> = {
+    partnerApiKey:  cfg.apiKey,
+    fiatCurrency:   params.fiatCurrency,
+    cryptoCurrency: params.cryptoCurrency,
+    isBuyOrSell:    params.isBuyOrSell,
+    network:        params.network,
+    paymentMethod:  params.paymentMethod || 'credit_debit_card',
+  };
+
+  if (params.isBuyOrSell === 'SELL') {
+    // SELL: cryptoAmount is required
+    if (!params.cryptoAmount || params.cryptoAmount <= 0) {
+      throw new Error('Transak getQuote: cryptoAmount is required for SELL quotes');
+    }
+    queryParams.cryptoAmount = params.cryptoAmount;
+  } else {
+    // BUY: pass at least one of fiatAmount / cryptoAmount
+    // If both provided, Transak uses cryptoAmount (docs: cryptoAmount takes precedence)
+    if (params.cryptoAmount && params.cryptoAmount > 0) {
+      queryParams.cryptoAmount = params.cryptoAmount;
+    } else if (params.fiatAmount && params.fiatAmount > 0) {
+      queryParams.fiatAmount = params.fiatAmount;
+    } else {
+      throw new Error('Transak getQuote: fiatAmount or cryptoAmount required for BUY quotes');
+    }
+  }
+
+  if (params.quoteCountryCode) {
+    queryParams.quoteCountryCode = params.quoteCountryCode;
+  }
+
+  const res = await axios.get(
+    `${cfg.publicApiUrl}/api/v1/pricing/public/quotes`,
+    {
+      params:  queryParams,
+      headers: { 'x-api-key': cfg.apiKey },
+      timeout: 10000,
+    }
+  );
+
+  const quote = res.data?.response as TransakQuoteResponse;
+  if (!quote || !quote.quoteId) {
+    throw new Error(
+      'Transak getQuote: unexpected response — missing quoteId. Raw: ' +
+      JSON.stringify(res.data).slice(0, 400)
+    );
+  }
+  return quote;
+}
+
+// ── Headless Cards: Create Transaction Session ────────────────────────
+export async function createTransactionSession(
+  req: CreateTransactionSessionRequest,
+  opts?: { accessToken?: string; userIp?: string }
+): Promise<TransactionSessionResponse> {
+  const cfg = getTransakConfig();
+  const token = opts?.accessToken || (await generateAccessToken());
+  const userIp = opts?.userIp || '0.0.0.0';
+
+  const axiosInst = (await import('axios')).default;
+
+  try {
+    const payload: Record<string, any> = {
+      quoteId: req.quoteId,
+      walletAddress: req.walletAddress,
+      successUrl: req.successUrl,
+      failureUrl: req.failureUrl,
+    };
+
+    if (req.config) {
+      payload.config = req.config;
+    }
+
+    if (req.billingAddress) {
+      payload.billingAddress = req.billingAddress;
+    }
+
+    const res = await axiosInst.post(
+      `${cfg.baseUrl}/api/v2/transaction-session/`,
+      payload,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': cfg.apiKey,
+          'x-user-ip': userIp,
+          'x-access-token': token,
+        },
+        timeout: 15000,
+      }
+    );
+
+    const sessionData = res.data?.data || res.data;
+    if (!sessionData || !sessionData.sessionId) {
+      throw new Error('Transak createTransactionSession: missing sessionId in response');
+    }
+
+    return {
+      success: true,
+      sessionId: sessionData.sessionId,
+      expiresAt: sessionData.expiresAt,
+    };
+  } catch (e: any) {
+    const errorMsg = e?.response?.data?.message || e?.response?.data?.error || e?.message || String(e);
+    console.error('[Transak] createTransactionSession failed:', errorMsg, 'quoteId:', req.quoteId);
+
+    return {
+      success: false,
+      error: errorMsg,
+      message: `Failed to create transaction session: ${errorMsg}`,
+    };
+  }
+}
+
+// ── Headless Cards: Get Transaction Request Status ─────────────────────
+export async function getTransactionRequestStatus(
+  requestId: string,
+  opts?: { accessToken?: string; userIp?: string }
+): Promise<TransactionRequestStatusResponse> {
+  const cfg = getTransakConfig();
+  const token = opts?.accessToken || (await generateAccessToken());
+  const userIp = opts?.userIp || '0.0.0.0';
+
+  const axiosInst = (await import('axios')).default;
+
+  try {
+    const res = await axiosInst.get(
+      `${cfg.baseUrl}/api/v2/transaction-session/request/${requestId}`,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': cfg.apiKey,
+          'x-user-ip': userIp,
+          'x-access-token': token,
+        },
+        timeout: 10000,
+      }
+    );
+
+    const data = res.data?.data || res.data;
+    if (!data) {
+      throw new Error('Transak getTransactionRequestStatus: empty response');
+    }
+
+    return {
+      success: true,
+      status: data.status,
+      orderId: data.orderId,
+    };
+  } catch (e: any) {
+    const errorMsg = e?.response?.data?.message || e?.response?.data?.error || e?.message || String(e);
+    console.error('[Transak] getTransactionRequestStatus failed:', errorMsg, 'requestId:', requestId);
+
+    return {
+      success: false,
+      error: errorMsg,
+      message: `Failed to get transaction request status: ${errorMsg}`,
+    };
+  }
+}
+
+export const id: ExchangeProviderId = 'transak';
+export const name = 'Transak Fiat On/Off-Ramp';

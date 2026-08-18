@@ -561,24 +561,12 @@ export class WalletsService {
     try {
       const xr = await import('../../exchange/exchange-router.service');
       const order = await xr.buyAssetBestEffort(coin, fiatAmount, { allow_simulation: opts?.allow_simulation ?? false });
-      if (order) {
-        if (order.mock === false || !order.mock) {
-          const filled = order.fills?.[0];
-          cryptoAmount = parseFloat(String(order.executedQty ?? order.executed_qty ?? cryptoAmount));
-          exchangeOrderId = String(order.order_id || (order as any).orderId || '');
-          providerMode = order.provider || 'live';
-          console.log(`[Crypto] Merchant buy filled: ${cryptoAmount} ${coin} via ${providerMode} orderId=${exchangeOrderId}`);
-        } else if (order.mock === true && opts?.allow_simulation === true) {
-          cryptoAmount = parseFloat(String(order.executedQty ?? order.executed_qty ?? cryptoAmount));
-          exchangeOrderId = String(order.order_id || (order as any).orderId || `SIM-${Date.now()}`);
-          providerMode = 'simulation';
-          isMockExecuted = true;
-          console.warn(`[Crypto] Merchant buy SIMULATION (explicit allow_simulation=true): ${cryptoAmount} ${coin} NOT bought on any exchange. Fiat debited internally only. ORDER=${exchangeOrderId}`);
-        } else {
-          // Should not happen because buyAssetBestEffort now throws if !allow_simulation,
-          // but guard anyway.
-          throw new Error('Mock/simulation fallback rejected. No live crypto exchange executed successfully.');
-        }
+      if (order && order.ok) {
+        const filled = order.fills?.[0];
+        cryptoAmount = parseFloat(String(order.executedQty ?? order.executed_qty ?? cryptoAmount));
+        exchangeOrderId = String(order.order_id || (order as any).orderId || '');
+        providerMode = order.provider || 'live';
+        console.log(`[Crypto] Merchant buy filled: ${cryptoAmount} ${coin} via ${providerMode} orderId=${exchangeOrderId}`);
       }
     } catch (exErr: any) {
       const msg = String(exErr?.message || 'Exchange failure').slice(0, 500);
@@ -594,7 +582,7 @@ export class WalletsService {
       throw new Error(`Merchant crypto purchase aborted. ${msg}`);
     }
 
-    const sourceDesc = isMockExecuted ? 'crypto_purchase_simulated' : 'crypto_purchase';
+    const sourceDesc = 'crypto_purchase';
     await db.query(
       'UPDATE merchant_wallets SET balance = balance - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
       [fiatAmount, merchantWallet.id]
@@ -605,31 +593,30 @@ export class WalletsService {
     );
 
     const existingCrypto = await db.query(
-      'SELECT id, amount, is_mock FROM merchant_crypto_balances WHERE merchant_id = ? AND asset = ?',
+      'SELECT id, amount FROM merchant_crypto_balances WHERE merchant_id = ? AND asset = ?',
       [merchantId, coin]
     );
     if (existingCrypto.rows.length > 0) {
       await db.query(
-        'UPDATE merchant_crypto_balances SET amount = amount + ?, is_mock = ?, updated_at = CURRENT_TIMESTAMP WHERE merchant_id = ? AND asset = ?',
-        [cryptoAmount, isMockExecuted ? 1 : 0, merchantId, coin]
+        'UPDATE merchant_crypto_balances SET amount = amount + ?, updated_at = CURRENT_TIMESTAMP WHERE merchant_id = ? AND asset = ?',
+        [cryptoAmount, merchantId, coin]
       );
     } else {
       await db.query(
-        'INSERT INTO merchant_crypto_balances (id, merchant_id, asset, amount, is_mock, updated_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)',
-        [uuidv4(), merchantId, coin, cryptoAmount, isMockExecuted ? 1 : 0]
+        'INSERT INTO merchant_crypto_balances (id, merchant_id, asset, amount, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)',
+        [uuidv4(), merchantId, coin, cryptoAmount]
       );
     }
 
     await db.query(
-      `INSERT INTO crypto_transactions (id, customer_id, crypto_coin, transaction_type, fiat_amount, crypto_amount, fiat_currency, exchange_rate, source, provider_mode, status, is_mock)
-       VALUES (?, ?, ?, 'buy', ?, ?, 'USD', ?, 'merchant_wallet', ?, 'completed', ?)`,
-      [uuidv4(), merchantId, coin, fiatAmount, cryptoAmount, exchangeRate, providerMode, isMockExecuted ? 1 : 0]
+      `INSERT INTO crypto_transactions (id, customer_id, crypto_coin, transaction_type, fiat_amount, crypto_amount, fiat_currency, exchange_rate, source, provider_mode, status)
+       VALUES (?, ?, ?, 'buy', ?, ?, 'USD', ?, 'merchant_wallet', ?, 'completed')`,
+      [uuidv4(), merchantId, coin, fiatAmount, cryptoAmount, exchangeRate, providerMode]
     );
 
     return {
       success: true,
-      mode: isMockExecuted ? 'simulation' : 'live',
-      is_mock: isMockExecuted,
+      mode: 'live',
       cryptoAmount,
       cryptoCoin: coin,
       exchangeRate,
@@ -640,9 +627,6 @@ export class WalletsService {
       exchangeOrderId,
       network: network || 'primary',
       transactionId: exchangeOrderId || uuidv4(),
-      warning: isMockExecuted
-        ? '⚠️ SIMULATION ONLY. Real crypto was NOT purchased. Your wallet USD was debited internally for operator UI testing. Set BINANCE_API_KEY+SECRET or KuCoin keys for live execution.'
-        : undefined,
     };
   }
 
@@ -664,7 +648,7 @@ export class WalletsService {
       const usdAmount = ccy === 'AED' ? fiatAmount / 3.67 : fiatAmount;
       if (coin !== 'USDT') {
         const order = await xr.buyAssetBestEffort(coin, usdAmount);
-        if (order && !order.mock) {
+        if (order && order.ok) {
           cryptoAmount = parseFloat(String(order.executedQty ?? cryptoAmount));
           exchangeOrderId = String(order.order_id || '');
           providerMode = order.provider;
@@ -787,7 +771,7 @@ export class WalletsService {
         const xr = await import('../../exchange/exchange-router.service');
         if (from !== 'USDT') {
           const sellResp = await xr.sellAssetBestEffort(from, fromAmount);
-          if (sellResp && !sellResp.mock) {
+          if (sellResp && sellResp.ok) {
             soldFromAmount = sellResp.executedQty || soldFromAmount;
             usdtIntermediate = sellResp.usdt_received || usdtIntermediate;
             sellOrderId = sellResp.order_id || null;
@@ -796,7 +780,7 @@ export class WalletsService {
         }
         if (to !== 'USDT') {
           const buyResp = await xr.buyAssetBestEffort(to, usdtIntermediate);
-          if (buyResp && !buyResp.mock) {
+          if (buyResp && buyResp.ok) {
             receivedToAmount = buyResp.executedQty || receivedToAmount;
             buyOrderId = buyResp.order_id || null;
             providerMode = buyResp.provider;
@@ -943,7 +927,7 @@ export class WalletsService {
         const xr = await import('../../exchange/exchange-router.service');
         if (from !== 'USDT') {
           const sellResp = await xr.sellAssetBestEffort(from, fromAmount);
-          if (sellResp && !sellResp.mock) {
+          if (sellResp && sellResp.ok) {
             soldFromAmount = sellResp.executedQty || soldFromAmount;
             usdtIntermediate = sellResp.usdt_received || usdtIntermediate;
             sellOrderId = sellResp.order_id || null;
@@ -952,7 +936,7 @@ export class WalletsService {
         }
         if (to !== 'USDT') {
           const buyResp = await xr.buyAssetBestEffort(to, usdtIntermediate);
-          if (buyResp && !buyResp.mock) {
+          if (buyResp && buyResp.ok) {
             receivedToAmount = buyResp.executedQty || receivedToAmount;
             buyOrderId = buyResp.order_id || null;
             providerMode = buyResp.provider;

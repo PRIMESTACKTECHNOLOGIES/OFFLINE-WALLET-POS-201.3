@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { db } from '../../config/db';
 import { settlementReconciliationService } from './settlementReconciliation.service';
+import { settlementsController } from './settlements.controller';
 
 const router = Router();
 
@@ -154,5 +155,74 @@ router.get('/merchant/:merchantId/settlements/discrepancies', async (req, res) =
     res.status(500).json({ error: e.message || 'Unable to load discrepancies' });
   }
 });
+
+// ───────────────────────────────────────────────────────────────────────
+// NEW PRODUCTION-READY SETTLEMENT ENDPOINTS (from settlement.service)
+// ───────────────────────────────────────────────────────────────────────
+
+/**
+ * POST /settle
+ * Settle a reconciliation batch - Credits merchant wallet for approved transactions
+ * Requires: x-merchant-id header
+ * Body: { reconciliationReportId, config?: { baseFeePercent?, fixedFeeAmount?, holdDays? } }
+ */
+router.post(
+  "/settle",
+  settlementsController.settleReconciliationBatch.bind(settlementsController)
+);
+
+/**
+ * GET /summary
+ * Get merchant settlement summary for a period
+ * Requires: x-merchant-id header
+ * Query: startDate?, endDate?
+ */
+router.get(
+  "/summary",
+  settlementsController.getMerchantSummary.bind(settlementsController)
+);
+
+/**
+ * GET /batch/:batchId
+ * Get settlement batch details
+ * Requires: x-merchant-id header
+ */
+router.get(
+  "/batch/:batchId",
+  settlementsController.getBatchDetails.bind(settlementsController)
+);
+
+/**
+ * GET /batches
+ * List settlement batches for merchant (paginated)
+ * Requires: x-merchant-id header
+ * Query: limit=50, offset=0
+ */
+router.get(
+  "/batches",
+  settlementsController.listBatches.bind(settlementsController)
+);
+
+/**
+ * POST /reverse
+ * Reverse a settlement (for refunds/chargebacks)
+ * Requires: x-merchant-id header
+ * Body: { settlementId, reason }
+ */
+router.post(
+  "/reverse",
+  settlementsController.reverseSettlement.bind(settlementsController)
+);
+
+/**
+ * POST /adjust
+ * Adjust a settlement amount (partial refunds/corrections)
+ * Requires: x-merchant-id header
+ * Body: { settlementId, adjustmentAmount, reason }
+ */
+router.post(
+  "/adjust",
+  settlementsController.adjustSettlement.bind(settlementsController)
+);
 
 export default router;

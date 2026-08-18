@@ -1,6 +1,7 @@
 import { StandardPii } from './binance.service';
 
 export type ExchangeProviderId =
+  | 'transak'
   | 'kucoin' | 'binance'
   | 'tronweb' | 'tronweb-treasury'
   | 'bscweb'  | 'bscweb-treasury'
@@ -24,7 +25,6 @@ export interface BuyAssetResult {
   fills?: Array<{ qty: string; price: string }>;
   status: string;
   order_id?: string;
-  mock?: boolean;
   raw?: any;
 }
 
@@ -39,7 +39,6 @@ export interface SellAssetResult {
   fills?: Array<{ qty: string; price: string }>;
   status: string;
   order_id?: string;
-  mock?: boolean;
   raw?: any;
 }
 
@@ -74,6 +73,7 @@ export interface GetPriceResult {
   provider: ExchangeProviderId | 'coingecko' | 'fallback';
   symbol: string;
   timestamp: number;
+  raw?: any;
 }
 
 export interface ExchangeProvider {

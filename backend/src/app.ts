@@ -17,6 +17,10 @@ import apiRouter from "./domain/api/api.router";
 import payoutBankRouter from './domain/payouts/bank.router';
 import payoutCryptoRouter from './domain/payouts/crypto.router';
 import settlementsRouter from './domain/settlements/settlements.router';
+import { conflictResolutionRouter } from './domain/conflicts/conflict-resolution.router';
+import { auditTrailRouter } from './domain/audit/audit-trail.router';
+import { dashboardRouter } from './domain/dashboard/dashboard.router';
+import { bankTransferRouter } from './domain/banktransfer/bank-transfer.router';
 import { wiseWebhookRouter } from './domain/payouts/wiseWebhook.router';
 import { cashoutsRouter } from "./domain/cashouts/cashouts.router";
 import { paymentReceiverRouter } from "./domain/paymentreceiver/paymentreceiver.router";
@@ -112,6 +116,100 @@ app.use("/merchant/v1/payments", paymentsRouter);
 // ── Public webhook endpoint for Wise payout notifications
 app.use('/webhooks', wiseWebhookRouter);
 
+// ── Public webhook endpoint for Transak order events (HMAC-signed)
+app.post('/webhooks/transak', express.raw({ type: 'application/json' }), async (req: Request, res: Response) => {
+  try {
+    const transak = await import('./exchange/transak.service');
+    const signature = (req.headers['x-transak-signature'] || req.headers['x-signature'] || '') as string;
+    const rawBody = (req as any).rawBody || req.body;
+    const payload = typeof rawBody === 'string'
+      ? rawBody
+      : Buffer.isBuffer(rawBody)
+        ? rawBody.toString('utf8')
+        : JSON.stringify(req.body);
+
+    const webhookSecret = process.env.TRANSAK_WEBHOOK_SECRET?.trim() || '';
+    let verified = false;
+    try {
+      verified = transak.verifyWebhookSignature(payload, signature, webhookSecret);
+    } catch { /* keep verified = false */ }
+
+    const event: any = typeof req.body === 'object' && !Buffer.isBuffer(req.body)
+      ? req.body
+      : (() => { try { return JSON.parse(payload); } catch { return {}; } })();
+
+    const { db } = await import('./config/db');
+    try {
+      await db.query(
+        `INSERT INTO transak_webhook_log
+         (event_id, event_name, order_id, status, verified, raw_payload, signature, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+        [
+          event?.id || `evt-${Date.now()}`,
+          event?.eventName || event?.event || event?.type || 'UNKNOWN',
+          event?.orderId || event?.order_id || event?.data?.id || null,
+          event?.status || event?.data?.status || 'RECEIVED',
+          verified ? 1 : 0,
+          payload.substring(0, 8000),
+          signature.substring(0, 256),
+        ]
+      );
+    } catch { /* table may not exist in older schemas — ignore */ }
+
+    if (verified && event?.orderId) {
+      try {
+        const status = event?.status || event?.data?.status || '';
+        const partnerCustomerId = event?.partnerCustomerId || event?.data?.partnerCustomerId;
+        const fiatAmount = Number(event?.fiatAmount || event?.data?.fiatAmount || 0);
+        const cryptoAmount = Number(event?.cryptoAmount || event?.data?.cryptoAmount || 0);
+        const coin = (event?.cryptoCurrency || event?.data?.cryptoCurrency || 'USDT').toUpperCase();
+
+        if (partnerCustomerId && (status === 'COMPLETED' || status === 'SUCCESSFUL')) {
+          try {
+            const walletsSvc = await import('./domain/wallets/wallets.service');
+            const { v4: uuidv4 } = await import('uuid');
+            if (fiatAmount > 0) {
+              await walletsSvc.walletsService.topupWallet(
+                partnerCustomerId, fiatAmount, 'transak_onramp',
+                event?.orderId || event?.data?.partnerOrderId || event?.id,
+                (event?.fiatCurrency || event?.data?.fiatCurrency || 'USD').toUpperCase()
+              );
+            }
+            if (cryptoAmount > 0) {
+              const cryptoWallet = await walletsSvc.walletsService.getOrCreateCryptoWallet(partnerCustomerId, coin);
+              await db.query(
+                'UPDATE customer_crypto_wallets SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                [cryptoAmount, cryptoWallet.id]
+              );
+              try {
+                await db.query(
+                  `INSERT INTO crypto_transactions (id, customer_id, crypto_coin, transaction_type, fiat_amount, crypto_amount, fiat_currency, exchange_rate, source, provider_mode, status, reference)
+                   VALUES (?, ?, ?, 'buy', ?, ?, ?, ?, 'transak_webhook', 'transak', 'completed', ?)`,
+                  [
+                    uuidv4(),
+                    partnerCustomerId,
+                    coin,
+                    fiatAmount,
+                    cryptoAmount,
+                    (event?.fiatCurrency || event?.data?.fiatCurrency || 'USD').toUpperCase(),
+                    fiatAmount > 0 && cryptoAmount > 0 ? fiatAmount / cryptoAmount : 0,
+                    event?.orderId || event?.id || null,
+                  ]
+                );
+              } catch { /* ignore tx insert errors */ }
+            }
+          } catch { /* topup/credit failures logged but webhook ACK to avoid retries */ }
+        }
+      } catch { /* ignore */ }
+    }
+
+    res.status(200).json({ ok: true, verified, acknowledged: true });
+  } catch (e: any) {
+    console.error('[Transak Webhook Error]', e?.message || e);
+    res.status(200).json({ ok: true, error: 'acknowledged' });
+  }
+});
+
 // ══ ALL ROUTES BELOW REQUIRE AUTHENTICATION ══════════════════════════════════
 app.use(authenticateToken);
 
@@ -123,6 +221,10 @@ app.use('/api', apiRouter);
 app.use('/api', payoutBankRouter);
 app.use('/api', payoutCryptoRouter);
 app.use('/api', settlementsRouter);
+app.use('/api/conflicts', conflictResolutionRouter);
+app.use('/api/audit', auditTrailRouter);
+app.use('/api/dashboard', dashboardRouter);
+app.use('/api/bank-transfer', bankTransferRouter);
 
 // Merchant API routes
 app.use("/merchant/v1", terminalsRouter);

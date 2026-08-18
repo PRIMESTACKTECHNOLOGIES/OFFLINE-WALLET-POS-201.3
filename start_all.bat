@@ -4,6 +4,9 @@ SETLOCAL EnableExtensions EnableDelayedExpansion
 set "ROOT=%~dp0"
 set "BACKEND=%ROOT%backend"
 set "CLIENT=%ROOT%client"
+set "DATABASE_PATH=%ROOT%database.sqlite"
+set "NODE_ENV=production"
+set "JWT_SECRET=offline-pos-kodolo-2026-jwt-secret-change-live"
 
 :: ── Detect current Wi-Fi IP ──────────────────────────────────────────────────
 for /f "tokens=2 delims=:" %%A in ('ipconfig ^| findstr /C:"IPv4 Address" ^| findstr /V "172\." ^| findstr /V "127\."') do (
@@ -57,7 +60,8 @@ popd
 
 :: ── Start Backend ─────────────────────────────────────────────────────────────
 echo  [4/5] Starting backend on :7000...
-start "POS Backend :7000" cmd /k "title POS Backend :7000 && cd /d "%BACKEND%" && npm run dev"
+set "BACKEND_ENV=set DATABASE_PATH=%DATABASE_PATH%&& set NODE_ENV=%NODE_ENV%&& set JWT_SECRET=%JWT_SECRET%"
+start "POS Backend :7000" cmd /k "title POS Backend :7000 && cd /d "%BACKEND%" && %BACKEND_ENV% && npm run dev"
 
 :: ── Start Frontend ────────────────────────────────────────────────────────────
 echo  [5/5] Starting frontend on :7001...

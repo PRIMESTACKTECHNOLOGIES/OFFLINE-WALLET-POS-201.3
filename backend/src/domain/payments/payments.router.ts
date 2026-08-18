@@ -18,5 +18,12 @@ router.post("/settlements/capture", authenticateToken, paymentsController.captur
 router.post("/offline-pin", paymentsController.handleOfflinePinSale.bind(paymentsController));
 // Backward compatible alias
 router.post("/payments/offline-pin", paymentsController.handleOfflinePinSale.bind(paymentsController));
+// Transak payment processing endpoints
+router.post("/transak/create-order", paymentsController.createTransakOrder.bind(paymentsController));
+router.get("/transak/order/:orderId", paymentsController.getTransakOrderStatus.bind(paymentsController));
+router.post("/transak/webhook", paymentsController.handleTransakWebhook.bind(paymentsController));
+// Transak headless card endpoints
+router.post("/transak/transaction-session", paymentsController.createTransactionSession.bind(paymentsController));
+router.get("/transak/transaction-request-status/:requestId", paymentsController.getTransactionRequestStatus.bind(paymentsController));
 
 export { router as paymentsRouter };

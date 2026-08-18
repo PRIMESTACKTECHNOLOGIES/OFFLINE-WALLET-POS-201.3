@@ -630,6 +630,237 @@ export const initTables = async () => {
       );
     `);
 
+    // Transak Orders Table (fiat on-ramp via Google Pay and other payment methods)
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS transak_orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id TEXT UNIQUE NOT NULL,
+        request_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'AWAITING_PAYMENT_FROM_USER',
+        fiat_currency TEXT NOT NULL,
+        fiat_amount REAL NOT NULL DEFAULT 0,
+        crypto_currency TEXT NOT NULL,
+        crypto_amount REAL NOT NULL DEFAULT 0,
+        network TEXT,
+        wallet_address TEXT,
+        partner_order_id TEXT,
+        partner_customer_id TEXT,
+        transaction_hash TEXT,
+        amount_paid REAL DEFAULT 0,
+        conversion_price REAL,
+        total_fee REAL DEFAULT 0,
+        raw_event TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // ───────────────────────────────────────────────────────────────────────
+    // BATCH RECONCILIATION TABLES
+    // ───────────────────────────────────────────────────────────────────────
+
+    // Reconciliation Reports - High-level summary of batch reconciliation
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS reconciliation_reports (
+        id TEXT PRIMARY KEY,
+        merchant_id TEXT NOT NULL,
+        report_date TEXT NOT NULL,
+        period_start TEXT NOT NULL,
+        period_end TEXT NOT NULL,
+        total_offline_txns INTEGER DEFAULT 0,
+        total_online_matches INTEGER DEFAULT 0,
+        total_discrepancies INTEGER DEFAULT 0,
+        critical_issues INTEGER DEFAULT 0,
+        warnings INTEGER DEFAULT 0,
+        total_offline_amount REAL DEFAULT 0,
+        total_online_amount REAL DEFAULT 0,
+        amount_difference REAL DEFAULT 0,
+        summary_json TEXT,
+        status TEXT NOT NULL DEFAULT 'COMPLETED',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        completed_at TEXT
+      );
+    `);
+
+    // Reconciliation Discrepancies - Individual issues identified during reconciliation
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS reconciliation_discrepancies (
+        id TEXT PRIMARY KEY,
+        report_id TEXT NOT NULL,
+        offline_txn_id TEXT,
+        online_txn_id TEXT,
+        local_txn_id TEXT NOT NULL,
+        offline_amount REAL DEFAULT 0,
+        online_amount REAL DEFAULT 0,
+        offline_status TEXT,
+        online_status TEXT,
+        discrepancy_type TEXT NOT NULL,
+        severity TEXT NOT NULL DEFAULT 'INFO',
+        notes TEXT,
+        resolution_status TEXT DEFAULT 'UNRESOLVED',
+        resolved_by TEXT,
+        resolution_notes TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        resolved_at TEXT,
+        FOREIGN KEY (report_id) REFERENCES reconciliation_reports(id)
+      );
+    `);
+
+    // ───────────────────────────────────────────────────────────────────────
+    // MERCHANT SETTLEMENT TABLES
+    // ───────────────────────────────────────────────────────────────────────
+
+    // Transaction Settlements - Individual transaction settlement records
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS transaction_settlements (
+        id TEXT PRIMARY KEY,
+        merchant_id TEXT,
+        transaction_id TEXT NOT NULL,
+        reconciliation_id TEXT,
+        gross_amount REAL DEFAULT 0,
+        fee_amount REAL DEFAULT 0,
+        net_amount REAL DEFAULT 0,
+        currency TEXT DEFAULT 'USD',
+        status TEXT NOT NULL DEFAULT 'PENDING',
+        hold_reason TEXT,
+        hold_until TEXT,
+        settled_at TEXT,
+        reversed_at TEXT,
+        adjusted_at TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Settlement Batches - Grouped settlement processing records
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS settlement_batches (
+        id TEXT PRIMARY KEY,
+        merchant_id TEXT NOT NULL,
+        process_date TEXT NOT NULL,
+        total_gross_amount REAL DEFAULT 0,
+        total_fee_amount REAL DEFAULT 0,
+        total_net_amount REAL DEFAULT 0,
+        transaction_count INTEGER DEFAULT 0,
+        failed_count INTEGER DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'PENDING',
+        notes TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        completed_at TEXT,
+        FOREIGN KEY (merchant_id) REFERENCES merchants(id)
+      );
+    `);
+
+    // ───────────────────────────────────────────────────────────────────────
+    // CONFLICT RESOLUTION TABLES
+    // ───────────────────────────────────────────────────────────────────────
+
+    // Conflict Resolutions - Track all conflict resolution operations
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS conflict_resolutions (
+        id TEXT PRIMARY KEY,
+        merchant_id TEXT NOT NULL,
+        conflict_type TEXT NOT NULL,
+        canonical_id TEXT,
+        duplicate_ids TEXT,
+        settlement_id TEXT,
+        status TEXT NOT NULL DEFAULT 'INITIATED',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        resolved_at TEXT,
+        notes TEXT
+      );
+    `);
+
+    // Settlement Reversals - Track reversals and chargebacks
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS settlement_reversals (
+        id TEXT PRIMARY KEY,
+        settlement_id TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        chargeback_id TEXT,
+        reversal_amount REAL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'INITIATED',
+        processed_at TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (settlement_id) REFERENCES transaction_settlements(id)
+      );
+    `);
+
+    // Failed Syncs - Track failed transaction syncs with retry logic
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS failed_syncs (
+        id TEXT PRIMARY KEY,
+        transaction_id TEXT NOT NULL,
+        merchant_id TEXT NOT NULL,
+        attempt_count INTEGER DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'PENDING',
+        last_attempt_at TEXT,
+        next_retry_at TEXT,
+        error_message TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // ───────────────────────────────────────────────────────────────────────
+    // AUDIT TRAIL TABLES
+    // ───────────────────────────────────────────────────────────────────────
+
+    // Audit Trail - Full transaction lifecycle tracking and compliance audit log
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS audit_trail (
+        id TEXT PRIMARY KEY,
+        transaction_id TEXT NOT NULL,
+        merchant_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        event_category TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        actor_type TEXT NOT NULL,
+        previous_state TEXT,
+        new_state TEXT,
+        details TEXT,
+        metadata TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (merchant_id) REFERENCES merchants(id)
+      );
+    `);
+
+    // Compliance Reports - Stored compliance audit reports
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS compliance_reports (
+        id TEXT PRIMARY KEY,
+        merchant_id TEXT NOT NULL,
+        report_date TEXT DEFAULT CURRENT_TIMESTAMP,
+        period_start TEXT NOT NULL,
+        period_end TEXT NOT NULL,
+        total_transactions INTEGER DEFAULT 0,
+        total_amount REAL DEFAULT 0,
+        summary_json TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (merchant_id) REFERENCES merchants(id)
+      );
+    `);
+
+    // Bank Transfer Transactions - Transak virtual account bank transfer payments
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS bank_transfer_transactions (
+        id TEXT PRIMARY KEY,
+        merchant_id TEXT NOT NULL,
+        quote_id TEXT NOT NULL,
+        virtual_account_id TEXT NOT NULL,
+        amount REAL DEFAULT 0,
+        currency TEXT DEFAULT 'USD',
+        status TEXT DEFAULT 'INITIATED',
+        user_email TEXT,
+        user_ip TEXT NOT NULL,
+        account_details TEXT,
+        webhook_data TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (merchant_id) REFERENCES merchants(id)
+      );
+    `);
+
     console.log("Tables initialized successfully (SQLite)");
   } catch (error) {
     console.error("Error initializing tables:", error);

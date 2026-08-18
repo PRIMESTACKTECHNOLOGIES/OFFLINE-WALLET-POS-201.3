@@ -43,4 +43,13 @@ router.post('/merchant/buy-crypto',            wc.buyCryptoWithMerchant.bind(wc)
 router.post('/merchant/swap-crypto',           wc.swapCryptoWithMerchant.bind(wc));
 router.post('/crypto-withdraw',                wc.withdrawCrypto.bind(wc));
 
+// ── Transak Fiat On/Off-Ramp ──────────────────────────────────────────────
+router.get('/transak/config',                          wc.transakConfig.bind(wc));
+router.post('/transak/widget-session',                 wc.generateTransakWidgetSession.bind(wc));
+router.get('/transak/orders/:orderId',                 wc.getTransakOrderStatus.bind(wc));
+router.get('/transak/countries',                       wc.getTransakCountries.bind(wc));
+router.get('/transak/fiat-currencies',                 wc.getTransakFiatCurrencies.bind(wc));
+router.get('/transak/fiat-currencies/whitelabel',      wc.getTransakFiatCurrenciesWhitelabel.bind(wc));
+router.get('/transak/quote',                           wc.getTransakQuote.bind(wc));
+
 export { router as walletsRouter };

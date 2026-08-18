@@ -28,6 +28,11 @@ let kucoinWithdrawFn: any = null;
 let kucoinIsConfiguredFn: any = null;
 let kucoinGetPriceFn: any = null;
 
+let transakBuyFn: any = null;
+let transakSellFn: any = null;
+let transakIsConfiguredFn: any = null;
+let transakGetPriceFn: any = null;
+
 let bscSendFn: any = null;
 let bscIsConfiguredFn: any = null;
 let polygonSendFn: any = null;
@@ -69,6 +74,19 @@ async function loadPolygon() {
   }
 }
 
+async function loadTransak() {
+  if (transakBuyFn) return;
+  try {
+    const mod = await import('./transak.service');
+    transakBuyFn = mod.buyAssetWithUsd;
+    transakSellFn = mod.sellAssetForUsdt;
+    transakIsConfiguredFn = mod.isConfigured;
+    transakGetPriceFn = mod.getPrice;
+  } catch {
+    transakBuyFn = null;
+  }
+}
+
 export function getProviderPriority(): ExchangeProviderId[] {
   const raw = (process.env.EXCHANGE_PROVIDER_PRIORITY || process.env.CRYPTO_PROVIDER_PRIORITY || '')
     .split(',')
@@ -76,12 +94,12 @@ export function getProviderPriority(): ExchangeProviderId[] {
     .filter((s) => !!s);
   if (raw.length > 0) return raw;
   const primary = (process.env.CRYPTO_PROVIDER || '').toLowerCase().trim() as ExchangeProviderId;
-  if (primary && ['kucoin', 'binance', 'tronweb', 'bscweb', 'polygonweb'].includes(primary)) {
+  if (primary && ['transak', 'kucoin', 'binance', 'tronweb', 'bscweb', 'polygonweb'].includes(primary)) {
     return [primary, 'tronweb', 'bscweb', 'polygonweb', 'binance'].filter(
       (v, i, a) => a.indexOf(v) === i
     ) as ExchangeProviderId[];
   }
-  return ['tronweb', 'bscweb', 'polygonweb', 'kucoin', 'binance'];
+  return ['transak', 'tronweb', 'bscweb', 'polygonweb', 'kucoin', 'binance'];
 }
 
 export function networkToNormalized(network: string): string {
@@ -132,7 +150,15 @@ export async function getBestPrice(coin: string): Promise<GetPriceResult> {
   const errors: string[] = [];
   for (const pid of priority) {
     try {
-      if (pid === 'binance') {
+      if (pid === 'transak') {
+        await loadTransak();
+        if (transakGetPriceFn && transakIsConfiguredFn && transakIsConfiguredFn()) {
+          try {
+            const res = await transakGetPriceFn(coin);
+            if (res && res.priceUsd > 0) return res;
+          } catch (e: any) { errors.push(`transak:${e?.message}`); }
+        }
+      } else if (pid === 'binance') {
         try {
           const symbol = coin === 'USDT' ? 'BTCUSDT' : `${coin.toUpperCase()}USDT`;
           const apiKey = process.env.BINANCE_API_KEY?.trim();
@@ -197,7 +223,17 @@ export async function buyAssetBestEffort(asset: string, amountUsd: number, opts?
   const errors: string[] = [];
   for (const pid of priority) {
     try {
-      if (pid === 'binance') {
+      if (pid === 'transak') {
+        await loadTransak();
+        if (transakBuyFn && transakIsConfiguredFn && transakIsConfiguredFn()) {
+          try {
+            const order = await transakBuyFn(asset, amountUsd);
+            if (order && order.ok && !order.mock) return order;
+            if (order && order.status === 'WIDGET_REQUIRED') return order;
+            if (order?.mock) errors.push(`transak:MOCK_NOT_ALLOWED_HERE`);
+          } catch (e: any) { errors.push(`transak:${e?.message}`); }
+        }
+      } else if (pid === 'binance') {
         try {
           const order = await binanceBuy(asset, amountUsd);
           if (order && !order.mock) {
@@ -211,11 +247,9 @@ export async function buyAssetBestEffort(asset: string, amountUsd: number, opts?
               fills: order.fills,
               status: order.status,
               order_id: order.order_id,
-              mock: false,
               raw: order.raw,
             };
           }
-          if (order?.mock) errors.push(`binance:MOCK_NOT_ALLOWED_HERE (route treats mock-order as failure unless opts.allow_simulation=true)`);
         } catch (e: any) { errors.push(`binance:${e?.message}`); }
       } else if (pid === 'kucoin') {
         await loadKuCoin();
@@ -272,7 +306,17 @@ export async function sellAssetBestEffort(asset: string, amountBase: number): Pr
   const errors: string[] = [];
   for (const pid of priority) {
     try {
-      if (pid === 'binance') {
+      if (pid === 'transak') {
+        await loadTransak();
+        if (transakSellFn && transakIsConfiguredFn && transakIsConfiguredFn()) {
+          try {
+            const order = await transakSellFn(asset, amountBase);
+            if (order && order.ok && !order.mock) return order;
+            if (order && order.status === 'WIDGET_REQUIRED') return order;
+            if (order?.mock) errors.push(`transak:MOCK_NOT_ALLOWED_HERE`);
+          } catch (e: any) { errors.push(`transak:${e?.message}`); }
+        }
+      } else if (pid === 'binance') {
         try {
           const order = await binanceSell(asset, amountBase);
           if (order && !order.mock) {
@@ -287,7 +331,6 @@ export async function sellAssetBestEffort(asset: string, amountBase: number): Pr
               fills: order.fills,
               status: order.status,
               order_id: order.order_id,
-              mock: false,
               raw: order.raw,
             };
           }
@@ -297,7 +340,7 @@ export async function sellAssetBestEffort(asset: string, amountBase: number): Pr
         if (kucoinSellFn && kucoinIsConfiguredFn && kucoinIsConfiguredFn()) {
           try {
             const order = await kucoinSellFn(asset, amountBase);
-            if (order && !order.mock) return order;
+            if (order && order.ok) return order;
           } catch (e: any) { errors.push(`kucoin:${e?.message}`); }
         }
       }
@@ -316,7 +359,6 @@ export async function sellAssetBestEffort(asset: string, amountBase: number): Pr
     fills: [],
     status: 'INTERNAL_ONLY_NO_EXCHANGE_CONFIGURED',
     order_id: `INT-${Date.now()}`,
-    mock: true,
     raw: { errors, note: 'No live exchange configured. Balance was internally accounted.' },
   };
 }

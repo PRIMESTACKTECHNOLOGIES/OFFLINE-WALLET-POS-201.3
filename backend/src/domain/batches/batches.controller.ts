@@ -191,6 +191,122 @@ export class BatchesController {
       res.status(500).json({ error: e.message });
     }
   }
+
+  /**
+   * Reconcile batch transactions - Compare offline vs online
+   * POST /reconcile/batch
+   * Body: { batchId?, terminalId?, startDate?, endDate?, includeSettled? }
+   */
+  async reconcileBatch(req: Request, res: Response) {
+    try {
+      const merchantId = req.headers['x-merchant-id'] as string;
+      if (!merchantId) {
+        return res.status(401).json({ error: 'Missing merchant ID' });
+      }
+
+      const { batchId, terminalId, startDate, endDate, includeSettled } = req.body || {};
+
+      const { reconcileBatch } = await import('./reconciliation.service');
+
+      const report = await reconcileBatch({
+        merchantId,
+        batchId,
+        terminalId,
+        startDate,
+        endDate,
+        includeSettled: includeSettled || false
+      });
+
+      console.log(`[Reconciliation] Report generated: ${report.reconciliationId}`);
+
+      res.json({
+        success: true,
+        reportId: report.reconciliationId,
+        totalDiscrepancies: report.totalDiscrepancies,
+        criticalIssues: report.criticalIssues,
+        warnings: report.warnings,
+        summary: report.summary
+      });
+    } catch (e: any) {
+      console.error('Error reconciling batch:', e);
+      res.status(500).json({ 
+        success: false, 
+        error: e.message 
+      });
+    }
+  }
+
+  /**
+   * Get reconciliation report details
+   * GET /reconcile/report/:reportId
+   */
+  async getReconciliationReport(req: Request, res: Response) {
+    try {
+      const merchantId = req.headers['x-merchant-id'] as string;
+      if (!merchantId) {
+        return res.status(401).json({ error: 'Missing merchant ID' });
+      }
+
+      const { reportId } = req.params;
+      if (!reportId) {
+        return res.status(400).json({ error: 'reportId is required' });
+      }
+
+      const { getReconciliationReport } = await import('./reconciliation.service');
+
+      const report = await getReconciliationReport(reportId);
+      if (!report) {
+        return res.status(404).json({ error: 'Report not found' });
+      }
+
+      // Verify merchant access
+      if (report.merchantId !== merchantId) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
+      res.json({
+        success: true,
+        report
+      });
+    } catch (e: any) {
+      console.error('Error fetching reconciliation report:', e);
+      res.status(500).json({ 
+        success: false, 
+        error: e.message 
+      });
+    }
+  }
+
+  /**
+   * List reconciliation reports for merchant
+   * GET /reconcile/reports
+   */
+  async listReconciliationReports(req: Request, res: Response) {
+    try {
+      const merchantId = req.headers['x-merchant-id'] as string;
+      if (!merchantId) {
+        return res.status(401).json({ error: 'Missing merchant ID' });
+      }
+
+      const limit = Math.min(parseInt(req.query.limit as string) || 50, 500);
+      const offset = parseInt(req.query.offset as string) || 0;
+
+      const { listReconciliationReports } = await import('./reconciliation.service');
+
+      const result = await listReconciliationReports(merchantId, limit, offset);
+
+      res.json({
+        success: true,
+        ...result
+      });
+    } catch (e: any) {
+      console.error('Error listing reconciliation reports:', e);
+      res.status(500).json({ 
+        success: false, 
+        error: e.message 
+      });
+    }
+  }
 }
 
 export const batchesController = new BatchesController();

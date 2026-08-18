@@ -19,6 +19,7 @@ import "../styles/wallet-codepen-theme.css";
 import {
   enqueue, cacheBalance, getCachedBalance, applyLocalBalance, pendingCount as offlinePending
 } from "../lib/offline-queue";
+import { TransakWidgetModal, type TransakFlow } from "../components/TransakWidgetModal";
 
 type Tab = 'wallet' | 'bank' | 'crypto';
 type Modal =
@@ -142,6 +143,63 @@ export const WalletsPage = () => {
   const selectedNetworkMap: Record<string, string> = {};
   COINS.forEach(c => { selectedNetworkMap[c] = getNetworkOptions(c)[0]; });
   const sel = customers.find(c => c.id === selId);
+
+  const [transakOpen, setTransakOpen] = useState(false);
+  const [transakFlow, setTransakFlow] = useState<TransakFlow>('BUY');
+  const [transakPresets, setTransakPresets] = useState<{
+    defaultCryptoCurrency: string;
+    defaultNetwork?: string;
+    defaultFiatAmount?: number;
+    defaultFiatCurrency: string;
+    partnerCustomerId?: string;
+    walletCode?: string;
+    walletAddress?: string;
+  }>({
+    defaultCryptoCurrency: 'USDT',
+    defaultFiatCurrency: 'USD',
+  });
+
+  const openTransak = (
+    flow: TransakFlow,
+    opts?: Partial<typeof transakPresets>
+  ) => {
+    setTransakPresets({
+      defaultCryptoCurrency: opts?.defaultCryptoCurrency || selCoin || 'USDT',
+      defaultNetwork: opts?.defaultNetwork || selectedNetwork,
+      defaultFiatAmount: opts?.defaultFiatAmount,
+      defaultFiatCurrency: opts?.defaultFiatCurrency || balance.currency || 'USD',
+      partnerCustomerId: sel?.id ? sel.id : undefined,
+      walletCode: sel?.wallet_code ? sel.wallet_code : undefined,
+      walletAddress: opts?.walletAddress,
+    });
+    setTransakFlow(flow);
+    setTransakOpen(true);
+  };
+
+  const handleTransakOrderSuccessful = async (order: any) => {
+    const oid = order?.id || order?.orderId || 'n/a';
+    const fiat = typeof order?.fiatAmount === 'number' ? order.fiatAmount : 0;
+    const cur = order?.fiatCurrency || 'USD';
+    const coin = order?.cryptoCurrency || transakPresets.defaultCryptoCurrency;
+    const qty = typeof order?.cryptoAmount === 'number' ? order.cryptoAmount : 0;
+    addNotification(
+      'Transak Order Successful',
+      `Order ${oid}\nPaid ${cur} ${fiat.toFixed(2)}\nReceived ${qty} ${coin}${order?.network ? ` on ${order.network}` : ''}\nRefreshing balances now.`,
+      'success'
+    );
+    try {
+      await Promise.all([refreshWallet(), refreshCrypto()]);
+      if (f.merchantId) await refreshMerchantWallet(f.merchantId);
+    } catch { /* ignore */ }
+  };
+
+  const handleTransakOrderFailed = (order: any) => {
+    addNotification(
+      'Transak Order Failed',
+      order?.statusMessage || order?.errorMessage || `Order ${order?.id || 'n/a'} failed. Please retry or check Transak dashboard.`,
+      'error'
+    );
+  };
 
   const refreshMerchantWallet = async (merchantIdOverride?: string) => {
     const targetMerchantId = merchantIdOverride || f.merchantId || '';
@@ -934,6 +992,14 @@ export const WalletsPage = () => {
                           className={`px-5 py-2.5 rounded-xl text-sm font-bold text-white shadow-sm transition-all ${(isOnline && cryptoWallets.some(w=>Number(w.balance)>0))?'bg-gradient-to-br from-rose-500 to-rose-600 hover:from-rose-400 hover:to-rose-500':'bg-rose-300 cursor-not-allowed'}`}>
                           Sell Crypto
                         </button>
+                        <button onClick={()=>{if(isOnline){openTransak('BUY');}}} disabled={!isOnline}
+                          className={`px-5 py-2.5 rounded-xl text-sm font-bold shadow-sm transition-all border ${isOnline?'bg-white border-sky-500 text-sky-700 hover:bg-sky-50':'bg-slate-50 border-slate-200 text-slate-400 cursor-not-allowed'}`}>
+                          Buy via Transak
+                        </button>
+                        <button onClick={()=>{if(isOnline){openTransak('SELL');}}} disabled={!isOnline || cryptoWallets.every(w=>Number(w.balance)<=0)}
+                          className={`px-5 py-2.5 rounded-xl text-sm font-bold shadow-sm transition-all border ${(isOnline && cryptoWallets.some(w=>Number(w.balance)>0))?'bg-white border-amber-500 text-amber-700 hover:bg-amber-50':'bg-slate-50 border-slate-200 text-slate-400 cursor-not-allowed'}`}>
+                          Sell via Transak
+                        </button>
                       </div>
                     </div>
 
@@ -1031,6 +1097,8 @@ export const WalletsPage = () => {
                             <div className="col-span-2 text-right flex justify-end gap-1.5">
                               <button onClick={()=>{setSelCoin(w.crypto_coin);setF({});setModal('buy-crypto');}}
                                 className="rounded-lg bg-emerald-50 text-emerald-700 px-3 py-1.5 text-xs font-bold hover:bg-emerald-100 transition">Buy</button>
+                              <button onClick={()=>{if(isOnline) openTransak('BUY', { defaultCryptoCurrency: w.crypto_coin });}} disabled={!isOnline}
+                                className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${isOnline?'bg-sky-50 text-sky-700 hover:bg-sky-100':'bg-slate-100 text-slate-400 cursor-not-allowed'}`}>Transak</button>
                               <button onClick={()=>{setSelCoin(w.crypto_coin);setF({});setModal('sell-crypto');}} disabled={Number(w.balance)<=0}
                                 className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${Number(w.balance)>0?'bg-rose-50 text-rose-700 hover:bg-rose-100':'bg-slate-100 text-slate-400 cursor-not-allowed'}`}>Sell</button>
                               <button onClick={()=>{setSelCoin(w.crypto_coin);setSelectedNetwork(getNetworkOptions(w.crypto_coin)[0]);setF({});setModal('withdraw-crypto');}} disabled={Number(w.balance)<=0}
@@ -1760,6 +1828,23 @@ export const WalletsPage = () => {
           })()}
         </ModalShell>
       )}
+
+      <TransakWidgetModal
+        open={transakOpen}
+        onClose={() => setTransakOpen(false)}
+        flow={transakFlow}
+        defaultCryptoCurrency={transakPresets.defaultCryptoCurrency}
+        defaultNetwork={transakPresets.defaultNetwork}
+        defaultFiatAmount={transakPresets.defaultFiatAmount}
+        defaultFiatCurrency={transakPresets.defaultFiatCurrency}
+        partnerCustomerId={transakPresets.partnerCustomerId}
+        walletCode={transakPresets.walletCode}
+        walletAddress={transakPresets.walletAddress}
+        onOrderSuccessful={handleTransakOrderSuccessful}
+        onOrderFailed={handleTransakOrderFailed}
+        onOrderCancelled={(o) => addNotification('Transak Order Cancelled', `Order ${o?.id || 'n/a'} was cancelled.`, 'info')}
+        size="xl"
+      />
     </div>
   );
 };

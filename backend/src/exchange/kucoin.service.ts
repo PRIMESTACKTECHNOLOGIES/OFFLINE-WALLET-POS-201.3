@@ -2,14 +2,11 @@ import crypto from 'crypto';
 import axios from 'axios';
 import type { ExchangeProviderId, BuyAssetResult, SellAssetResult, WithdrawAssetResult, WithdrawOptions, GetPriceResult } from './exchange-provider.interface';
 
-type KuCoinMode = 'live' | 'mock';
-
 interface KuCoinConfig {
   apiKey: string;
   apiSecret: string;
   apiPassphrase: string;
   baseUrl: string;
-  mode: KuCoinMode;
 }
 
 function isPlaceholder(value: string) {
@@ -18,8 +15,8 @@ function isPlaceholder(value: string) {
 
 export function isConfigured(): boolean {
   try {
-    const cfg = getKuCoinConfig();
-    return cfg.mode === 'live';
+    getKuCoinConfig();
+    return true;
   } catch {
     return false;
   }
@@ -30,18 +27,13 @@ function getKuCoinConfig(): KuCoinConfig {
   const apiSecret = process.env.KUCOIN_API_SECRET?.trim() || '';
   const apiPassphrase = process.env.KUCOIN_API_PASSPHRASE?.trim() || '';
   const baseUrl = process.env.KUCOIN_BASE_URL?.trim() || 'https://api.kucoin.com';
-  const requestedMode = (process.env.KUCOIN_MODE || '').toLowerCase();
-  const useMock = requestedMode === 'mock'
-    || process.env.KUCOIN_USE_MOCK === '1'
-    || process.env.KUCOIN_USE_MOCK === 'true';
-  if (useMock) {
-    return { apiKey: '', apiSecret: '', apiPassphrase: '', baseUrl, mode: 'mock' };
-  }
+  
   if (!apiKey || !apiSecret || !apiPassphrase
       || isPlaceholder(apiKey) || isPlaceholder(apiSecret) || isPlaceholder(apiPassphrase)) {
     throw new Error('KuCoin API keys not configured. Set KUCOIN_API_KEY, KUCOIN_API_SECRET and KUCOIN_API_PASSPHRASE.');
   }
-  return { apiKey, apiSecret, apiPassphrase, baseUrl, mode: 'live' };
+  
+  return { apiKey, apiSecret, apiPassphrase, baseUrl };
 }
 
 function signKuCoin(cfg: KuCoinConfig, method: string, path: string, bodyStr: string = '') {
@@ -77,9 +69,6 @@ async function kucoinSignedRequest(
   query?: Record<string, any>
 ) {
   const cfg = getKuCoinConfig();
-  if (cfg.mode === 'mock') {
-    return { mock: true, code: '200000', data: {} };
-  }
   let url = `${cfg.baseUrl}${path}`;
   let bodyStr = '';
   if (method === 'GET' || method === 'DELETE') {
@@ -135,18 +124,6 @@ export async function buyAssetWithUsd(asset: string, amountUsd: number): Promise
   const normalized = (asset || '').toUpperCase();
   if (!normalized) throw new Error('Asset symbol required');
   const cfg = getKuCoinConfig();
-  if (cfg.mode === 'mock') {
-    const price = (await getPrice(normalized)).priceUsd || 1;
-    const qty = amountUsd / price;
-    return {
-      ok: true, provider: 'kucoin', asset: normalized,
-      amount_usd: Number(amountUsd),
-      executed_qty: qty, executedQty: qty,
-      fills: [{ qty: String(qty), price: String(price) }],
-      status: 'MOCKED', order_id: `mock-${Date.now()}`,
-      mock: true, raw: { note: 'KUCOIN_USE_MOCK=true' },
-    };
-  }
   const symbol = normalized === 'USDT' ? 'USDT-USDT' : `${normalized}-USDT`;
   const orderBody: Record<string, any> = {
     clientOid: `buy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -178,7 +155,7 @@ export async function buyAssetWithUsd(asset: string, amountUsd: number): Promise
     executed_qty: executedQty, executedQty,
     fills, status: order?.data?.status || 'FILLED',
     order_id: String(orderId || order?.data?.orderId || `KC-${Date.now()}`),
-    mock: false, raw: order,
+    raw: order,
   };
 }
 
@@ -187,18 +164,6 @@ export async function sellAssetForUsdt(asset: string, amountBase: number): Promi
   if (!normalized) throw new Error('Asset symbol required');
   if (normalized === 'USDT') throw new Error('Cannot sell USDT for USDT');
   const cfg = getKuCoinConfig();
-  if (cfg.mode === 'mock') {
-    const price = (await getPrice(normalized)).priceUsd || 1;
-    return {
-      ok: true, provider: 'kucoin', asset: normalized,
-      amount_sold: Number(amountBase),
-      executed_qty: Number(amountBase), executedQty: Number(amountBase),
-      usdt_received: amountBase * price,
-      fills: [{ qty: String(amountBase), price: String(price) }],
-      status: 'MOCKED', order_id: `mock-${Date.now()}`,
-      mock: true, raw: { note: 'KUCOIN_USE_MOCK=true' },
-    };
-  }
   const symbol = `${normalized}-USDT`;
   const orderBody: Record<string, any> = {
     clientOid: `sell-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -234,7 +199,7 @@ export async function sellAssetForUsdt(asset: string, amountBase: number): Promi
     usdt_received: usdtReceived,
     fills, status: order?.data?.status || 'FILLED',
     order_id: String(orderId || order?.data?.orderId || `KC-${Date.now()}`),
-    mock: false, raw: order,
+    raw: order,
   };
 }
 
@@ -260,14 +225,6 @@ export async function withdrawAsset(
 ): Promise<WithdrawAssetResult> {
   const cfg = getKuCoinConfig();
   const coin = String(asset || '').toUpperCase();
-  if (cfg.mode === 'mock') {
-    return {
-      ok: true, provider: 'kucoin',
-      id: `mock-wd-${Date.now()}`, accepted: true,
-      info: 'Mocked by KUCOIN_USE_MOCK',
-      raw: { note: 'KUCOIN_USE_MOCK=true' },
-    };
-  }
   const chain = networkToKuCoinChain(network, coin);
   const body: Record<string, any> = {
     currency: coin,

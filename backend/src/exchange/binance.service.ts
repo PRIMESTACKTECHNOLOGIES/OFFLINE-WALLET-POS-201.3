@@ -1,13 +1,10 @@
 import crypto from 'crypto';
 import axios from 'axios';
 
-type BinanceMode = 'live' | 'mock';
-
 interface BinanceConfig {
   apiKey: string;
   apiSecret: string;
   baseUrl: string;
-  mode: BinanceMode;
 }
 
 /** FATF Travel Rule Standard PII for originator (sender) — passed as JSON to Binance Local Entity endpoints. */
@@ -133,45 +130,23 @@ export const INDIA_WITHDRAW_QUESTIONNAIRE: Record<string, string> = {
   sendTo: '1',
 };
 
-function isPlaceholder(value: string) {
-  return !value || value.includes('your_') || value.includes('REPLACE') || value.includes('example');
-}
-
 export function getBinanceConfig(): BinanceConfig {
   const apiKey = process.env.BINANCE_API_KEY?.trim() || '';
   const apiSecret = process.env.BINANCE_API_SECRET?.trim() || '';
   const baseUrl = process.env.BINANCE_BASE_URL?.trim() || 'https://api.binance.com';
-  const requestedMode = (process.env.BINANCE_MODE || process.env.CRYPTO_MODE || '').toLowerCase();
-  const forcedLive = requestedMode === 'live' || process.env.BINANCE_FORCE_LIVE === '1' || process.env.BINANCE_FORCE_LIVE === 'true';
-  const explicitMock = requestedMode === 'mock'
-    || process.env.BINANCE_USE_MOCK === '1'
-    || process.env.BINANCE_USE_MOCK === 'true';
-  const keysMissing = !apiKey || !apiSecret || isPlaceholder(apiKey) || isPlaceholder(apiSecret);
 
-  if (explicitMock) return { apiKey: '', apiSecret: '', baseUrl, mode: 'mock' };
+  function isPlaceholder(value: string) {
+    return !value || value.includes('your_') || value.includes('REPLACE') || value.includes('example');
+  }
 
-  // NO MORE SILENT MOCK FALLBACK. If keys are missing and user did NOT explicitly
-  // request mock mode (BINANCE_USE_MOCK=1 or MODE=mock), we BLOCK the purchase and
-  // force them to either configure real keys, or flip a flag to say "I know this is sim".
-  if (keysMissing && !forcedLive) {
+  if (!apiKey || !apiSecret || isPlaceholder(apiKey) || isPlaceholder(apiSecret)) {
     throw new Error(
-      'CRYPTO_PURCHASE_BLOCKED: Binance/Bybit/OKX API keys not configured. ' +
-      'Set BINANCE_API_KEY + BINANCE_API_SECRET in backend/.env for LIVE execution. ' +
-      'If you intentionally want to simulate a crypto purchase (demo/staging only), ' +
-      'set BINANCE_USE_MOCK=1 in backend/.env and then this operation will run in ' +
-      'SIMULATION mode (merchant wallet still gets debited — this is ONLY for operator ' +
-      'UI testing with a known real balance — not for live use).'
+      'CRYPTO_PURCHASE_BLOCKED: Binance API keys not configured. ' +
+      'Set BINANCE_API_KEY + BINANCE_API_SECRET in backend/.env for production use.'
     );
   }
 
-  if (keysMissing && forcedLive) {
-    throw new Error(
-      'Binance LIVE mode forced via BINANCE_MODE=live but keys missing. ' +
-      'Set BINANCE_API_KEY and BINANCE_API_SECRET or unset BINANCE_MODE to fall back to mock.'
-    );
-  }
-
-  return { apiKey, apiSecret, baseUrl, mode: 'live' };
+  return { apiKey, apiSecret, baseUrl };
 }
 
 function signQuery(params: Record<string, any>, apiSecret: string) {
@@ -187,20 +162,7 @@ function signBody(body: URLSearchParams, apiSecret: string) {
 }
 
 async function binanceRequest(path: string, params: Record<string, any> = {}) {
-  const { apiKey, apiSecret, baseUrl, mode } = getBinanceConfig();
-
-  if (mode === 'mock') {
-    return {
-      mock: true,
-      status: 'MOCKED',
-      symbol: params.symbol,
-      side: params.side,
-      type: params.type,
-      executedQty: (params.quoteOrderQty || params.qty || '1').toString(),
-      fills: [{ qty: (params.quoteOrderQty || params.qty || '1').toString(), price: '0' }],
-      orderId: 999999,
-    };
-  }
+  const { apiKey, apiSecret, baseUrl } = getBinanceConfig();
 
   const timestamp = Date.now();
   const signed = signQuery({ ...params, timestamp }, apiSecret);
@@ -214,9 +176,6 @@ async function binanceRequest(path: string, params: Record<string, any> = {}) {
 
 async function binanceSignedPost(path: string, fields: Record<string, any>, config?: BinanceConfig): Promise<any> {
   const cfg = config || getBinanceConfig();
-  if (cfg.mode === 'mock') {
-    return { mock: true, id: `mock-${Date.now()}`, trId: Math.floor(Date.now() / 1000), accepted: true, info: 'Mocked by BINANCE_USE_MOCK' };
-  }
 
   const body = new URLSearchParams();
   const entries = Object.entries({
@@ -253,9 +212,6 @@ async function binanceSignedPost(path: string, fields: Record<string, any>, conf
 
 async function binanceSignedGet(path: string, query: Record<string, any> = {}, config?: BinanceConfig): Promise<any> {
   const cfg = config || getBinanceConfig();
-  if (cfg.mode === 'mock') {
-    return { mock: true };
-  }
   const params: Record<string, any> = { ...query, timestamp: query.timestamp || Date.now() };
   const signed = signQuery(params, cfg.apiSecret);
   const url = `${cfg.baseUrl}${path}?${signed}`;

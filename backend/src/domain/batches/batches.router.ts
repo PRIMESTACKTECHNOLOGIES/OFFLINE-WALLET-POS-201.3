@@ -31,6 +31,19 @@ router.post("/pos/201.3/redeem", batchesController.redeemPaymentCode);
 router.post("/api/payment2013/cashout", batchesController.cashoutBraintree);
 router.post("/merchant/v1/cashout/braintree", batchesController.cashoutBraintree);
 
+// ───────────────────────────────────────────────────────────────────────
+// BATCH RECONCILIATION ENDPOINTS
+// ───────────────────────────────────────────────────────────────────────
+
+// Reconcile batch transactions (compare offline vs online)
+router.post("/reconcile/batch", batchesController.reconcileBatch.bind(batchesController));
+
+// Get reconciliation report details
+router.get("/reconcile/report/:reportId", batchesController.getReconciliationReport.bind(batchesController));
+
+// List reconciliation reports for merchant
+router.get("/reconcile/reports", batchesController.listReconciliationReports.bind(batchesController));
+
 // Health check for POS
 router.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });

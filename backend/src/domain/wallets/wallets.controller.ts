@@ -607,6 +607,303 @@ export class WalletsController {
       res.json(res2.rows);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   }
+
+  // ── Transak Fiat On/Off-Ramp ─────────────────────────────────────────────
+
+  async transakConfig(req: Request, res: Response) {
+    try {
+      const transak = await import('../../exchange/transak.service');
+      const cfg = transak.getTransakConfig();
+      res.json({
+        configured: transak.isConfigured(),
+        mode: cfg.mode,
+        apiKey: cfg.apiKey,
+        widgetUrl: cfg.widgetUrl,
+        referrerDomain: cfg.referrerDomain,
+        networks: ['TRC20', 'BEP20', 'ERC20', 'POLYGON', 'SOL', 'BTC'],
+      });
+    } catch (e: any) {
+      res.status(500).json({ configured: false, error: e.message });
+    }
+  }
+
+  async generateTransakWidgetSession(req: Request, res: Response) {
+    try {
+      const transak = await import('../../exchange/transak.service');
+      if (!transak.isConfigured()) {
+        return res.status(503).json({ error: 'Transak not configured. Set TRANSAK_API_KEY + TRANSAK_API_SECRET.' });
+      }
+      const params: any = { ...(req.body || {}) };
+      const { customerId, walletCode } = params;
+
+      let partnerCustomerId = params.partnerCustomerId;
+      if (!partnerCustomerId && customerId) partnerCustomerId = String(customerId);
+      if (!partnerCustomerId && walletCode) {
+        const { db } = await import('../../config/db');
+        const r = await db.query(
+          `SELECT c.id AS cid FROM customer_wallets cw
+           JOIN customers c ON cw.customer_id = c.id
+           WHERE cw.wallet_code = ? LIMIT 1`,
+          [walletCode]
+        );
+        if (r.rows[0]) partnerCustomerId = String(r.rows[0].cid);
+      }
+      if (partnerCustomerId) params.partnerCustomerId = partnerCustomerId;
+      if (params.walletCode) delete params.walletCode;
+
+      const session = await transak.createWidgetSession(params);
+      res.json({
+        ok: true,
+        sessionId: session.sessionId,
+        widgetUrl: session.widgetUrl,
+        expiresAt: session.expiresAt,
+        note: 'Valid for 5 minutes, single-use. Load in Android WebView, iframe, or redirect.',
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || 'Transak widget session failed' });
+    }
+  }
+
+  async getTransakOrderStatus(req: Request, res: Response) {
+    try {
+      const { orderId } = req.params;
+      if (!orderId) return res.status(400).json({ error: 'orderId is required' });
+      const transak = await import('../../exchange/transak.service');
+      if (!transak.isConfigured()) {
+        return res.status(503).json({ error: 'Transak not configured.' });
+      }
+      const order = await transak.getOrderStatus(orderId);
+      res.json({ ok: true, order });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || 'Transak order query failed' });
+    }
+  }
+
+  async getTransakCountries(_req: Request, res: Response) {
+    try {
+      const transak = await import('../../exchange/transak.service');
+      if (!transak.isConfigured()) {
+        return res.status(503).json({
+          error: 'Transak not configured. Set TRANSAK_API_KEY + TRANSAK_API_SECRET.',
+        });
+      }
+      const data = await transak.getCountries();
+      res.json({ ok: true, response: data.response, mode: transak.getTransakConfig().mode });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || 'Transak countries fetch failed' });
+    }
+  }
+
+  // GET /wallet/transak/fiat-currencies
+  // Returns all supported fiat currencies with their payment options and limits.
+  // Public endpoint — no auth token required, uses x-api-key header only.
+  async getTransakFiatCurrencies(_req: Request, res: Response) {
+    try {
+      const transak = await import('../../exchange/transak.service');
+      const { getFiatCurrencies } = transak;
+      if (!getFiatCurrencies) {
+        return res.status(501).json({ error: 'getFiatCurrencies not available in transak.service' });
+      }
+      const data = await getFiatCurrencies();
+      res.json({ ok: true, response: data.response, count: data.response?.length ?? 0 });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || 'Transak fiat currencies fetch failed' });
+    }
+  }
+
+  // GET /wallet/transak/fiat-currencies/whitelabel
+  // Returns fiat currencies with per-payment-option BUY/SELL flags and sell limits.
+  // Uses the Whitelabel API (api-gateway) — requires x-user-ip from client.
+  // Query param: ?userIp=1.2.3.4  (or read from request IP)
+  async getTransakFiatCurrenciesWhitelabel(req: Request, res: Response) {
+    try {
+      const transak = await import('../../exchange/transak.service');
+      const { getFiatCurrenciesWhitelabel } = transak;
+      if (!getFiatCurrenciesWhitelabel) {
+        return res.status(501).json({ error: 'getFiatCurrenciesWhitelabel not available in transak.service' });
+      }
+
+      // Resolve the end-user IP: query param → x-forwarded-for → req.ip
+      const userIp =
+        String(req.query.userIp || '')
+        || (req.headers['x-forwarded-for'] as string || '').split(',')[0].trim()
+        || req.ip
+        || '127.0.0.1';
+
+      const data = await getFiatCurrenciesWhitelabel(userIp);
+      res.json({
+        ok: true,
+        response: data.response,
+        count: data.response?.length ?? 0,
+        source: 'whitelabel',
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || 'Transak whitelabel fiat currencies fetch failed' });
+    }
+  }
+
+  // GET /wallet/transak/quote
+  // Query params: cryptoCurrency, fiatCurrency, isBuyOrSell, network,
+  //               fiatAmount?, cryptoAmount?, paymentMethod?, quoteCountryCode?
+  // Returns a real-time price quote with fee breakdown from Transak.
+  async getTransakQuote(req: Request, res: Response) {
+    try {
+      const transak = await import('../../exchange/transak.service');
+      const { getQuote } = transak;
+      if (!getQuote) {
+        return res.status(501).json({ error: 'getQuote not available in transak.service' });
+      }
+
+      const {
+        cryptoCurrency, fiatCurrency, isBuyOrSell,
+        network, fiatAmount, cryptoAmount,
+        paymentMethod, quoteCountryCode,
+      } = req.query as Record<string, string>;
+
+      if (!cryptoCurrency || !fiatCurrency || !isBuyOrSell || !network) {
+        return res.status(400).json({
+          error: 'Required: cryptoCurrency, fiatCurrency, isBuyOrSell (BUY|SELL), network',
+        });
+      }
+      if (isBuyOrSell !== 'BUY' && isBuyOrSell !== 'SELL') {
+        return res.status(400).json({ error: 'isBuyOrSell must be BUY or SELL' });
+      }
+      if (isBuyOrSell === 'SELL' && !cryptoAmount) {
+        return res.status(400).json({ error: 'cryptoAmount is required for SELL quotes' });
+      }
+
+      const quote = await getQuote({
+        cryptoCurrency: cryptoCurrency.toUpperCase(),
+        fiatCurrency:   fiatCurrency.toUpperCase(),
+        isBuyOrSell:    isBuyOrSell as 'BUY' | 'SELL',
+        network,
+        fiatAmount:     fiatAmount    ? Number(fiatAmount)    : undefined,
+        cryptoAmount:   cryptoAmount  ? Number(cryptoAmount)  : undefined,
+        paymentMethod:  paymentMethod || 'credit_debit_card',
+        quoteCountryCode,
+      });
+
+      res.json({ ok: true, response: quote });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || 'Transak quote fetch failed' });
+    }
+  }
+
+  // POST /webhooks/transak  (public — verified via HMAC signature)
+  // Handles Transak order lifecycle events: PENDING, PROCESSING, COMPLETED, FAILED, etc.
+  // The webhook body is signed with TRANSAK_WEBHOOK_SECRET using HMAC-SHA256.
+  async handleTransakWebhook(req: Request, res: Response) {
+    try {
+      const transak = await import('../../exchange/transak.service');
+      const rawBody   = req.body;   // express.json() already parsed it
+      const sigHeader = String(req.headers['x-transak-signature'] || req.headers['x-signature'] || '');
+
+      // ── Signature verification ────────────────────────────────────────────
+      const rawBodyStr = typeof rawBody === 'string' ? rawBody : JSON.stringify(rawBody);
+      const sigValid = transak.verifyWebhookSignature(rawBodyStr, sigHeader);
+      if (!sigValid && process.env.TRANSAK_WEBHOOK_SECRET) {
+        return res.status(401).json({ error: 'Invalid Transak webhook signature' });
+      }
+
+      const eventData = rawBody?.data || rawBody;
+      const orderId   = eventData?.id;
+      const status    = String(eventData?.status || '').toUpperCase();
+      const partnerOrderId = eventData?.partnerOrderId || null;
+
+      if (!orderId) {
+        return res.status(400).json({ error: 'Missing order id in webhook payload' });
+      }
+
+      // ── Persist event to DB ───────────────────────────────────────────────
+      const { db } = await import('../../config/db');
+      const { v4: uuidv4 } = await import('uuid');
+
+      // Upsert into crypto_transactions: update status if row already exists for this orderId
+      const existing = await db.query(
+        `SELECT id FROM crypto_transactions WHERE reference = ? LIMIT 1`,
+        [`transak:${orderId}`]
+      );
+
+      if (existing.rows?.length) {
+        await db.query(
+          `UPDATE crypto_transactions
+              SET status = ?, meta = json_patch(COALESCE(meta,'{}'), ?), updated_at = CURRENT_TIMESTAMP
+            WHERE reference = ?`,
+          [
+            status === 'COMPLETED' ? 'completed'
+              : status === 'FAILED' || status === 'CANCELLED' ? 'failed'
+              : 'processing',
+            JSON.stringify({ transak_status: status, transak_order_id: orderId, webhook_received_at: new Date().toISOString() }),
+            `transak:${orderId}`,
+          ]
+        );
+      } else {
+        // New order seen for the first time via webhook — insert a record
+        await db.query(
+          `INSERT OR IGNORE INTO crypto_transactions
+             (id, customer_id, crypto_coin, transaction_type, fiat_amount, crypto_amount,
+              fiat_currency, exchange_rate, source, provider_mode, status, reference, meta)
+           VALUES (?, ?, ?, 'buy', ?, ?, ?, 0, 'transak_webhook', 'transak', ?, ?, ?)`,
+          [
+            uuidv4(),
+            eventData?.partnerCustomerId || 'unknown',
+            String(eventData?.cryptoCurrency || 'USDT').toUpperCase(),
+            Number(eventData?.fiatAmount  || 0),
+            Number(eventData?.cryptoAmount || 0),
+            String(eventData?.fiatCurrency || 'USD').toUpperCase(),
+            status === 'COMPLETED' ? 'completed'
+              : status === 'FAILED' || status === 'CANCELLED' ? 'failed'
+              : 'processing',
+            `transak:${orderId}`,
+            JSON.stringify({
+              transak_order_id:   orderId,
+              transak_status:     status,
+              partner_order_id:   partnerOrderId,
+              network:            eventData?.network,
+              wallet_address:     eventData?.walletAddress,
+              transaction_hash:   eventData?.transactionHash,
+              webhook_received_at: new Date().toISOString(),
+            }),
+          ]
+        );
+      }
+
+      // ── Credit customer wallet if order COMPLETED ─────────────────────────
+      if (status === 'COMPLETED') {
+        const customerId     = eventData?.partnerCustomerId;
+        const cryptoAmount   = Number(eventData?.cryptoAmount  || 0);
+        const cryptoCurrency = String(eventData?.cryptoCurrency || 'USDT').toUpperCase();
+
+        if (customerId && cryptoAmount > 0) {
+          // Upsert customer_crypto_wallets balance
+          const existingCW = await db.query(
+            `SELECT id, balance FROM customer_crypto_wallets WHERE customer_id = ? AND crypto_coin = ? LIMIT 1`,
+            [customerId, cryptoCurrency]
+          );
+          if (existingCW.rows?.length) {
+            await db.query(
+              `UPDATE customer_crypto_wallets
+                  SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP
+                WHERE customer_id = ? AND crypto_coin = ?`,
+              [cryptoAmount, customerId, cryptoCurrency]
+            );
+          } else {
+            await db.query(
+              `INSERT INTO customer_crypto_wallets (id, customer_id, crypto_coin, balance, created_at, updated_at)
+               VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+              [uuidv4(), customerId, cryptoCurrency, cryptoAmount]
+            );
+          }
+        }
+      }
+
+      res.json({ ok: true, received: true, orderId, status });
+    } catch (e: any) {
+      console.error('[Transak Webhook Error]', e.message);
+      // Always return 200 to Transak so it stops retrying on server errors
+      res.status(200).json({ ok: false, error: e.message });
+    }
+  }
 }
 
 export const walletsController = new WalletsController();
