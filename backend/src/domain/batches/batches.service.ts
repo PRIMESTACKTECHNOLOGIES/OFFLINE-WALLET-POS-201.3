@@ -5,6 +5,14 @@ import { validateTransition, createLedgerEntry, persistLedgerEntry, type Transac
 import crypto from "crypto";
 import { cashoutsService } from "../cashouts/cashouts.service";
 import { v4 as uuidv4 } from "uuid";
+import {
+  batchExporter,
+  type ExportFormat,
+  type ExportOpts,
+  type ExportResult,
+  type BatchRowShape,
+  type TxnRowShape,
+} from "./batch-exporter";
 
 export class BatchesService {
 
@@ -447,7 +455,8 @@ export class BatchesService {
         SELECT t.id, t.stan, t.amount_minor, t.currency, t.pan_masked,
                t.status, t.txn_timestamp, t.terminal_id, t.batch_id,
                t.txn_type, t.auth_mode, t.entry_mode, t.auth_code,
-               t.local_txn_id, t.created_at
+               t.local_txn_id, t.created_at, t.rrn, t.card_brand,
+               t.reader_source, t.cvm_result, t.pin_verified
         FROM pos2013_transactions t
         ${where}
         ORDER BY t.created_at DESC
@@ -463,6 +472,265 @@ export class BatchesService {
       console.error("getTransactions error:", e);
       return [];
     }
+  }
+
+  private async resolveSecret(merchantId: string, terminalId: string): Promise<string> {
+    const termRes = await db.query(
+      `SELECT terminal_secret FROM terminals WHERE terminal_id = ? AND merchant_id = ? LIMIT 1`,
+      [terminalId, merchantId]
+    );
+    if (termRes.rowCount && termRes.rows[0].terminal_secret) return termRes.rows[0].terminal_secret;
+    const settings = await settingsService.getSettings(merchantId);
+    if (settings.api_key) return settings.api_key;
+    throw new Error("Merchant/terminal secret key is not configured");
+  }
+
+  async getBatchDetails(batchId: string, merchantId?: string) {
+    const params: any[] = [batchId];
+    let where = "WHERE b.batch_id = ?";
+    if (merchantId) { where += " AND b.merchant_id = ?"; params.push(merchantId); }
+
+    const batchRes = await db.query(`
+      SELECT b.* FROM pos2013_batches b ${where} LIMIT 1
+    `, params);
+    if (!batchRes.rowCount) return null;
+    const batch = batchRes.rows[0] as BatchRowShape;
+
+    const txParams: any[] = [batch.batch_id];
+    const txWhere = "WHERE batch_id = ?";
+    const txRes = await db.query(`
+      SELECT t.id, t.merchant_id, t.terminal_id, t.batch_id, t.local_txn_id,
+             t.stan, t.amount_minor, t.currency, t.pan_masked, t.txn_type,
+             t.auth_mode, t.entry_mode, t.card_brand, t.reader_source,
+             t.cvm_result, t.pin_verified, t.status, t.auth_code,
+             t.rrn, t.txn_timestamp, t.created_at
+      FROM pos2013_transactions t ${txWhere}
+      ORDER BY t.created_at ASC
+    `, txParams);
+
+    const txns = txRes.rows as TxnRowShape[];
+    const txnCount = txns.length;
+    const ghostCount = txns.filter(t =>
+      String(t.auth_code || "").trim() === "0000" ||
+      /^\*+$/.test(String(t.pan_masked || "").replace(/\s/g, ""))
+    ).length;
+    const totalAmountMinor = txns.reduce((s, t) => s + (Number(t.amount_minor) || 0), 0);
+
+    return {
+      batch,
+      transactions: txns,
+      txnCount,
+      ghostCount,
+      totalAmountMinor,
+      amount: (totalAmountMinor / 100).toFixed(2),
+    };
+  }
+
+  async closeBatch(params: {
+    merchantId: string;
+    terminalId?: string;
+    batchId?: string;
+    includeGhost?: boolean;
+    maxTxns?: number;
+    minAmountMinor?: number;
+    force?: boolean;
+  }) {
+    const { merchantId, terminalId, includeGhost = false, force = false } = params;
+    const now = new Date().toISOString();
+
+    if (params.batchId) {
+      const existing = await this.getBatchDetails(params.batchId, merchantId);
+      if (!existing) throw new Error("Batch not found");
+      const batch = existing.batch;
+      const secret = await this.resolveSecret(merchantId, existing.batch.terminal_id);
+      const signatureNonce = batch.nonce || crypto.randomBytes(12).toString("hex");
+      const signed = this.generateHmacSignature(
+        batch.protocol_version || "201.3",
+        merchantId, batch.terminal_id, batch.batch_id,
+        now, signatureNonce, existing.txnCount, secret
+      );
+      await db.query(
+        `UPDATE pos2013_batches
+            SET status = 'CLOSED',
+                signature = ?,
+                nonce = ?,
+                settlement_code = COALESCE(settlement_code, ?),
+                processed_at = COALESCE(processed_at, ?),
+                updated_at = ?
+          WHERE batch_id = ? AND merchant_id = ? AND terminal_id = ?`,
+        [
+          signed, signatureNonce,
+          batch.settlement_code || String(Math.floor(100000 + Math.random() * 900000)),
+          batch.processed_at || now,
+          now, batch.batch_id, merchantId, batch.terminal_id
+        ]
+      );
+      return this.getBatchDetails(batch.batch_id, merchantId);
+    }
+
+    let fromClause = `FROM pos2013_transactions WHERE merchant_id = ? AND (batch_id IS NULL OR batch_id = '')`;
+    const queryParams: any[] = [merchantId];
+    if (terminalId) { fromClause += ` AND terminal_id = ?`; queryParams.push(terminalId); }
+    if (!includeGhost) {
+      fromClause += ` AND COALESCE(auth_code,'') <> '0000'`;
+    }
+    const countRes = await db.query(`SELECT COUNT(*) as cnt ${fromClause}`, queryParams);
+    const cnt = Number(countRes.rows[0]?.cnt || 0);
+    if (cnt === 0) throw new Error("No unbatched transactions available");
+    const minCount = 1;
+    const minAmt = params.minAmountMinor ?? 0;
+    const amtRes = await db.query(`SELECT COALESCE(SUM(amount_minor),0) as s ${fromClause}`, queryParams);
+    const amt = Number(amtRes.rows[0]?.s || 0);
+    if (!force && (cnt < minCount || amt < minAmt)) {
+      throw new Error(`Threshold not met: txns=${cnt}/${minCount}, amount=${amt}/${minAmt}`);
+    }
+
+    const txRes = await db.query(`SELECT * ${fromClause} ORDER BY created_at ASC`, queryParams);
+    const orphanTxns = txRes.rows as TxnRowShape[];
+    const assignedTerminal = terminalId || orphanTxns[0].terminal_id;
+    const seqRes = await db.query(
+      `SELECT COALESCE(MAX(batch_seq),0) as maxSeq FROM pos2013_batches WHERE merchant_id = ? AND terminal_id = ?`,
+      [merchantId, assignedTerminal]
+    );
+    const batchSeq = Number(seqRes.rows[0]?.maxSeq || 0) + 1;
+    const newBatchId = params.batchId || `B${Date.now()}${batchSeq.toString().padStart(4, "0")}`;
+    const secret = await this.resolveSecret(merchantId, assignedTerminal);
+    const nonce = crypto.randomBytes(12).toString("hex");
+    const sig = this.generateHmacSignature("201.3", merchantId, assignedTerminal, newBatchId, now, nonce, orphanTxns.length, secret);
+    const settlementCode = String(Math.floor(100000 + Math.random() * 900000));
+    const batchRowId = uuidv4();
+    const totalAmountMinor = orphanTxns.reduce((s, t) => s + (Number(t.amount_minor) || 0), 0);
+
+    await db.query(`
+      INSERT INTO pos2013_batches
+        (id, batch_id, merchant_id, terminal_id, protocol_version, status,
+         settlement_code, txn_count, total_amount_minor, signature, nonce,
+         batch_seq, created_at, updated_at, processed_at)
+      VALUES (?, ?, ?, ?, '201.3', 'CLOSED', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [batchRowId, newBatchId, merchantId, assignedTerminal, settlementCode, orphanTxns.length, totalAmountMinor, sig, nonce, batchSeq, now, now, now]);
+
+    await db.query(
+      `UPDATE pos2013_transactions SET batch_id = ?, status = 'CLOSED', updated_at = CURRENT_TIMESTAMP WHERE id IN (${orphanTxns.map(() => "?").join(",")})`,
+      [newBatchId, ...orphanTxns.map(t => t.id)]
+    );
+
+    return this.getBatchDetails(newBatchId, merchantId);
+  }
+
+  async exportBatch(batchId: string, format: ExportFormat, opts: Partial<ExportOpts> & { merchantId?: string; }) {
+    const details = await this.getBatchDetails(batchId, opts.merchantId);
+    if (!details) throw new Error("Batch not found");
+    const { batch, transactions } = details;
+    const secret = opts.secretKey || await this.resolveSecret(batch.merchant_id, batch.terminal_id);
+    const settings = await settingsService.getSettings(batch.merchant_id);
+    const ext = settings.extended_settings ? (settings.extended_settings as any) : {};
+    const banking = ext.banking || {};
+    const business = ext.business || {};
+
+    const result = batchExporter.export(batch as BatchRowShape, transactions as TxnRowShape[], format, {
+      includeGhost: opts.includeGhost === true,
+      secretKey: secret,
+      generatedAt: opts.generatedAt,
+      merchant: {
+        merchantName: settings.merchant_name || business.businessName || batch.merchant_id,
+        companyName: business.businessName || settings.merchant_name || batch.merchant_id,
+        supportEmail: settings.support_email,
+        ein: business.taxId || business.ein || "",
+        routingNumber: banking.routingNumber || "",
+        accountNumber: banking.accountNumber || "",
+        settlementCode: batch.settlement_code || undefined,
+      },
+    });
+
+    await db.query(`
+      UPDATE pos2013_batches
+         SET batch_file = ?, status = CASE WHEN status IN ('RECEIVED','PENDING','CLOSED') THEN 'EXPORTED' ELSE status END, updated_at = CURRENT_TIMESTAMP
+       WHERE batch_id = ? AND merchant_id = ? AND terminal_id = ?
+    `, [
+      JSON.stringify({
+        format: result.format,
+        filename: result.filename,
+        contentType: result.contentType,
+        byteLength: result.byteLength,
+        txnCount: result.txnCount,
+        ghostExcluded: result.ghostExcluded,
+        totalDebitMinor: result.totalDebitMinor,
+        totalCreditMinor: result.totalCreditMinor,
+        entryHash10: result.controlEntryHash,
+        signature: result.signature,
+        canonicalPayload: result.canonicalPayload,
+        generatedAt: result.generatedAt,
+      }),
+      batch.batch_id, batch.merchant_id, batch.terminal_id
+    ]);
+
+    return result;
+  }
+
+  async markBatchUploaded(params: {
+    batchId: string;
+    merchantId?: string;
+    externalRef?: string;
+    processor?: string;
+    uploadTimestamp?: string;
+    status?: string;
+  }) {
+    const { batchId, merchantId, externalRef, processor, status } = params;
+    const now = params.uploadTimestamp || new Date().toISOString();
+    const p: any[] = [now, now];
+    let where = "WHERE batch_id = ?";
+    p.push(batchId);
+    if (merchantId) { where += " AND merchant_id = ?"; p.push(merchantId); }
+    const setClauses: string[] = ["upload_timestamp = ?", "updated_at = ?"];
+    if (externalRef !== undefined) { setClauses.push("settlement_code = COALESCE(NULLIF(settlement_code,''), ?)"); p.push(externalRef); }
+    if (processor !== undefined) { /* processor tracked in meta via JSON merge */ }
+    const newStatus = status || "UPLOADED";
+    setClauses.push("status = ?"); p.push(newStatus);
+    const q = `UPDATE pos2013_batches SET ${setClauses.join(", ")} ${where}`;
+    const r = await db.query(q, p);
+    return { affected: Number(r.rowCount || 0), batchId, merchantId, externalRef, status: newStatus };
+  }
+
+  async autoCloseCandidates(merchantId: string, thresholds: {
+    terminalId?: string;
+    maxAgeHours?: number;
+    minTxnCount?: number;
+    minAmountMinor?: number;
+  }) {
+    const { terminalId, maxAgeHours = 24, minTxnCount = 50, minAmountMinor = 100000 } = thresholds;
+    let where = `WHERE merchant_id = ? AND (batch_id IS NULL OR batch_id = '') AND COALESCE(auth_code,'') <> '0000'`;
+    const p: any[] = [merchantId];
+    if (terminalId) { where += ` AND terminal_id = ?`; p.push(terminalId); }
+
+    const ageCutoff = new Date(Date.now() - maxAgeHours * 60 * 60 * 1000).toISOString();
+    const groupRes = await db.query(`
+      SELECT terminal_id,
+             COUNT(*) as cnt,
+             COALESCE(SUM(amount_minor),0) as sumMinor,
+             MIN(created_at) as oldest
+        FROM pos2013_transactions
+       ${where}
+       GROUP BY terminal_id
+    `, p);
+
+    return groupRes.rows.map((r: any) => {
+      const cnt = Number(r.cnt || 0);
+      const sumMinor = Number(r.sumMinor || 0);
+      const oldest = String(r.oldest || "");
+      const trigger: string[] = [];
+      if (cnt >= minTxnCount) trigger.push(`count:${cnt}>=${minTxnCount}`);
+      if (sumMinor >= minAmountMinor) trigger.push(`amount:${sumMinor}>=${minAmountMinor}`);
+      if (oldest && oldest < ageCutoff) trigger.push(`age:${oldest}<${ageCutoff}`);
+      return {
+        terminalId: r.terminal_id,
+        txnCount: cnt,
+        totalAmountMinor: sumMinor,
+        totalAmount: (sumMinor / 100).toFixed(2),
+        oldestTxnAt: oldest,
+        thresholdHit: trigger.length > 0,
+        triggers: trigger,
+      };
+    });
   }
 }
 

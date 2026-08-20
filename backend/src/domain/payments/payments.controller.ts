@@ -32,7 +32,7 @@ export class PaymentsController {
         return res.status(400).json({ error: "Invalid expiry format MM/YY" });
       }
 
-      console.log("Charge request:", req.body);
+      console.log("Charge request received", { amountMinor, currency, merchantId, terminalId, stan });
 
       let normalizedEmv = emv;
       if (!normalizedEmv && tlvRaw && typeof tlvRaw === "string") {

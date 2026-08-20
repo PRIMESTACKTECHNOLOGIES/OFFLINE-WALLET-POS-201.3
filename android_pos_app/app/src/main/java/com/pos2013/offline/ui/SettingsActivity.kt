@@ -37,11 +37,11 @@ class SettingsActivity : AppCompatActivity() {
         root.addView(sectionLabel("Backend Server URL"))
         root.addView(hintLabel(
             "Emulator: http://10.0.2.2:7000/  |  " +
-            "Real device (same Wi-Fi): http://192.168.x.x:7000/  |  " +
+            "This Wi-Fi: http://10.0.1.156:7000/  |  " +
             "Cloud: https://your-app.onrender.com/"
         ))
         val etUrl = editField(
-            hint = "http://10.0.2.2:7000/",
+            hint = "http://10.0.1.156:7000/",
             value = prefs.getString("server_url", ApiClient.DEFAULT_URL) ?: ApiClient.DEFAULT_URL
         )
         root.addView(etUrl)

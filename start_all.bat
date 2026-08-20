@@ -19,13 +19,21 @@ if "%PC_IP%"=="" set "PC_IP=localhost"
 
 cls
 echo.
-echo  ==========================================
-echo   POS OFFLINE SOFTWARE  ^|  Starting...
-echo  ==========================================
+echo  ╔════════════════════════════════════════════════════════════╗
+echo  ║   POS OFFLINE SYSTEM v201.3 + CRYPTO WALLET                ║
+echo  ║   Starting all services...                                 ║
+echo  ╚════════════════════════════════════════════════════════════╝
 echo.
-echo   Backend  : http://localhost:7000
-echo   Frontend : http://localhost:7001
-echo   Android  : http://%PC_IP%:7000/
+echo  📍 SERVER ENDPOINTS:
+echo     └─ Backend  API  : http://localhost:7000
+echo     └─ Dashboard UI  : http://localhost:7001
+echo     └─ Android POS   : http://%PC_IP%:7000/
+echo.
+echo  💰 WALLET FEATURES:
+echo     └─ Fiat Wallet (USD)
+echo     └─ Crypto Holdings (BTC, ETH, USDT, SOL)
+echo     └─ Transak On-Ramp Integration
+echo     └─ Buy/Swap/Withdraw Crypto
 echo.
 
 :: ── Kill any Node on 7000/7001 ───────────────────────────────────────────────
@@ -83,20 +91,33 @@ for /L %%i in (1,1,20) do (
 :: ── Done ─────────────────────────────────────────────────────────────────────
 echo.
 echo.
-echo  ==========================================
-echo   ALL SYSTEMS READY
-echo  ==========================================
+echo  ╔════════════════════════════════════════════════════════════╗
+echo  ║           🎉 ALL SYSTEMS READY - POS ONLINE 🎉             ║
+echo  ╚════════════════════════════════════════════════════════════╝
 echo.
-echo   Dashboard : http://localhost:7001
-echo   API       : http://localhost:7000
-echo   Android   : http://%PC_IP%:7000/
+echo  📱 DASHBOARD ACCESS:
+echo     └─ URL     : http://localhost:7001
+echo     └─ Login   : admin / admin1234
 echo.
-echo   Login: admin / admin1234
+echo  💻 ANDROID POS APP:
+echo     └─ URL     : http://%PC_IP%:7000/
+echo     └─ Merchant: MRC-1001
+echo     └─ Terminal: T2013-001
 echo.
-echo  ── TRON Hot Wallet ───────────────────────
+echo  💰 CRYPTO WALLET:
+echo     └─ Buy Crypto via Transak (Google Pay, Card, Bank Transfer)
+echo     └─ Swap between cryptocurrencies
+echo     └─ Hold BTC, ETH, USDT, SOL + more
+echo     └─ Real-time balance tracking
+echo.
+echo  🏦 HOT WALLET BALANCES:
 powershell -NoProfile -Command ^
-  "try{ $r=(Invoke-WebRequest -Uri 'https://api.trongrid.io/v1/accounts/TFZXzaXXgk3uCcCWbUWKZAydsc95D8GZBP' -UseBasicParsing -TimeoutSec 6).Content|ConvertFrom-Json; $d=$r.data[0]; $trx=[math]::Round($d.balance/1000000,2); $usdt=0; foreach($t in $d.trc20){ if($t.'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'){$usdt=[math]::Round($t.'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'/1000000,2)}}; Write-Host '   TRX  (gas)  :' $trx 'TRX'; Write-Host '   USDT (pool) :' $usdt 'USDT' } catch { Write-Host '   (Could not reach TronGrid to check balance)' }" 2>nul
-echo  ==========================================
+  "try{ $r=(Invoke-WebRequest -Uri 'https://api.trongrid.io/v1/accounts/TFZXzaXXgk3uCcCWbUWKZAydsc95D8GZBP' -UseBasicParsing -TimeoutSec 6).Content|ConvertFrom-Json; $d=$r.data[0]; $trx=[math]::Round($d.balance/1000000,2); $usdt=0; foreach($t in $d.trc20){ if($t.'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'){$usdt=[math]::Round($t.'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'/1000000,2)}}; Write-Host '     └─ TRX  (gas)  : '$trx' TRX'; Write-Host '     └─ USDT (pool) : '$usdt' USDT' } catch { Write-Host '     └─ (Could not reach TronGrid)' }" 2>nul
+echo.
+echo  ╔════════════════════════════════════════════════════════════╗
+echo  ║  Press Ctrl+C in each terminal to stop services           ║
+echo  ║  To restart: Close terminals and run START_ALL.bat again  ║
+echo  ╚════════════════════════════════════════════════════════════╝
 echo.
 
 :: Open browser
@@ -109,6 +130,7 @@ if "!READY!"=="1" (
 :: Two beeps
 powershell -NoProfile -Command "[console]::beep(1200,180);Start-Sleep -ms 100;[console]::beep(1500,250)" >nul 2>&1
 
-echo  Both server windows are running. Close them to stop.
+echo  Startup complete. Server windows are running.
+echo  Close terminal windows to stop the POS system.
 echo  Press any key to close this launcher window...
 pause >nul

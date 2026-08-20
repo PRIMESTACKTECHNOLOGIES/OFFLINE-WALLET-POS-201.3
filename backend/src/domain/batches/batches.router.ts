@@ -49,4 +49,17 @@ router.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
+// ─── 201.3 Settlement: Batch Close / Export / Download / Upload ─────────
+router.get("/:batchId/details", batchesController.getBatchDetails.bind(batchesController));
+router.get("/:batchId", batchesController.getBatchDetails.bind(batchesController));
+router.post("/close", batchesController.closeBatch.bind(batchesController));
+router.post("/:batchId/close", batchesController.closeBatch.bind(batchesController));
+router.get("/:batchId/preview", batchesController.previewBatchExport.bind(batchesController));
+router.get("/:batchId/download/:format", batchesController.downloadBatch.bind(batchesController));
+router.get("/:batchId/download", batchesController.downloadBatch.bind(batchesController));
+router.post("/:batchId/uploaded", batchesController.markBatchUploaded.bind(batchesController));
+router.post("/:batchId/mark-uploaded", batchesController.markBatchUploaded.bind(batchesController));
+router.get("/auto-close/candidates", batchesController.autoCloseCandidates.bind(batchesController));
+router.post("/auto-close/run", batchesController.autoCloseCandidates.bind(batchesController));
+
 export { router as batchesRouter };

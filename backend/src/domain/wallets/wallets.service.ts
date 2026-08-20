@@ -543,8 +543,7 @@ export class WalletsService {
     merchantId: string,
     cryptoCoin: string,
     fiatAmount: number,
-    network?: string,
-    opts?: { allow_simulation?: boolean }
+    network?: string
   ) {
     const coin = cryptoCoin.toUpperCase();
     const merchantWallet = await this.getOrCreateMerchantWallet(merchantId);
@@ -560,7 +559,7 @@ export class WalletsService {
 
     try {
       const xr = await import('../../exchange/exchange-router.service');
-      const order = await xr.buyAssetBestEffort(coin, fiatAmount, { allow_simulation: opts?.allow_simulation ?? false });
+      const order = await xr.buyAssetBestEffort(coin, fiatAmount);
       if (order && order.ok) {
         const filled = order.fills?.[0];
         cryptoAmount = parseFloat(String(order.executedQty ?? order.executed_qty ?? cryptoAmount));
@@ -637,7 +636,7 @@ export class WalletsService {
     const exchangeRate = await this.getCryptoPrice(coin);
     let cryptoAmount = fiatAmount / exchangeRate;
     let exchangeOrderId: string | null = null;
-    let providerMode = 'internal';
+    let providerMode = 'live';
 
     const wallet = await this.getOrCreateWallet(customerId, ccy);
     const balRes = await db.query('SELECT balance FROM customer_wallets WHERE id = ?', [wallet.id]);
@@ -646,17 +645,12 @@ export class WalletsService {
     try {
       const xr = await import('../../exchange/exchange-router.service');
       const usdAmount = ccy === 'AED' ? fiatAmount / 3.67 : fiatAmount;
-      if (coin !== 'USDT') {
-        const order = await xr.buyAssetBestEffort(coin, usdAmount);
-        if (order && order.ok) {
-          cryptoAmount = parseFloat(String(order.executedQty ?? cryptoAmount));
-          exchangeOrderId = String(order.order_id || '');
-          providerMode = order.provider;
-          console.log(`[Crypto] Customer buy: ${cryptoAmount} ${coin} via ${providerMode} orderId=${exchangeOrderId}`);
-        }
-      } else {
-        cryptoAmount = usdAmount;
-        providerMode = 'internal_usdt';
+      const order = await xr.buyAssetBestEffort(coin, usdAmount);
+      if (order && order.ok) {
+        cryptoAmount = parseFloat(String(order.executedQty ?? cryptoAmount));
+        exchangeOrderId = String(order.order_id || '');
+        providerMode = order.provider;
+        console.log(`[Crypto] Customer buy: ${cryptoAmount} ${coin} via ${providerMode} orderId=${exchangeOrderId}`);
       }
     } catch (exErr: any) {
       console.warn(`[Crypto] Customer live buy skipped, internal: ${exErr?.message}`);
@@ -1020,15 +1014,6 @@ export class WalletsService {
       buyOrderId,
       network: opts.network || providerMode,
     };
-  }
-
-  private getFallbackPrice(coin: string): number {
-    const fallback: Record<string, number> = {
-      BTC: 67000, ETH: 3400, USDT: 1.00, SOL: 145, DOGE: 0.12,
-      BNB: 580, XRP: 0.55, ADA: 0.45, AVAX: 28, DOT: 6.5, MATIC: 0.7, LINK: 14,
-      TRX: 0.12,
-    };
-    return fallback[coin.toUpperCase()] ?? 1;
   }
 
   async getCryptoTransactions(customerId: string) {

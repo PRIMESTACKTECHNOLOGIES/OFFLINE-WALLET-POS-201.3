@@ -8,10 +8,18 @@ import axios from 'axios';
 // ───────────────────────────────────────────────────────────────────────
 
 export interface VirtualAccountRequest {
-  quoteId: string;
+  source: {
+    fiatCurrency: string;
+    paymentMethod: string;
+  };
+  destination: {
+    cryptoCurrency: string;
+    walletAddress: string;
+    network: string;
+  };
   userIp: string;
-  userEmail?: string;
   accessToken?: string;
+  userIdentifier?: string;
 }
 
 export interface VirtualAccountResponse {
@@ -47,22 +55,84 @@ export interface BankTransferTransaction {
  * Get Transak API endpoint and key from environment
  */
 function getTransakConfig() {
-  const mode = process.env.TRANSAK_MODE || 'staging';
+  const mode = process.env.TRANSAK_MODE || 'production';
   const isProduction = mode === 'production';
+
+  if (!isProduction) {
+    throw new Error('LIVE_TRANSAK_REQUIRED: virtual accounts require TRANSAK_MODE=production.');
+  }
   
-  const endpoint = isProduction
-    ? 'https://api.transak.com'
-    : 'https://api-gateway-stg.transak.com';
-  
-  const apiKey = isProduction
-    ? process.env.TRANSAK_API_KEY_PROD
-    : process.env.TRANSAK_API_KEY_STG;
+  const endpoint = process.env.TRANSAK_BASE_URL?.trim() || (
+    isProduction ? 'https://api-gateway.transak.com' : 'https://api-gateway-stg.transak.com'
+  );
+  const apiKey = process.env.TRANSAK_API_KEY?.trim() || (
+    isProduction ? process.env.TRANSAK_API_KEY_PROD?.trim() : process.env.TRANSAK_API_KEY_STG?.trim()
+  );
   
   if (!apiKey) {
     throw new Error(`Missing Transak API key for ${mode} mode`);
   }
   
   return { endpoint, apiKey, mode };
+}
+
+async function listProviderVbas(userIp: string): Promise<any[]> {
+  const { endpoint, apiKey } = getTransakConfig();
+  const { generateAccessToken } = await import('../../exchange/transak.service');
+  const accessToken = await generateAccessToken();
+  const response = await axios.get(`${endpoint}/api/v2/onramp-stream/vba/list`, {
+    params: { status: 'ALL' },
+    headers: {
+      'x-api-key': apiKey,
+      'x-user-ip': userIp,
+      'Authorization': `Bearer ${accessToken}`,
+    },
+    timeout: 15000,
+  });
+  const items = response.data?.data?.items;
+  if (!Array.isArray(items)) throw new Error('Transak VBA list response did not contain data.items');
+  return items;
+}
+
+async function getProviderVba(virtualBankId: string, userIp: string): Promise<any> {
+  const { endpoint, apiKey } = getTransakConfig();
+  const { generateAccessToken } = await import('../../exchange/transak.service');
+  const accessToken = await generateAccessToken();
+  const response = await axios.get(`${endpoint}/api/v2/onramp-stream/vba/${encodeURIComponent(virtualBankId)}`, {
+    headers: {
+      'x-api-key': apiKey,
+      'x-user-ip': userIp,
+      'Authorization': `Bearer ${accessToken}`,
+    },
+    timeout: 15000,
+  });
+  if (!response.data?.data?.id) throw new Error('Transak VBA detail response did not contain data.id');
+  return response.data.data;
+}
+
+async function updateProviderVba(
+  virtualBankId: string,
+  destination: { cryptoCurrency: string; walletAddress: string; network: string },
+  userIp: string
+): Promise<any> {
+  const { endpoint, apiKey } = getTransakConfig();
+  const { generateAccessToken } = await import('../../exchange/transak.service');
+  const accessToken = await generateAccessToken();
+  const response = await axios.put(
+    `${endpoint}/api/v2/onramp-stream/vba/${encodeURIComponent(virtualBankId)}`,
+    { destination },
+    {
+      headers: {
+        'x-api-key': apiKey,
+        'x-user-ip': userIp,
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 15000,
+    }
+  );
+  if (!response.data?.data?.id) throw new Error('Transak VBA update response did not contain data.id');
+  return response.data.data;
 }
 
 /**
@@ -75,31 +145,45 @@ export async function createVirtualAccount(
 ): Promise<BankTransferTransaction> {
   try {
     const { endpoint, apiKey } = getTransakConfig();
+    const { generateAccessToken } = await import('../../exchange/transak.service');
+    const partnerAccessToken = await generateAccessToken();
     const id = crypto.randomUUID();
 
     console.log(
-      `[BankTransfer] Creating virtual account: merchant=${merchantId}, quote=${request.quoteId}`
+      `[BankTransfer] Creating merchant VBA: merchant=${merchantId}, asset=${request.destination.cryptoCurrency}, network=${request.destination.network}`
     );
 
     // Call Transak API
+    const authHeaders = request.accessToken
+      ? { Authorization: `Bearer ${request.accessToken}` }
+      : request.userIdentifier
+        ? { 'x-access-token': partnerAccessToken, 'x-user-identifier': request.userIdentifier }
+        : { Authorization: `Bearer ${partnerAccessToken}` };
+
     const response = await axios.post(
-      `${endpoint}/api/v2/onramp/virtual-account`,
-      { quoteId: request.quoteId },
+      `${endpoint}/api/v2/onramp-stream/vba`,
+      {
+        source: request.source,
+        destination: request.destination,
+      },
       {
         headers: {
           'x-api-key': apiKey,
           'x-user-ip': request.userIp,
-          ...(request.userEmail && { 'x-user-identifier': request.userEmail }),
-          ...(request.accessToken && { 'x-access-token': request.accessToken }),
+          ...authHeaders,
           'Content-Type': 'application/json',
         },
       }
     );
 
-    const transaktResponse = response.data;
+    const transakResponse = response.data;
+    const providerId = String(transakResponse.data?.id || '');
+    if (!providerId || transakResponse.data?.success === false) {
+      throw new Error('Transak returned no merchant virtual-account ID');
+    }
 
     console.log(
-      `[BankTransfer] Virtual account creation response: status=${transaktResponse.data?.status}`
+      `[BankTransfer] Virtual account creation response: status=${transakResponse.data?.status}`
     );
 
     // Store transaction record
@@ -110,19 +194,22 @@ export async function createVirtualAccount(
     `;
 
     const now = new Date().toISOString();
-    const virtualAccountId = crypto.randomUUID();
-
     await db.query(query, [
       id,
       merchantId,
-      request.quoteId,
-      virtualAccountId,
+      providerId,
+      providerId,
       0, // Amount will be set when payment received
-      'USD', // Default, will be from quote
-      transaktResponse.data?.status || 'INITIATED',
-      request.userEmail || null,
+      request.source.fiatCurrency.toUpperCase(),
+      transakResponse.data?.status || 'INITIATED',
+      null,
       request.userIp,
-      JSON.stringify(transaktResponse.data?.accountDetails || {}),
+      JSON.stringify({
+        providerId,
+        message: transakResponse.data?.message,
+        source: request.source,
+        destination: request.destination,
+      }),
       now,
       now,
     ]);
@@ -130,14 +217,18 @@ export async function createVirtualAccount(
     const transaction: BankTransferTransaction = {
       id,
       merchantId,
-      quoteId: request.quoteId,
-      virtualAccountId,
+      quoteId: providerId,
+      virtualAccountId: providerId,
       amount: 0,
-      currency: 'USD',
-      status: transaktResponse.data?.status || 'INITIATED',
-      userEmail: request.userEmail,
+      currency: request.source.fiatCurrency.toUpperCase(),
+      status: transakResponse.data?.status || 'INITIATED',
       userIp: request.userIp,
-      accountDetails: transaktResponse.data?.accountDetails,
+      accountDetails: {
+        providerId,
+        message: transakResponse.data?.message,
+        source: request.source,
+        destination: request.destination,
+      },
       createdAt: now,
       updatedAt: now,
     };
@@ -151,7 +242,8 @@ export async function createVirtualAccount(
     console.error('[BankTransfer] Error creating virtual account:', e);
 
     if (e.response?.status === 401) {
-      throw new Error('Unauthorized: Invalid Transak API key');
+      const providerMessage = e.response?.data?.error?.message || e.response?.data?.message || e.response?.data?.error;
+      throw new Error(`Transak authentication rejected: ${providerMessage || 'check production API key and authorization token'}`);
     }
     if (e.response?.status === 400) {
       throw new Error(`Bad request: ${e.response.data?.message || 'Invalid parameters'}`);
@@ -166,7 +258,8 @@ export async function createVirtualAccount(
  */
 export async function getBankTransferTransaction(
   merchantId: string,
-  transactionId: string
+  transactionId: string,
+  userIp: string = '0.0.0.0'
 ): Promise<BankTransferTransaction> {
   try {
     const query = `
@@ -182,6 +275,8 @@ export async function getBankTransferTransaction(
 
     const row = result.rows[0] as any;
 
+    const provider = await getProviderVba(String(row.virtual_account_id || row.quote_id), userIp);
+    const storedDetails = row.account_details ? JSON.parse(row.account_details) : {};
     const transaction: BankTransferTransaction = {
       id: row.id,
       merchantId: row.merchant_id,
@@ -189,10 +284,18 @@ export async function getBankTransferTransaction(
       virtualAccountId: row.virtual_account_id,
       amount: Number(row.amount),
       currency: row.currency,
-      status: row.status,
+      status: provider.status || row.status,
       userEmail: row.user_email,
       userIp: row.user_ip,
-      accountDetails: row.account_details ? JSON.parse(row.account_details) : undefined,
+      accountDetails: {
+        ...storedDetails,
+        providerId: provider.id,
+        source: provider.source,
+        destination: provider.destination,
+        bankAccount: provider.source?.bankAccount,
+        bankLocalCode: provider.source?.bankLocalCode,
+        status: provider.status,
+      },
       webhook: row.webhook_data ? JSON.parse(row.webhook_data) : undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -203,6 +306,53 @@ export async function getBankTransferTransaction(
     console.error('[BankTransfer] Error getting transaction:', e);
     throw e;
   }
+}
+
+export async function updateBankTransferTransaction(
+  merchantId: string,
+  transactionId: string,
+  destination: { cryptoCurrency: string; walletAddress: string; network: string },
+  userIp: string = '0.0.0.0'
+): Promise<BankTransferTransaction> {
+  const result = await db.query(
+    `SELECT * FROM bank_transfer_transactions WHERE id = ? AND merchant_id = ?`,
+    [transactionId, merchantId]
+  );
+  const row = result.rows?.[0] as any;
+  if (!row) throw new Error(`Bank transfer transaction not found: ${transactionId}`);
+
+  const provider = await updateProviderVba(String(row.virtual_account_id || row.quote_id), destination, userIp);
+  const storedDetails = row.account_details ? JSON.parse(row.account_details) : {};
+  const accountDetails = {
+    ...storedDetails,
+    providerId: provider.id,
+    source: provider.source,
+    destination: provider.destination,
+    bankAccount: provider.source?.bankAccount,
+    bankLocalCode: provider.source?.bankLocalCode,
+    status: provider.status,
+  };
+
+  await db.query(
+    `UPDATE bank_transfer_transactions SET status = ?, account_details = ?, updated_at = ? WHERE id = ? AND merchant_id = ?`,
+    [provider.status || row.status, JSON.stringify(accountDetails), new Date().toISOString(), transactionId, merchantId]
+  );
+
+  return {
+    id: row.id,
+    merchantId: row.merchant_id,
+    quoteId: row.quote_id,
+    virtualAccountId: row.virtual_account_id,
+    amount: Number(row.amount),
+    currency: row.currency,
+    status: provider.status || row.status,
+    userEmail: row.user_email,
+    userIp: row.user_ip,
+    accountDetails,
+    webhook: row.webhook_data ? JSON.parse(row.webhook_data) : undefined,
+    createdAt: row.created_at,
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 /**
@@ -250,7 +400,8 @@ export async function updateTransactionStatus(
 export async function listBankTransferTransactions(
   merchantId: string,
   limit: number = 50,
-  offset: number = 0
+  offset: number = 0,
+  userIp: string = '0.0.0.0'
 ): Promise<{ transactions: BankTransferTransaction[]; total: number }> {
   try {
     // Get total count
@@ -271,21 +422,37 @@ export async function listBankTransferTransactions(
 
     const result = await db.query(query, [merchantId, limit, offset]);
 
-    const transactions: BankTransferTransaction[] = (result.rows || []).map((row: any) => ({
+    const providerVbas = await listProviderVbas(userIp);
+    const providerById = new Map(providerVbas.map(item => [String(item.id), item]));
+
+    const transactions: BankTransferTransaction[] = (result.rows || []).map((row: any) => {
+      const storedDetails = row.account_details ? JSON.parse(row.account_details) : {};
+      const provider = providerById.get(String(row.virtual_account_id || row.quote_id));
+      const providerDetails = provider ? {
+        providerId: provider.id,
+        source: provider.source,
+        destination: provider.destination,
+        bankAccount: provider.source?.bankAccount,
+        bankLocalCode: provider.source?.bankLocalCode,
+        status: provider.status,
+      } : {};
+
+      return {
       id: row.id,
       merchantId: row.merchant_id,
       quoteId: row.quote_id,
       virtualAccountId: row.virtual_account_id,
       amount: Number(row.amount),
       currency: row.currency,
-      status: row.status,
+      status: provider?.status || row.status,
       userEmail: row.user_email,
       userIp: row.user_ip,
-      accountDetails: row.account_details ? JSON.parse(row.account_details) : undefined,
+      accountDetails: { ...storedDetails, ...providerDetails },
       webhook: row.webhook_data ? JSON.parse(row.webhook_data) : undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
-    }));
+      };
+    });
 
     console.log(
       `[BankTransfer] Listed transactions: merchant=${merchantId}, count=${transactions.length}, total=${total}`

@@ -301,10 +301,181 @@ export class BatchesController {
       });
     } catch (e: any) {
       console.error('Error listing reconciliation reports:', e);
-      res.status(500).json({ 
-        success: false, 
-        error: e.message 
+      res.status(500).json({
+        success: false,
+        error: e.message
       });
+    }
+  }
+
+  async getBatchDetails(req: Request, res: Response) {
+    try {
+      const merchantId = req.headers['x-merchant-id'] as string;
+      const batchId = req.params.batchId || req.body?.batchId;
+      if (!batchId) return res.status(400).json({ error: 'batchId required' });
+      const details = await batchesService.getBatchDetails(batchId, merchantId);
+      if (!details) return res.status(404).json({ error: 'Batch not found' });
+      res.json({ success: true, ...details });
+    } catch (e: any) {
+      console.error('getBatchDetails error:', e);
+      res.status(500).json({ success: false, error: e.message });
+    }
+  }
+
+  async closeBatch(req: Request, res: Response) {
+    try {
+      const merchantId = (req.headers['x-merchant-id'] as string) || req.body.merchantId || 'MRC-1001';
+      const terminalId = (req.headers['x-terminal-id'] as string) || req.body.terminalId;
+      const { batchId, includeGhost, force, minAmountMinor } = req.body || {};
+
+      const result = await batchesService.closeBatch({
+        merchantId,
+        terminalId: terminalId || undefined,
+        batchId: batchId || undefined,
+        includeGhost: includeGhost === true,
+        force: force === true,
+        minAmountMinor: minAmountMinor != null ? Number(minAmountMinor) : undefined,
+      });
+      res.json({ success: true, closed: true, ...result });
+    } catch (e: any) {
+      console.error('closeBatch error:', e);
+      res.status(400).json({ success: false, error: e.message });
+    }
+  }
+
+  async downloadBatch(req: Request, res: Response) {
+    try {
+      const merchantId = req.headers['x-merchant-id'] as string;
+      const batchId = req.params.batchId;
+      const formatRaw = (req.params.format || 'json').toLowerCase();
+      const includeGhost = req.query.includeGhost === '1' || req.query.includeGhost === 'true';
+      if (!['json', 'csv', 'nacha'].includes(formatRaw)) {
+        return res.status(400).json({ error: 'format must be one of: json, csv, nacha' });
+      }
+      const format = formatRaw as any;
+      const result = await batchesService.exportBatch(batchId, format, {
+        merchantId,
+        includeGhost,
+      });
+      const asAttachment = req.query.download !== '0' && req.query.preview !== '1';
+      const cd = asAttachment
+        ? `attachment; filename="${encodeURIComponent(result.filename)}"`
+        : `inline; filename="${encodeURIComponent(result.filename)}"`;
+      res.setHeader('Content-Type', result.contentType);
+      res.setHeader('Content-Disposition', cd);
+      res.setHeader('X-Batch-Format', result.format);
+      res.setHeader('X-Batch-Signature', result.signature);
+      res.setHeader('X-Batch-Hash10', result.controlEntryHash || result.controlEntryHash);
+      res.setHeader('X-Batch-TxnCount', String(result.txnCount));
+      res.setHeader('X-Batch-GhostExcluded', String(result.ghostExcluded));
+      res.setHeader('X-Batch-TotalDebitMinor', String(result.totalDebitMinor));
+      res.setHeader('X-Batch-TotalCreditMinor', String(result.totalCreditMinor));
+      res.setHeader('Content-Length', String(result.byteLength));
+      res.status(200).send(result.body);
+    } catch (e: any) {
+      console.error('downloadBatch error:', e);
+      res.status(400).json({ success: false, error: e.message });
+    }
+  }
+
+  async previewBatchExport(req: Request, res: Response) {
+    try {
+      const merchantId = req.headers['x-merchant-id'] as string;
+      const batchId = req.params.batchId;
+      const formatRaw = (req.query.format || 'json').toString().toLowerCase();
+      const includeGhost = req.query.includeGhost === '1' || req.query.includeGhost === 'true';
+      if (!['json', 'csv', 'nacha'].includes(formatRaw)) {
+        return res.status(400).json({ error: 'format must be one of: json, csv, nacha' });
+      }
+      const format = formatRaw as any;
+      const result = await batchesService.exportBatch(batchId, format, {
+        merchantId,
+        includeGhost,
+      });
+      res.json({
+        success: true,
+        filename: result.filename,
+        format: result.format,
+        contentType: result.contentType,
+        byteLength: result.byteLength,
+        txnCount: result.txnCount,
+        ghostExcluded: result.ghostExcluded,
+        totalDebitMinor: result.totalDebitMinor,
+        totalCreditMinor: result.totalCreditMinor,
+        entryHash10: result.controlEntryHash,
+        signature: result.signature,
+        canonicalPayload: result.canonicalPayload,
+        generatedAt: result.generatedAt,
+        bodyPreview: result.body.slice(0, 500),
+      });
+    } catch (e: any) {
+      console.error('previewBatchExport error:', e);
+      res.status(400).json({ success: false, error: e.message });
+    }
+  }
+
+  async markBatchUploaded(req: Request, res: Response) {
+    try {
+      const merchantId = (req.headers['x-merchant-id'] as string) || req.body.merchantId;
+      const batchId = req.params.batchId || req.body.batchId;
+      if (!batchId) return res.status(400).json({ error: 'batchId required' });
+      const { externalRef, processor, uploadTimestamp, status } = req.body || {};
+      const result = await batchesService.markBatchUploaded({
+        batchId,
+        merchantId,
+        externalRef,
+        processor,
+        uploadTimestamp,
+        status,
+      });
+      res.json({ success: true, ...result });
+    } catch (e: any) {
+      console.error('markBatchUploaded error:', e);
+      res.status(400).json({ success: false, error: e.message });
+    }
+  }
+
+  async autoCloseCandidates(req: Request, res: Response) {
+    try {
+      const merchantId = (req.headers['x-merchant-id'] as string) || req.body.merchantId || 'MRC-1001';
+      const terminalId = (req.headers['x-terminal-id'] as string) || req.query.terminalId || req.body?.terminalId;
+      const maxAgeHours = Number(req.query.maxAgeHours || req.body?.maxAgeHours) || 24;
+      const minTxnCount = Number(req.query.minTxnCount || req.body?.minTxnCount) || 50;
+      const minAmountMinor = Number(req.query.minAmountMinor || req.body?.minAmountMinor) || 100000;
+      const closeNow = req.body?.closeNow === true || req.query.closeNow === '1';
+
+      const list = await batchesService.autoCloseCandidates(merchantId, {
+        terminalId: terminalId || undefined,
+        maxAgeHours,
+        minTxnCount,
+        minAmountMinor,
+      });
+
+      if (!closeNow) {
+        return res.json({ success: true, thresholds: { maxAgeHours, minTxnCount, minAmountMinor }, candidates: list });
+      }
+
+      const closed: any[] = [];
+      const skipped: any[] = [];
+      for (const c of list) {
+        if (!c.thresholdHit) { skipped.push(c); continue; }
+        try {
+          const r = await batchesService.closeBatch({ merchantId, terminalId: c.terminalId, force: false });
+          closed.push({ terminalId: c.terminalId, batch: r?.batch?.batch_id, txnCount: r?.txnCount || 0 });
+        } catch (err: any) {
+          skipped.push({ terminalId: c.terminalId, error: err.message });
+        }
+      }
+      res.json({
+        success: true,
+        thresholds: { maxAgeHours, minTxnCount, minAmountMinor },
+        candidates: list,
+        closed,
+        skipped,
+      });
+    } catch (e: any) {
+      console.error('autoCloseCandidates error:', e);
+      res.status(500).json({ success: false, error: e.message });
     }
   }
 }

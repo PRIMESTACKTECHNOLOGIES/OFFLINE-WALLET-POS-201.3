@@ -105,6 +105,32 @@ data class TerminalVerifyResponse(
     val error: String? = null
 )
 
+data class PosChargeRequest(
+    val amountMinor: Long,
+    val currency: String,
+    val merchantId: String,
+    val terminalId: String,
+    val pan: String? = null,
+    val expiry: String? = null,
+    val cvv: String? = null,
+    val emv: Map<String, Any?>? = null,
+    val tlvRaw: String? = null,
+    val stan: String? = null
+)
+
+data class PosChargeResponse(
+    val success: Boolean = false,
+    val status: String? = null,
+    val paymentIntentId: String? = null,
+    val amountMinor: Long? = null,
+    val currency: String? = null,
+    val processor: String? = null,
+    val authCode: String? = null,
+    val settlementId: String? = null,
+    val reason: String? = null,
+    val error: String? = null
+)
+
 // ════════════════════════════════════════════════════════════════════════════
 // API Interfaces
 // ════════════════════════════════════════════════════════════════════════════
@@ -127,6 +153,9 @@ interface Payment2013Api {
     /** Redeem 6-digit payment code */
     @POST("api/payment2013/redeem")
     suspend fun redeemCode(@Body request: RedeemRequest): Response<RedeemResponse>
+
+    @POST("merchant/v1/payments/payments/charge")
+    suspend fun chargeOnline(@Body request: PosChargeRequest): Response<PosChargeResponse>
 }
 
 /** Terminal endpoints — public, no JWT needed for register/verify */
@@ -171,11 +200,11 @@ object ApiClient {
     /**
      * Default backend base URL.
      *   Emulator      → http://10.0.2.2:7000/
-     *   Real device (same Wi-Fi as PC) → http://192.168.x.x:7000/
+    *   Real device (same Wi-Fi as PC) → http://10.0.1.156:7000/
      *   Cloud / Render → https://your-app.onrender.com/
      * Override via Settings screen on the device.
      */
-    const val DEFAULT_URL = "http://10.0.2.2:7000/"
+    const val DEFAULT_URL = "http://10.0.1.156:7000/"
 
     /** OkHttpClient — attaches JWT bearer token when provided */
     private fun buildOkHttp(jwtToken: String? = null): OkHttpClient {
@@ -213,8 +242,8 @@ object ApiClient {
     fun createAuthApi(baseUrl: String = DEFAULT_URL): AuthApi =
         retrofit(baseUrl).create(AuthApi::class.java)
 
-    fun createPayment2013Api(baseUrl: String = DEFAULT_URL): Payment2013Api =
-        retrofit(baseUrl).create(Payment2013Api::class.java)
+    fun createPayment2013Api(baseUrl: String = DEFAULT_URL, jwtToken: String? = null): Payment2013Api =
+        retrofit(baseUrl, jwtToken).create(Payment2013Api::class.java)
 
     fun createWalletsApi(baseUrl: String = DEFAULT_URL, jwtToken: String? = null): WalletsApi =
         retrofit(baseUrl, jwtToken).create(WalletsApi::class.java)

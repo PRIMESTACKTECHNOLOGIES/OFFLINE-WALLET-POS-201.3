@@ -4,6 +4,7 @@ import {
   getBankTransferTransaction,
   updateTransactionStatus,
   listBankTransferTransactions,
+  updateBankTransferTransaction,
   getBankTransferSummary,
   handleTransakWebhook,
   VirtualAccountRequest,
@@ -13,7 +14,7 @@ export class BankTransferController {
   /**
    * Create virtual account
    * POST /create-account
-   * Body: { quoteId, userEmail? }
+  * Body: { source, destination }
    */
   async createAccount(req: Request, res: Response) {
     try {
@@ -22,9 +23,12 @@ export class BankTransferController {
         return res.status(401).json({ error: 'Missing merchant ID' });
       }
 
-      const { quoteId, userEmail } = req.body;
-      if (!quoteId) {
-        return res.status(400).json({ error: 'Missing quoteId' });
+      const { source, destination, transakAccessToken, transakAuthRelianceEmail } = req.body || {};
+      if (!source?.fiatCurrency || !source?.paymentMethod) {
+        return res.status(400).json({ error: 'source.fiatCurrency and source.paymentMethod are required' });
+      }
+      if (!destination?.cryptoCurrency || !destination?.walletAddress || !destination?.network) {
+        return res.status(400).json({ error: 'destination.cryptoCurrency, destination.walletAddress and destination.network are required' });
       }
 
       // Get user IP from request
@@ -34,13 +38,15 @@ export class BankTransferController {
         '0.0.0.0';
 
       console.log(
-        `[BankTransfer Controller] Creating virtual account: merchant=${merchantId}, quote=${quoteId}`
+        `[BankTransfer Controller] Creating merchant VBA: merchant=${merchantId}`
       );
 
       const request: VirtualAccountRequest = {
-        quoteId,
+        source,
+        destination,
         userIp,
-        userEmail,
+        accessToken: typeof transakAccessToken === 'string' ? transakAccessToken : undefined,
+        userIdentifier: typeof transakAuthRelianceEmail === 'string' ? transakAuthRelianceEmail.trim() : undefined,
       };
 
       const transaction = await createVirtualAccount(merchantId, request);
@@ -51,7 +57,8 @@ export class BankTransferController {
       });
     } catch (e: any) {
       console.error('[BankTransfer Controller] Error creating account:', e);
-      res.status(500).json({
+      const status = Number(e?.response?.status) || (String(e?.message || '').startsWith('Transak authentication rejected:') ? 401 : 500);
+      res.status(status).json({
         success: false,
         error: e.message,
       });
@@ -75,7 +82,11 @@ export class BankTransferController {
         `[BankTransfer Controller] Getting transaction: ${transactionId}`
       );
 
-      const transaction = await getBankTransferTransaction(merchantId, transactionId);
+      const transaction = await getBankTransferTransaction(
+        merchantId,
+        transactionId,
+        (req.headers['x-forwarded-for'] as string || '').split(',')[0].trim() || req.socket.remoteAddress || '0.0.0.0'
+      );
 
       res.json({
         success: true,
@@ -87,6 +98,29 @@ export class BankTransferController {
         success: false,
         error: e.message,
       });
+    }
+  }
+
+  async updateTransaction(req: Request, res: Response) {
+    try {
+      const merchantId = req.headers['x-merchant-id'] as string;
+      if (!merchantId) return res.status(401).json({ error: 'Missing merchant ID' });
+
+      const { transactionId } = req.params;
+      const { destination } = req.body || {};
+      if (!destination?.cryptoCurrency || !destination?.walletAddress || !destination?.network) {
+        return res.status(400).json({ error: 'destination.cryptoCurrency, destination.walletAddress and destination.network are required' });
+      }
+
+      const transaction = await updateBankTransferTransaction(
+        merchantId,
+        transactionId,
+        destination,
+        (req.headers['x-forwarded-for'] as string || '').split(',')[0].trim() || req.socket.remoteAddress || '0.0.0.0'
+      );
+      res.json({ success: true, transaction });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e.message });
     }
   }
 
@@ -111,7 +145,8 @@ export class BankTransferController {
       const { transactions, total } = await listBankTransferTransactions(
         merchantId,
         limit,
-        offset
+        offset,
+        (req.headers['x-forwarded-for'] as string || '').split(',')[0].trim() || req.socket.remoteAddress || '0.0.0.0'
       );
 
       res.json({

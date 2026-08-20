@@ -12,7 +12,7 @@ const router = Router();
  * POST /create-account
  * Create virtual account for bank transfer
  * Requires: x-merchant-id header
- * Body: { quoteId, userEmail? }
+ * Body: { source, destination }
  */
 router.post(
   '/create-account',
@@ -48,6 +48,11 @@ router.get(
 router.get(
   '/:transactionId',
   bankTransferController.getTransaction.bind(bankTransferController)
+);
+
+router.put(
+  '/:transactionId',
+  bankTransferController.updateTransaction.bind(bankTransferController)
 );
 
 /**

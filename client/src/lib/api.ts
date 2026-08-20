@@ -109,6 +109,20 @@ export interface MerchantWalletTransaction {
   created_at: string;
 }
 
+export interface BankTransferTransaction {
+  id: string;
+  merchantId: string;
+  quoteId: string;
+  virtualAccountId: string;
+  amount: number;
+  currency: string;
+  status: string;
+  userEmail?: string;
+  accountDetails?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Batch {
   id: string;
   merchantId: string;
@@ -342,6 +356,36 @@ export async function fetchBatches(): Promise<Batch[]> {
     throw new Error("Failed to fetch batches");
   }
   return res.json();
+}
+
+export async function downloadPain001PaymentFile(
+  merchantId: string,
+  payload: {
+    settlementIds: string[];
+    debtor: { name: string; iban?: string; accountId?: string; bic?: string; clearingMemberId?: string; country?: string; city?: string; addressLine?: string };
+    creditor: { name: string; iban?: string; accountId?: string; bic?: string; clearingMemberId?: string; country?: string; city?: string; addressLine?: string };
+    requestedExecutionDate?: string;
+  }
+): Promise<void> {
+  const res = await fetchWithAuth(`${BASE_URL}/api/merchant/${encodeURIComponent(merchantId)}/payment-files/pain001`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.error || 'Payment initiation file generation failed');
+  }
+  const blob = await res.blob();
+  const disposition = res.headers.get('content-disposition') || '';
+  const filename = disposition.match(/filename="([^"]+)"/)?.[1] || `${merchantId}_pain001.xml`;
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 export async function fetchProducts(merchantId?: string): Promise<Product[]> {
@@ -781,6 +825,107 @@ export async function withdrawCrypto(customerId: string, cryptoCoin: string, amo
   if (!res.ok) { const e = await res.json().catch(() => ({} as ApiErrorPayload)); throw new Error(e.error || 'Withdrawal failed'); }
   return res.json();
 }
+
+export async function merchantCryptoPayout(
+  merchantId: string,
+  payload: { amount_usd: number; asset: string; address: string; network: string; sender_mode: 'hot' | 'treasury' | 'auto' }
+) {
+  const res = await fetchWithAuth(`${BASE_URL}/api/merchant/${encodeURIComponent(merchantId)}/payout/crypto`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Merchant crypto payout failed');
+  return data;
+}
+
+export async function createVirtualAccount(
+  merchantId: string,
+  payload: {
+    source: { fiatCurrency: string; paymentMethod: string };
+    destination: { cryptoCurrency: string; walletAddress: string; network: string };
+    transakAccessToken?: string;
+    transakAuthRelianceEmail?: string;
+  }
+) {
+  const res = await fetchWithAuth(`${BASE_URL}/api/bank-transfer/create-account`, {
+    method: 'POST',
+    headers: { 'x-merchant-id': merchantId },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Virtual account creation failed');
+  return data as { success: boolean; transaction: BankTransferTransaction };
+}
+
+export async function transakVerifyWalletAddress(params: {
+  cryptoCurrency: string;
+  network: string;
+  walletAddress: string;
+}): Promise<{ ok: boolean; response: boolean }> {
+  const query = new URLSearchParams({
+    cryptoCurrency: params.cryptoCurrency,
+    network: params.network,
+    walletAddress: params.walletAddress,
+  });
+  const res = await fetchWithAuth(`${BASE_URL}/wallet/transak/wallet-address/verify?${query.toString()}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Wallet address verification failed');
+  return data;
+}
+
+export async function transakGetWebhooks(params: {
+  eventID?: string;
+  orderID?: string;
+  limit?: number;
+  skip?: number;
+  startDate?: string;
+  endDate?: string;
+  status?: 'success' | 'failed';
+} = {}): Promise<{ ok: boolean; meta?: Record<string, unknown>; data: Array<Record<string, unknown>> }> {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== '') query.set(key, String(value));
+  });
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  const res = await fetchWithAuth(`${BASE_URL}/wallet/transak/webhooks${suffix}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Transak webhook lookup failed');
+  return data;
+}
+
+export async function listVirtualAccounts(merchantId: string) {
+  const res = await fetchWithAuth(`${BASE_URL}/api/bank-transfer/list`, {
+    headers: { 'x-merchant-id': merchantId },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Virtual account lookup failed');
+  return data as { success: boolean; transactions: BankTransferTransaction[] };
+}
+
+export async function getVirtualAccount(merchantId: string, transactionId: string) {
+  const res = await fetchWithAuth(`${BASE_URL}/api/bank-transfer/${encodeURIComponent(transactionId)}`, {
+    headers: { 'x-merchant-id': merchantId },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Virtual account detail lookup failed');
+  return data as { success: boolean; transaction: BankTransferTransaction };
+}
+
+export async function updateVirtualAccount(
+  merchantId: string,
+  transactionId: string,
+  destination: { cryptoCurrency: string; walletAddress: string; network: string }
+) {
+  const res = await fetchWithAuth(`${BASE_URL}/api/bank-transfer/${encodeURIComponent(transactionId)}`, {
+    method: 'PUT',
+    headers: { 'x-merchant-id': merchantId },
+    body: JSON.stringify({ destination }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Virtual account update failed');
+  return data as { success: boolean; transaction: BankTransferTransaction };
+}
 export async function getCryptoTransactions(customerId: string): Promise<CryptoTransaction[]> {
   const res = await fetchWithAuth(`${BASE_URL}/wallet/crypto-transactions/${customerId}`);
   if (!res.ok) return [];
@@ -870,15 +1015,13 @@ export async function buyCryptoWithMerchant(
   merchantId: string,
   cryptoCoin: string,
   fiatAmount: number,
-  network?: string,
-  opts?: { allow_simulation?: boolean }
+  network?: string
 ) {
   const res = await fetchWithAuth(`${BASE_URL}/wallet/merchant/buy-crypto`, {
     method: 'POST',
     body: JSON.stringify({
       merchantId, cryptoCoin, fiatAmount,
       ...(network ? { network } : {}),
-      ...(opts?.allow_simulation === true ? { allow_simulation: true } : {}),
     })
   });
   if (!res.ok) {
@@ -942,6 +1085,20 @@ export interface TransakOrderStatusResponse {
     createdAt: string;
     updatedAt: string;
   };
+}
+
+export interface TransakQuoteResponse {
+  quoteId: string;
+  conversionPrice: number;
+  marketConversionPrice: number;
+  fiatCurrency: string;
+  cryptoCurrency: string;
+  paymentMethod: string;
+  fiatAmount: number;
+  cryptoAmount: number;
+  network: string;
+  totalFee: number;
+  feeDecimal: number;
 }
 
 export interface TransakCountryState {
@@ -1024,6 +1181,83 @@ export async function transakCreateWidgetSession(
   return res.json();
 }
 
+export async function transakSendUserOtp(email: string): Promise<{ ok: boolean; email: string; stateToken: string; expiresIn: number }> {
+  const res = await fetchWithAuth(`${BASE_URL}/wallet/transak/user/send-otp`, {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Transak OTP request failed');
+  return data;
+}
+
+export async function transakVerifyUserOtp(email: string, otp: string, stateToken: string): Promise<{ ok: boolean; accessToken: string; expiresAt?: number }> {
+  const res = await fetchWithAuth(`${BASE_URL}/wallet/transak/user/verify-otp`, {
+    method: 'POST',
+    body: JSON.stringify({ email, otp, stateToken }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Transak OTP verification failed');
+  return data;
+}
+
+export async function transakGetUserLimits(params: {
+  accessToken: string;
+  fiatCurrency: string;
+  paymentCategory: string;
+  kycType?: 'SIMPLE' | 'STANDARD';
+}): Promise<{ ok: boolean; limits: { limits: Record<string, number>; spent: Record<string, number>; remaining: Record<string, number>; exceeded: Record<string, boolean>; shortage: Record<string, number> } }> {
+  const query = new URLSearchParams({
+    fiatCurrency: params.fiatCurrency,
+    paymentCategory: params.paymentCategory,
+    kycType: params.kycType || 'STANDARD',
+  });
+  const res = await fetchWithAuth(`${BASE_URL}/wallet/transak/user/limits?${query.toString()}`, {
+    headers: { Authorization: `Bearer ${params.accessToken}` },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Transak user limits lookup failed');
+  return data;
+}
+
+export async function transakGetUserDetails(accessToken: string): Promise<{ ok: boolean; user: { email: string; firstName?: string; lastName?: string; status?: string; kyc?: { status?: string; type?: string } } }> {
+  const res = await fetchWithAuth(`${BASE_URL}/wallet/transak/user/details`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Transak user details lookup failed');
+  return data;
+}
+
+export async function transakRefreshUserAccessToken(accessToken: string): Promise<{ ok: boolean; accessToken: string }> {
+  const res = await fetchWithAuth(`${BASE_URL}/wallet/transak/user/refresh`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Transak user token refresh failed');
+  return data;
+}
+
+export async function transakLogoutUser(accessToken: string): Promise<{ ok: boolean; message: string }> {
+  const res = await fetchWithAuth(`${BASE_URL}/wallet/transak/user/logout`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Transak logout failed');
+  return data;
+}
+
+export async function transakOnboardUser(email: string): Promise<{ ok: boolean; user: { email: string; status?: string; kyc?: { status?: string; type?: string } } }> {
+  const res = await fetchWithAuth(`${BASE_URL}/wallet/transak/user/onboard`, {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Transak Auth Reliance onboarding failed');
+  return data;
+}
+
 export async function transakGetOrderStatus(orderId: string): Promise<TransakOrderStatusResponse> {
   const res = await fetchWithAuth(`${BASE_URL}/wallet/transak/orders/${encodeURIComponent(orderId)}`);
   if (!res.ok) {
@@ -1040,6 +1274,30 @@ export async function transakGetCountries(): Promise<TransakCountriesResponse> {
     return { ok: false, response: [], error: e.error || 'Transak countries lookup failed' };
   }
   return res.json();
+}
+
+export async function transakGetQuote(params: {
+  cryptoCurrency: string;
+  fiatCurrency: string;
+  network: string;
+  fiatAmount: number;
+  paymentMethod?: string;
+  quoteCountryCode?: string;
+}): Promise<TransakQuoteResponse> {
+  const query = new URLSearchParams({
+    cryptoCurrency: params.cryptoCurrency,
+    fiatCurrency: params.fiatCurrency,
+    isBuyOrSell: 'BUY',
+    network: params.network,
+    fiatAmount: String(params.fiatAmount),
+    paymentMethod: params.paymentMethod || 'bank_transfer',
+  });
+  if (params.quoteCountryCode) query.set('quoteCountryCode', params.quoteCountryCode);
+  const res = await fetchWithAuth(`${BASE_URL}/wallet/transak/quote?${query.toString()}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Transak quote request failed');
+  if (!data.response?.quoteId) throw new Error('Transak returned no quote ID');
+  return data.response as TransakQuoteResponse;
 }
 
 // ── Cashouts (kept for SettlementsPage compatibility) ──────────────────────────

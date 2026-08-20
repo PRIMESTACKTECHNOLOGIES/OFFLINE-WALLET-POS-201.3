@@ -1,5 +1,9 @@
-import React, { useEffect, useRef, useState } from "react";
-import { io, type Socket } from "socket.io-client";
+import React, { useEffect, useRef, useState } from 'react';
+import { io, type Socket } from 'socket.io-client';
+import CryptoHoldingsCard from '../components/wallets/CryptoHoldingsCard';
+import type { CryptoBalance } from '../components/wallets/CryptoHoldingsCard';
+import BuyCryptoModal from '../components/wallets/BuyCryptoModal';
+import './WalletsPage.css';
 import {
   getCustomers, createCustomer,
   fetchSettings,
@@ -8,10 +12,12 @@ import {
   getBankAccounts, addBankAccount, bankPayout, getBankPayouts,
   getCryptoWallets, getCryptoPrice, buyCryptoWithWallet, sellCrypto, getCryptoTransactions, withdrawCrypto,
   getMerchantBalance, getMerchantTransactions, buyCryptoWithMerchant, merchantToCustomerTransfer,
+  merchantCryptoPayout, createVirtualAccount, listVirtualAccounts,
+  transakSendUserOtp, transakVerifyUserOtp, transakGetUserLimits, transakGetUserDetails, transakRefreshUserAccessToken, transakLogoutUser, transakOnboardUser, transakVerifyWalletAddress,
   checkBackendHealth,
   type Customer, type WalletBalance, type WalletTransaction,
   type BankAccount, type BankPayout,
-  type CryptoWallet, type CryptoTransaction, type MerchantWallet, type MerchantWalletTransaction,
+  type CryptoWallet, type CryptoTransaction, type MerchantWallet, type MerchantWalletTransaction, type BankTransferTransaction,
 } from "../lib/api";
 import { resolveApiBaseUrl } from "../lib/backendUrl";
 import { useNotifications } from "../contexts/NotificationContext";
@@ -26,7 +32,7 @@ type Modal =
   | 'create-customer' | 'topup' | 'debit' | 'transfer'
   | 'add-bank' | 'bank-payout'
   | 'buy-crypto' | 'sell-crypto' | 'withdraw-crypto' | 'merchant-buy'
-  | 'merchant-to-customer' | null;
+  | 'merchant-to-customer' | 'hot-wallet-payout' | 'virtual-account' | null;
 
 const COINS = ['BTC','ETH','USDT','SOL','DOGE','BNB','XRP','ADA','AVAX','LINK','MATIC'];
 const COIN_ICONS: Record<string,string> = {
@@ -130,6 +136,7 @@ export const WalletsPage = () => {
   const [cryptoTxns, setCryptoTxns] = useState<CryptoTransaction[]>([]);
   const [merchantWallet, setMerchantWallet] = useState<MerchantWallet | null>(null);
   const [merchantTxns, setMerchantTxns] = useState<MerchantWalletTransaction[]>([]);
+  const [virtualAccounts, setVirtualAccounts] = useState<BankTransferTransaction[]>([]);
   const [merchantLoading, setMerchantLoading] = useState(false);
   const [selCoin, setSelCoin] = useState('BTC');
   const [selectedNetwork, setSelectedNetwork] = useState('bitcoin');
@@ -305,9 +312,11 @@ export const WalletsPage = () => {
     if (!f.merchantId) {
       setMerchantWallet(null);
       setMerchantTxns([]);
+      setVirtualAccounts([]);
       return;
     }
     void refreshMerchantWallet(f.merchantId);
+    listVirtualAccounts(f.merchantId).then(result => setVirtualAccounts(result.transactions || [])).catch(() => setVirtualAccounts([]));
   }, [f.merchantId]);
 
   useEffect(() => {
@@ -545,62 +554,13 @@ export const WalletsPage = () => {
     const amt = parseFloat(snapF.amount);
     if (!amt || amt <= 0) throw new Error('Enter a valid USD amount to spend');
 
-    // ══ 1st try with allow_simulation=false (enforce LIVE MODE ONLY).
-    //    This mirrors the user's rule: NO SILENT MOCK / DEMO PURCHASES EVER.
-    let result: any = null;
-    let acknowledgedSim: boolean = false;
-    try {
-      result = await buyCryptoWithMerchant(merchantId, snapSelCoin, amt, snapSelectedNetwork, { allow_simulation: false });
-    } catch (firstErr: any) {
-      const msg = String(firstErr?.message || firstErr || '');
-      const blockedReasons =
-        /NO_LIVE_CRYPTO_EXCHANGE_CONFIGURED|CRYPTO_PURCHASE_BLOCKED|CRYPTO_PURCHASE_SIMULATION_UNACKNOWLEDGED/.test(msg);
-
-      if (!blockedReasons) throw firstErr; // not a "keys missing" style block — surface original
-
-      // Keys are missing.  Before today the UI would silently proceed with a MOCK
-      // purchase and toast "Merchant buy executed" (misleading).  Instead, we STOP
-      // and force the operator to EXPLICITLY ACKNOWLEDGE this is a SIMULATION and
-      // that no real crypto was purchased.  Only proceed if they click OK.
-      const confirmed = window.confirm(
-        '⚠️  NO REAL CRYPTO EXCHANGE CONFIGURED (Binance / KuCoin API keys are missing from .env).\n\n' +
-        'If you continue, this will run a SIMULATION ONLY:\n' +
-        `  • Merchant wallet WILL BE debited $${amt.toFixed(2)} USD (internal bookkeeping)\n` +
-        `  • ${snapSelCoin} balance WILL be added (displayed with a "SIMULATED" badge in dashboard)\n` +
-        '  • BUT NO REAL crypto will be purchased from any exchange.\n\n' +
-        'This is ONLY for operator UI testing.  Are you SURE you want to proceed with a SIMULATION?\n\n' +
-        '(Click Cancel to go set real API keys in backend/.env instead.)'
-      );
-      if (!confirmed) {
-        addNotification(
-          'Aborted',
-          `Merchant ${snapSelCoin} purchase cancelled — no money moved, no simulation run. Set real exchange keys or click OK to allow simulation.`,
-          'info'
-        );
-        return;
-      }
-      acknowledgedSim = true;
-      result = await buyCryptoWithMerchant(merchantId, snapSelCoin, amt, snapSelectedNetwork, { allow_simulation: true });
+    const result = await buyCryptoWithMerchant(merchantId, snapSelCoin, amt, snapSelectedNetwork);
+    if (result.mode !== 'live' || result.is_mock === true || result.mock === true) {
+      throw new Error('Live exchange purchase required. Simulation responses are disabled.');
     }
 
     await refreshMerchantWallet(merchantId);
-
-    const actuallyLive = result && result.mode === 'live' && result.is_mock !== true && !acknowledgedSim;
-    if (actuallyLive) {
-      addNotification(
-        'Real purchase executed',
-        `Merchant bought ${result.cryptoAmount ?? '-'} ${snapSelCoin} on ${snapSelectedNetwork} for $${amt} via ${result.providerMode ?? 'exchange'}. Order ID: ${result.exchangeOrderId ?? '-'}`,
-        'success'
-      );
-    } else {
-      const warning = (result?.warning as string) ||
-        '⚠️ SIMULATION ONLY — Real crypto was NOT purchased. The displayed wallet/crypto balances are internal bookkeeping only.';
-      addNotification(
-        '⚠️ SIMULATION ONLY',
-        `${warning}\n  • Spent $${amt.toFixed(2)} USD (internal debit)\n  • Credited ${result?.cryptoAmount ?? '-'} ${snapSelCoin} (displayed SIMULATED)\n  • No order ID on any exchange — this was NOT a real trade.`,
-        'warning'
-      );
-    }
+    addNotification('Real purchase executed', `Merchant bought ${result.cryptoAmount ?? '-'} ${snapSelCoin} on ${snapSelectedNetwork} for $${amt} via ${result.providerMode ?? 'exchange'}. Order ID: ${result.exchangeOrderId ?? '-'}`, 'success');
     closeAll();
   }, 'Merchant crypto buy');
 
@@ -623,6 +583,200 @@ export const WalletsPage = () => {
     addNotification('Transfer Complete', `$${amt.toFixed(2)} sent to ${result.customerName}. Ref: ${result.reference}`, 'success');
     closeAll();
   }, '');
+
+  const handleHotWalletPayout = () => act(async () => {
+    const snapF = { ...f };
+    const merchantId = snapF.merchantId?.trim() || merchantWallet?.merchant_id?.trim() || '';
+    const amount = Number(snapF.amount || 0);
+    const address = snapF.address?.trim() || '';
+    if (!merchantId) throw new Error('Merchant ID not configured');
+    if (!isOnline) throw new Error('Hot-wallet delivery requires an online connection');
+    if (!amount || amount <= 0) throw new Error('Enter a valid USD amount');
+    if (!address) throw new Error('Enter the destination wallet address');
+    const result = await merchantCryptoPayout(merchantId, {
+      amount_usd: amount,
+      asset: snapF.asset || 'USDT',
+      address,
+      network: snapF.network || 'tron',
+      sender_mode: 'hot',
+    });
+    if (result.status === 'simulation' || result.is_mock === true || result.mock === true) {
+      throw new Error('Simulation responses are disabled. Configure a live hot-wallet rail.');
+    }
+    return result;
+  }, 'Hot-wallet delivery recorded');
+
+  const handleCreateVirtualAccount = () => act(async () => {
+    const snapF = { ...f };
+    const merchantId = snapF.merchantId?.trim() || merchantWallet?.merchant_id?.trim() || '';
+    if (!merchantId) throw new Error('Merchant ID not configured');
+    if (!isOnline) throw new Error('Virtual-account creation requires an online connection');
+    if (!snapF.transakAccessToken && !snapF.transakAuthRelianceEmail) throw new Error('Verify the merchant email with OTP or Auth Reliance first');
+    if (!snapF.fiatCurrency || !snapF.paymentMethod) throw new Error('Select the merchant fiat currency and payment method');
+    if (!snapF.asset || !snapF.network || !snapF.address?.trim()) throw new Error('Enter the merchant crypto destination');
+    if (snapF.transakWalletVerified !== 'true') throw new Error('Verify the merchant wallet address first');
+    const result = await createVirtualAccount(merchantId, {
+      source: {
+        fiatCurrency: snapF.fiatCurrency,
+        paymentMethod: snapF.paymentMethod,
+      },
+      destination: {
+        cryptoCurrency: snapF.asset,
+        walletAddress: snapF.address.trim(),
+        network: snapF.network,
+      },
+      transakAccessToken: snapF.transakAccessToken,
+      transakAuthRelianceEmail: snapF.transakAuthRelianceEmail,
+    });
+    setVirtualAccounts(previous => [result.transaction, ...previous.filter(item => item.id !== result.transaction.id)]);
+    addNotification('Merchant Virtual Account Created', 'Transak returned a live merchant receiving-account record.', 'success');
+    return result;
+  }, 'Virtual account created');
+
+  const handleSendMerchantOtp = async () => {
+    const email = (f.merchantEmail || '').trim();
+    if (!email) {
+      addNotification('Merchant email required', 'Enter the merchant email registered with Transak.', 'error');
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await transakSendUserOtp(email);
+      setF(previous => ({ ...previous, transakStateToken: result.stateToken, transakOtpSent: 'true' }));
+      addNotification('OTP sent', `Transak sent a verification code to ${email}.`, 'success');
+    } catch (error: any) {
+      addNotification('OTP failed', error?.message || 'Unable to send the Transak verification code.', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleOnboardMerchantAuthReliance = async () => {
+    const email = (f.merchantEmail || '').trim();
+    if (!email) {
+      addNotification('Merchant email required', 'Enter the merchant email registered with Transak.', 'error');
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await transakOnboardUser(email);
+      setF(previous => ({
+        ...previous,
+        transakAuthRelianceEmail: result.user.email,
+        transakUserEmail: result.user.email,
+        transakKycStatus: result.user.kyc?.status || 'UNKNOWN',
+        transakKycType: result.user.kyc?.type || 'UNKNOWN',
+      }));
+      addNotification('Merchant onboarded', 'Auth Reliance onboarding returned a live Transak merchant profile.', 'success');
+    } catch (error: any) {
+      addNotification('Onboarding failed', error?.message || 'Auth Reliance is not enabled for this partner.', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleVerifyMerchantWalletAddress = async () => {
+    const cryptoCurrency = (f.asset || 'USDT').trim();
+    const network = (f.network || 'tron').trim();
+    const walletAddress = (f.address || '').trim();
+    if (!walletAddress) {
+      addNotification('Wallet address required', 'Enter the merchant destination address first.', 'error');
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await transakVerifyWalletAddress({ cryptoCurrency, network, walletAddress });
+      if (!result.response) {
+        setF(previous => ({ ...previous, transakWalletVerified: 'false' }));
+        addNotification('Wallet address rejected', `Transak rejected this ${cryptoCurrency} address for ${network}.`, 'error');
+        return;
+      }
+      setF(previous => ({ ...previous, transakWalletVerified: 'true' }));
+      addNotification('Wallet address verified', `Transak accepted this ${cryptoCurrency} address for ${network}.`, 'success');
+    } catch (error: any) {
+      setF(previous => ({ ...previous, transakWalletVerified: 'false' }));
+      addNotification('Verification failed', error?.message || 'Unable to verify the wallet address with Transak.', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleVerifyMerchantOtp = async () => {
+    const email = (f.merchantEmail || '').trim();
+    const otp = (f.transakOtp || '').trim();
+    const stateToken = (f.transakStateToken || '').trim();
+    if (!email || !otp || !stateToken) {
+      addNotification('OTP required', 'Send the OTP first, then enter the verification code.', 'error');
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await transakVerifyUserOtp(email, otp, stateToken);
+      let limitState: Record<string, string> = {};
+      let userState: Record<string, string> = {};
+      try {
+        const userResult = await transakGetUserDetails(result.accessToken);
+        userState = {
+          transakUserEmail: userResult.user.email,
+          transakKycStatus: userResult.user.kyc?.status || 'UNKNOWN',
+          transakKycType: userResult.user.kyc?.type || 'UNKNOWN',
+        };
+      } catch {
+        addNotification('Profile unavailable', 'Merchant verified, but Transak profile details could not be loaded.', 'info');
+      }
+      try {
+        const limitResult = await transakGetUserLimits({
+          accessToken: result.accessToken,
+          fiatCurrency: f.fiatCurrency || 'GBP',
+          paymentCategory: f.paymentMethod || 'gbp_bank_transfer',
+          kycType: 'STANDARD',
+        });
+        limitState = {
+          limitDaily: String(limitResult.limits.remaining['1'] ?? 0),
+          limitMonthly: String(limitResult.limits.remaining['30'] ?? 0),
+          limitYearly: String(limitResult.limits.remaining['365'] ?? 0),
+        };
+      } catch {
+        addNotification('Limits unavailable', 'Merchant verified, but Transak limits could not be loaded yet.', 'info');
+      }
+      setF(previous => ({ ...previous, transakAccessToken: result.accessToken, transakOtpVerified: 'true', ...userState, ...limitState }));
+      addNotification('Merchant verified', 'The merchant Transak session is ready for VBA creation.', 'success');
+    } catch (error: any) {
+      addNotification('Verification failed', error?.message || 'Invalid or expired Transak OTP.', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRefreshMerchantSession = async () => {
+    const accessToken = (f.transakAccessToken || '').trim();
+    if (!accessToken) return;
+    setBusy(true);
+    try {
+      const result = await transakRefreshUserAccessToken(accessToken);
+      setF(previous => ({ ...previous, transakAccessToken: result.accessToken }));
+      addNotification('Session refreshed', 'The merchant Transak access token was refreshed.', 'success');
+    } catch (error: any) {
+      addNotification('Refresh failed', error?.message || 'The token expired; request a new OTP.', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleLogoutMerchantSession = async () => {
+    const accessToken = (f.transakAccessToken || '').trim();
+    if (!accessToken) return;
+    setBusy(true);
+    try {
+      await transakLogoutUser(accessToken);
+      setF(previous => ({ ...previous, transakAccessToken: '', transakOtpVerified: '', transakStateToken: '', transakOtpSent: '', transakUserEmail: '', transakKycStatus: '', transakKycType: '', limitDaily: '', limitMonthly: '', limitYearly: '' }));
+      addNotification('Session ended', 'The merchant Transak session was logged out.', 'success');
+    } catch (error: any) {
+      addNotification('Logout failed', error?.message || 'Unable to log out of Transak.', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const handleSellCrypto = () => act(async () => {
     const snapF = { ...f };
@@ -746,6 +900,22 @@ export const WalletsPage = () => {
               className="rounded-xl border border-violet-400/30 bg-violet-500/15 px-4 py-2 text-sm font-semibold text-violet-200 transition hover:bg-violet-500/25">
               &#8594; Send to Customer
             </button>
+            <button onClick={() => {
+                const merchantId = f.merchantId?.trim() || merchantWallet?.merchant_id?.trim() || '';
+                setF({ merchantId, asset: 'USDT', network: 'tron' });
+                setModal('hot-wallet-payout');
+              }}
+              className="rounded-xl border border-orange-400/30 bg-orange-500/15 px-4 py-2 text-sm font-semibold text-orange-200 transition hover:bg-orange-500/25">
+              Hot Wallet Delivery
+            </button>
+            <button onClick={() => {
+                const merchantId = f.merchantId?.trim() || merchantWallet?.merchant_id?.trim() || '';
+                setF({ merchantId });
+                setModal('virtual-account');
+              }}
+              className="rounded-xl border border-cyan-400/30 bg-cyan-500/15 px-4 py-2 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-500/25">
+              Virtual Account
+            </button>
             <button onClick={() => { setF({}); setModal('create-customer'); }}
               className="rounded-xl bg-blue-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-400">+ New Customer</button>
           </div>
@@ -800,15 +970,18 @@ export const WalletsPage = () => {
                       Live merchant funds credited from offline POS batches and reduced by payouts or crypto purchases.
                     </p>
                   </div>
-                  <div className="rounded-2xl border border-slate-200 bg-white/80 px-4 py-3 shadow-sm">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.25em] text-slate-500">Available</div>
-                    <div className="mt-1 text-2xl font-semibold text-slate-900">
-                      {merchantLoading ? 'â€¦' : `$${Number(merchantWallet?.balance ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                  <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-4 text-right">
+                    <div className="text-[10px] font-semibold uppercase tracking-[0.25em] text-emerald-700">Live available balance</div>
+                    <div className="mt-1 text-3xl font-extrabold tabular-nums text-emerald-900">
+                      {merchantWallet ? `${merchantWallet.currency} ${Number(merchantWallet.balance || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'Loading...'}
                     </div>
+                    <div className="mt-1 text-xs text-emerald-700">{merchantWallet ? `${merchantTxns.length} recent ledger records loaded` : 'Reading merchant wallet'}</div>
                   </div>
                 </div>
-                <div className="mt-6 rounded-2xl border border-dashed border-slate-200 bg-white/70 p-4 text-sm text-slate-500">
-                  This area remains available for wallet summaries and future balance widgets.
+                <div className="mt-6 rounded-2xl border border-slate-200 bg-white/70 p-4 text-sm text-slate-600">
+                  {merchantWallet
+                    ? <>Merchant wallet <span className="font-mono font-semibold text-slate-900">{merchantWallet.merchant_id}</span> is connected to the live settlement ledger. Last update: <span className="font-semibold text-slate-900">{merchantWallet.updated_at ? new Date(merchantWallet.updated_at).toLocaleString() : 'available from provider'}</span>.</>
+                    : 'Merchant wallet data is not available yet.'}
                 </div>
               </div>
 
@@ -835,6 +1008,62 @@ export const WalletsPage = () => {
                 </div>
               </div>
             </div>
+
+            <section className="overflow-hidden rounded-2xl border border-cyan-200 bg-gradient-to-br from-cyan-50 via-white to-sky-50 shadow-sm">
+              <div className="flex flex-col gap-4 border-b border-cyan-100 px-5 py-5 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-cyan-600 text-xl text-white">$</div>
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.25em] text-cyan-700">Merchant Virtual Account</div>
+                      <h3 className="mt-1 text-lg font-bold text-slate-900">Fiat receiving account</h3>
+                    </div>
+                  </div>
+                  <p className="mt-3 max-w-2xl text-sm text-slate-600">Receive merchant bank transfers through Transak and route settled crypto to the merchant destination wallet. Customers do not create accounts here.</p>
+                </div>
+                <div className="flex shrink-0 gap-2">
+                  <button type="button" onClick={() => {
+                    const merchantId = f.merchantId?.trim() || merchantWallet?.merchant_id?.trim() || '';
+                    setF({ merchantId, asset: 'USDT', network: 'tron', fiatCurrency: 'GBP', paymentMethod: 'gbp_bank_transfer' });
+                    setModal('virtual-account');
+                  }} className="rounded-xl bg-cyan-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-cyan-700">+ New Virtual Account</button>
+                </div>
+              </div>
+              <div className="p-5">
+                {virtualAccounts.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-cyan-200 bg-white/70 px-5 py-8 text-center">
+                    <div className="text-sm font-semibold text-slate-700">No merchant virtual accounts yet</div>
+                    <div className="mt-1 text-xs text-slate-500">Create a live account to receive fiat transfers for this merchant.</div>
+                  </div>
+                ) : (
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    {virtualAccounts.slice(0, 6).map(account => {
+                      const details: any = account.accountDetails || {};
+                      const source = details.source || {};
+                      const bankAccount = details.bankAccount || source.bankAccount || {};
+                      const bankLocalCode = details.bankLocalCode || source.bankLocalCode || {};
+                      const destination = details.destination || {};
+                      return (
+                        <div key={account.id} className="rounded-xl border border-cyan-100 bg-white p-4 text-sm shadow-sm">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="font-semibold text-slate-900">{source.fiatCurrency || account.currency} receiving account</div>
+                              <div className="mt-1 font-mono text-[11px] text-slate-400">VBA {account.virtualAccountId}</div>
+                            </div>
+                            <span className="rounded-full bg-cyan-100 px-2.5 py-1 text-[10px] font-bold uppercase text-cyan-700">{account.status}</span>
+                          </div>
+                          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                            <div className="rounded-lg bg-slate-50 p-3"><div className="text-[10px] uppercase tracking-wider text-slate-400">Bank account</div><div className="mt-1 font-mono font-semibold text-slate-900">{bankAccount.value || 'Pending provider details'}</div></div>
+                            <div className="rounded-lg bg-slate-50 p-3"><div className="text-[10px] uppercase tracking-wider text-slate-400">Routing / sort code</div><div className="mt-1 font-mono font-semibold text-slate-900">{bankLocalCode.value || 'Pending provider details'}</div></div>
+                            <div className="rounded-lg bg-slate-50 p-3 sm:col-span-2"><div className="text-[10px] uppercase tracking-wider text-slate-400">Crypto destination</div><div className="mt-1 break-all font-mono text-xs font-semibold text-slate-900">{destination.walletAddress || 'Pending provider details'}</div><div className="mt-1 text-xs text-slate-500">{destination.cryptoCurrency || '—'} · {destination.network || '—'}</div></div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </section>
 
             {/* Tabs */}
             <div className="flex gap-1 bg-gray-100 p-1 rounded-xl">
@@ -1491,6 +1720,78 @@ export const WalletsPage = () => {
             <div className="text-xl font-extrabold text-green-600">{(parseFloat(f.amount)/coinPrice).toFixed(8)} {selCoin}</div>
             <div className="mt-1 text-xs text-gray-500">Network: {selectedNetwork} Â· Spot rate: ${coinPrice.toLocaleString()} / {selCoin}</div>
           </div>}
+        </ModalShell>
+      )}
+      {modal==='hot-wallet-payout' && (
+        <ModalShell onClose={closeAll} busy={busy} title="Hot Wallet Delivery" onConfirm={handleHotWalletPayout} confirmLabel="Send from Hot Wallet" confirmColor="bg-orange-600 hover:bg-orange-700">
+          <div className="rounded-xl border border-orange-200 bg-orange-50 p-3 text-sm text-orange-900">
+            This sends a real on-chain payout through the merchant hot-wallet rail. No simulation or demo fallback is allowed.
+          </div>
+          <p className="text-sm text-gray-500">Merchant: <strong>{f.merchantId || '(not set)'}</strong></p>
+          <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Asset</label>
+          <select value={f.asset || 'USDT'} onChange={e => setF(p => ({ ...p, asset: e.target.value }))} className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm">
+            {['USDT', 'BTC', 'ETH', 'BNB', 'SOL'].map(asset => <option key={asset} value={asset}>{asset}</option>)}
+          </select>
+          <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Network</label>
+          <input type="text" value={f.network || ''} onChange={e => setF(p => ({ ...p, network: e.target.value }))} placeholder="tron, bsc, ethereum..." className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm" required />
+          <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Destination address</label>
+          <input type="text" value={f.address || ''} onChange={e => setF(p => ({ ...p, address: e.target.value }))} placeholder="Recipient on-chain address" className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm font-mono" required />
+          {inp('amount', 'USD amount', 'number', true)}
+        </ModalShell>
+      )}
+      {modal==='virtual-account' && (
+        <ModalShell onClose={closeAll} busy={busy} title="Create Transak Virtual Account" onConfirm={handleCreateVirtualAccount} confirmLabel="Create Live Account" confirmColor="bg-cyan-600 hover:bg-cyan-700">
+          <div className="rounded-xl border border-cyan-200 bg-cyan-50 p-3 text-sm text-cyan-900">
+            Verify the merchant’s Transak email first. This creates one live merchant receiving account; customers do not create virtual accounts.
+          </div>
+          <p className="text-sm text-gray-500">Merchant: <strong>{f.merchantId || '(not set)'}</strong></p>
+          <div className="rounded-xl border border-slate-200 bg-white p-3">
+            <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Merchant Transak email</label>
+            <div className="mt-2 flex gap-2">
+              <input type="email" value={f.merchantEmail || ''} onChange={e => setF(p => ({ ...p, merchantEmail: e.target.value, transakOtpVerified: '' }))} placeholder="merchant@example.com" className="min-w-0 flex-1 rounded-xl border border-gray-200 px-3 py-2.5 text-sm" />
+              <div className="flex gap-1.5"><button type="button" onClick={handleSendMerchantOtp} disabled={busy} className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">Send OTP</button><button type="button" onClick={handleOnboardMerchantAuthReliance} disabled={busy} className="rounded-xl border border-cyan-600 px-3 py-2 text-xs font-semibold text-cyan-700 disabled:opacity-50">Auth Reliance</button></div>
+            </div>
+            {f.transakOtpSent === 'true' && !f.transakOtpVerified && <div className="mt-3 flex gap-2"><input type="text" inputMode="numeric" maxLength={8} value={f.transakOtp || ''} onChange={e => setF(p => ({ ...p, transakOtp: e.target.value.replace(/\D/g, '') }))} placeholder="Enter OTP" className="min-w-0 flex-1 rounded-xl border border-gray-200 px-3 py-2.5 text-sm font-mono" /><button type="button" onClick={handleVerifyMerchantOtp} disabled={busy} className="rounded-xl bg-emerald-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">Verify</button></div>}
+            {f.transakOtpVerified === 'true' && <div className="mt-3 flex items-center justify-between gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700"><span>Merchant Transak authentication verified.</span><div className="flex gap-1.5"><button type="button" onClick={handleRefreshMerchantSession} disabled={busy} className="rounded-lg bg-white px-2 py-1 text-[10px] font-bold text-emerald-700 shadow-sm disabled:opacity-50">Refresh</button><button type="button" onClick={handleLogoutMerchantSession} disabled={busy} className="rounded-lg bg-white px-2 py-1 text-[10px] font-bold text-rose-700 shadow-sm disabled:opacity-50">Logout</button></div></div>}
+            {f.transakUserEmail && <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700"><div><span className="font-semibold">Verified email:</span> {f.transakUserEmail}</div><div className="mt-1"><span className="font-semibold">KYC:</span> {f.transakKycStatus || 'UNKNOWN'} · {f.transakKycType || 'UNKNOWN'}</div></div>}
+            {f.transakOtpVerified === 'true' && (f.limitDaily || f.limitMonthly || f.limitYearly) && <div className="mt-3 grid grid-cols-3 gap-2 text-center"><div className="rounded-lg bg-slate-50 p-2"><div className="text-[10px] uppercase text-slate-400">Daily left</div><div className="mt-1 text-xs font-bold text-slate-800">{f.fiatCurrency || 'GBP'} {Number(f.limitDaily || 0).toFixed(2)}</div></div><div className="rounded-lg bg-slate-50 p-2"><div className="text-[10px] uppercase text-slate-400">30 days left</div><div className="mt-1 text-xs font-bold text-slate-800">{f.fiatCurrency || 'GBP'} {Number(f.limitMonthly || 0).toFixed(2)}</div></div><div className="rounded-lg bg-slate-50 p-2"><div className="text-[10px] uppercase text-slate-400">Year left</div><div className="mt-1 text-xs font-bold text-slate-800">{f.fiatCurrency || 'GBP'} {Number(f.limitYearly || 0).toFixed(2)}</div></div></div>}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Fiat currency</label>
+              <select value={f.fiatCurrency || 'GBP'} onChange={e => setF(p => ({ ...p, fiatCurrency: e.target.value }))} className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm">
+                {['GBP', 'EUR', 'USD'].map(currency => <option key={currency} value={currency}>{currency}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Payment method</label>
+              <select value={f.paymentMethod || 'gbp_bank_transfer'} onChange={e => setF(p => ({ ...p, paymentMethod: e.target.value }))} className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm">
+                <option value="gbp_bank_transfer">GBP bank transfer</option>
+                <option value="sepa_bank_transfer">SEPA bank transfer</option>
+                <option value="usd_bank_transfer">USD bank transfer</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Crypto asset</label>
+              <select value={f.asset || 'USDT'} onChange={e => setF(p => ({ ...p, asset: e.target.value, transakWalletVerified: '' }))} className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm">
+                {['USDT', 'USDC', 'BTC', 'ETH'].map(asset => <option key={asset} value={asset}>{asset}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Network</label>
+              <input value={f.network || 'tron'} onChange={e => setF(p => ({ ...p, network: e.target.value, transakWalletVerified: '' }))} className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Merchant destination wallet address</label>
+            <div className="mt-2 flex gap-2">
+              <input value={f.address || ''} onChange={e => setF(p => ({ ...p, address: e.target.value, transakWalletVerified: '' }))} placeholder="Merchant destination wallet address" className="min-w-0 flex-1 rounded-xl border border-gray-200 px-3 py-2.5 text-sm font-mono" required />
+              <button type="button" onClick={handleVerifyMerchantWalletAddress} disabled={busy} className="rounded-xl border border-emerald-600 px-3 py-2 text-xs font-semibold text-emerald-700 disabled:opacity-50">Verify</button>
+            </div>
+            {f.transakWalletVerified === 'true' && <div className="mt-2 text-xs font-semibold text-emerald-700">Transak wallet address verified.</div>}
+            {f.transakWalletVerified === 'false' && <div className="mt-2 text-xs font-semibold text-rose-700">Wallet address was not accepted by Transak.</div>}
+          </div>
+          {virtualAccounts.length > 0 && <p className="text-xs text-gray-500">Existing live records: {virtualAccounts.length}</p>}
         </ModalShell>
       )}
       {modal==='sell-crypto' && (() => {

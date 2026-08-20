@@ -206,19 +206,10 @@ export async function getBestPrice(coin: string): Promise<GetPriceResult> {
       if (price) return { priceUsd: price, provider: 'coingecko', symbol: coin.toUpperCase(), timestamp: Date.now() };
     }
   } catch { /* ignore */ }
-  const fallback: Record<string, number> = {
-    BTC: 67000, ETH: 3400, USDT: 1.00, SOL: 145, DOGE: 0.12,
-    BNB: 580, XRP: 0.55, ADA: 0.45, AVAX: 28, DOT: 6.5, MATIC: 0.7, LINK: 14, TRX: 0.12,
-  };
-  return {
-    priceUsd: fallback[coin.toUpperCase()] ?? 1,
-    provider: 'fallback',
-    symbol: coin.toUpperCase(),
-    timestamp: Date.now(),
-  };
+  throw new Error(`LIVE_PRICE_UNAVAILABLE: no live price provider returned a price for ${coin.toUpperCase()}.`);
 }
 
-export async function buyAssetBestEffort(asset: string, amountUsd: number, opts?: { allow_simulation?: boolean }): Promise<BuyAssetResult> {
+export async function buyAssetBestEffort(asset: string, amountUsd: number): Promise<BuyAssetResult> {
   const priority = getProviderPriority();
   const errors: string[] = [];
   for (const pid of priority) {
@@ -264,41 +255,9 @@ export async function buyAssetBestEffort(asset: string, amountUsd: number, opts?
     } catch { /* continue */ }
   }
 
-  // ⚠ NO LIVE PROVIDER COULD EXECUTE.  Before this code used to silently fall back to a
-  //   "mock: true + ok:true" object, giving the operator a misleading success.  That is
-  //   exactly the behaviour the user wants banned (no demo / no stand-in approvals).
-  //   Instead, we now either:
-  //     (A) throw a BLOCKED error the caller surfaces to the operator as HTTP 400, or
-  //     (B) if the caller explicitly acknowledged this is a simulation via
-  //         opts.allow_simulation=true → we return the mock object with a clear status.
-  if (!opts?.allow_simulation) {
-    throw Object.assign(new Error(
-      `NO_LIVE_CRYPTO_EXCHANGE_CONFIGURED. Tried providers: [${priority.join(', ')}] — ` +
-      `none could execute a live purchase. Errors: [${errors.join(' | ')}] — ` +
-      `To run a SIMULATION (demo) purchase ONLY for operator testing, ` +
-      `set opts.allow_simulation=true on the caller, or set real Binance / KuCoin API keys.`
-    ), { exchange_errors: errors, status: 'NO_LIVE_PROVIDER', blocked: true });
-  }
-
-  const fallback = {
-    ok: true,
-    provider: 'simulation' as ExchangeProviderId,
-    asset: asset.toUpperCase(),
-    amount_usd: Number(amountUsd),
-    executed_qty: 0,
-    executedQty: 0,
-    fills: [],
-    status: 'SIMULATION_INTERNAL_ONLY_NO_REAL_CRYPTO',
-    order_id: `SIM-${Date.now()}`,
-    mock: true,
-    raw: { errors, note: 'SIMULATION ONLY. No live exchange configured. Balance was internally accounted ONLY for operator UI testing. Set API keys for real execution.' },
-  };
-  const price = (await getBestPrice(asset)).priceUsd;
-  if (price > 0) {
-    fallback.executed_qty = amountUsd / price;
-    fallback.executedQty = fallback.executed_qty;
-  }
-  return fallback;
+  throw Object.assign(new Error(
+    `NO_LIVE_CRYPTO_EXCHANGE_CONFIGURED. Tried providers: [${priority.join(', ')}]. Errors: [${errors.join(' | ')}]`
+  ), { exchange_errors: errors, status: 'NO_LIVE_PROVIDER', blocked: true });
 }
 
 export async function sellAssetBestEffort(asset: string, amountBase: number): Promise<SellAssetResult> {

@@ -861,6 +861,99 @@ export const initTables = async () => {
       );
     `);
 
+    // ───────────────────────────────────────────────────────────────────────
+    // ENHANCED CRYPTO WALLET TABLES (v2)
+    // ───────────────────────────────────────────────────────────────────────
+
+    // Customer Crypto Wallets v2 - Enhanced with network/address tracking
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS customer_crypto_wallets_v2 (
+        id TEXT PRIMARY KEY,
+        customer_id TEXT NOT NULL,
+        coin TEXT NOT NULL,
+        network TEXT NOT NULL,
+        quantity REAL NOT NULL DEFAULT 0,
+        value_usd REAL NOT NULL DEFAULT 0,
+        address TEXT NOT NULL,
+        source TEXT DEFAULT 'manual',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(customer_id, coin, network, address)
+      );
+    `);
+
+    // Crypto Wallet Transactions v2 - Detailed transaction log
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS crypto_wallet_transactions_v2 (
+        id TEXT PRIMARY KEY,
+        customer_id TEXT NOT NULL,
+        coin TEXT NOT NULL,
+        network TEXT NOT NULL,
+        transaction_type TEXT NOT NULL,
+        from_currency TEXT NOT NULL,
+        to_currency TEXT NOT NULL,
+        from_amount REAL NOT NULL,
+        to_amount REAL NOT NULL,
+        exchange_rate REAL NOT NULL,
+        source TEXT NOT NULL,
+        reference TEXT,
+        status TEXT DEFAULT 'pending',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Transak Orders v2 - Enhanced order tracking
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS transak_orders_v2 (
+        id TEXT PRIMARY KEY,
+        customer_id TEXT NOT NULL,
+        order_id TEXT NOT NULL,
+        transak_order_id TEXT,
+        status TEXT DEFAULT 'PENDING',
+        fiat_amount REAL NOT NULL,
+        fiat_currency TEXT NOT NULL,
+        crypto_amount REAL DEFAULT 0,
+        crypto_currency TEXT NOT NULL,
+        network TEXT NOT NULL,
+        wallet_address TEXT NOT NULL,
+        webhook_data TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Transak Webhook Log - Audit trail for webhooks
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS transak_webhook_log_v2 (
+        id TEXT PRIMARY KEY,
+        order_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        processed_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Crypto Transactions Log v2 - Comprehensive transaction history
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS crypto_transactions_log_v2 (
+        id TEXT PRIMARY KEY,
+        customer_id TEXT NOT NULL,
+        transaction_type TEXT NOT NULL,
+        from_currency TEXT NOT NULL,
+        to_currency TEXT NOT NULL,
+        from_amount REAL NOT NULL,
+        to_amount REAL NOT NULL,
+        exchange_rate REAL NOT NULL,
+        source TEXT NOT NULL,
+        reference TEXT,
+        status TEXT DEFAULT 'pending',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
     console.log("Tables initialized successfully (SQLite)");
   } catch (error) {
     console.error("Error initializing tables:", error);

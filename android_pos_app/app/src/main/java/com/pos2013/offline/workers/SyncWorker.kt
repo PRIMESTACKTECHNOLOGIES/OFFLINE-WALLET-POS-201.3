@@ -29,7 +29,7 @@ class SyncWorker(
 
         return try {
             val db         = AppDatabase.getDatabase(applicationContext)
-            val api        = ApiClient.createPayment2013Api(serverUrl)
+            val api        = ApiClient.createPayment2013Api(serverUrl, jwtToken)
             val walletsApi = ApiClient.createWalletsApi(serverUrl, jwtToken)
 
             val repo = TransactionRepository(

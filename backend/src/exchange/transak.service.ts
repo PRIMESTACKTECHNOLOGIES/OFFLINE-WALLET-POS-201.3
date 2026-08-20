@@ -19,6 +19,7 @@ export interface TransakConfig {
   widgetUrl: string;
   referrerDomain: string;
   webhookSecret: string;
+  authBaseUrl: string;
   mode: TransakMode;
 }
 
@@ -65,6 +66,11 @@ export interface TransakWidgetParams {
   defaultNetwork?: string;
   defaultFiatAmount?: number;
   defaultFiatCurrency?: string;
+  cryptoCurrencyCode?: string;
+  paymentMethod?: string;
+  hideExchangeScreen?: boolean;
+  disableWalletAddressForm?: boolean;
+  userData?: Record<string, any>;
   fiatCurrency?: string;
   cryptoCurrencyList?: string;
   networks?: string;
@@ -169,6 +175,56 @@ export interface TransactionRequestStatusResponse {
   message?: string;
 }
 
+export interface TransakUserOtpResponse {
+  stateToken: string;
+  email: string;
+  expiresIn: number;
+  isTncAccepted?: boolean;
+}
+
+export interface TransakUserVerifyResponse {
+  accessToken: string;
+  expiresAt?: number;
+}
+
+export interface TransakUserLimitsResponse {
+  limits: Record<string, number>;
+  spent: Record<string, number>;
+  remaining: Record<string, number>;
+  exceeded: Record<string, boolean>;
+  shortage: Record<string, number>;
+}
+
+export interface TransakUserDetailsResponse {
+  email: string;
+  firstName?: string;
+  lastName?: string;
+  mobileNumber?: string;
+  partnerUserId?: string;
+  status?: string;
+  kyc?: { status?: string; type?: 'SIMPLE' | 'STANDARD' | string };
+  address?: Record<string, string>;
+}
+
+export interface TransakWalletAddressVerificationResponse {
+  response: boolean;
+}
+
+export interface TransakWebhookQuery {
+  eventID?: string;
+  orderID?: string;
+  limit?: number;
+  skip?: number;
+  startDate?: string;
+  endDate?: string;
+  status?: 'success' | 'failed';
+}
+
+export interface TransakWebhooksResponse {
+  meta?: Record<string, unknown>;
+  data: Array<Record<string, unknown>>;
+}
+
 let accessTokenCache: {
   token: string;
   expiresAt: number;
@@ -216,7 +272,11 @@ export function getTransakConfig(): TransakConfig {
     widgetUrl = process.env.TRANSAK_WIDGET_URL?.trim() || 'https://global-stg.transak.com';
   }
 
-  return { apiKey, apiSecret, baseUrl, publicApiUrl, widgetUrl, referrerDomain, webhookSecret, mode };
+  const authBaseUrl = process.env.TRANSAK_AUTH_BASE_URL?.trim() || (
+    mode === 'production' ? 'https://api.transak.com' : 'https://api-stg.transak.com'
+  );
+
+  return { apiKey, apiSecret, baseUrl, publicApiUrl, widgetUrl, referrerDomain, webhookSecret, authBaseUrl, mode };
 }
 
 export async function generateAccessToken(forceRefresh = false): Promise<string> {
@@ -227,27 +287,24 @@ export async function generateAccessToken(forceRefresh = false): Promise<string>
     return accessTokenCache.token;
   }
 
-  const timestamp = Math.floor(now / 1000);
-  const nonce = crypto.randomBytes(16).toString('hex');
-  const signPayload = `${cfg.apiSecret}${timestamp}${nonce}`;
-  const signature = crypto
-    .createHash('sha256')
-    .update(signPayload)
-    .digest('hex');
-
   try {
     const axiosInst = (await import('axios')).default;
     const res = await axiosInst.post(
-      `${cfg.baseUrl}/api/v2/auth/token`,
-      { apiKey: cfg.apiKey, timestamp, nonce, signature },
+      `${cfg.authBaseUrl}/partners/api/v2/refresh-token`,
+      { apiKey: cfg.apiKey },
       {
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': cfg.apiKey,
+          'api-secret': cfg.apiSecret,
+        },
         timeout: 10000,
       }
     );
 
-    const token = res.data?.accessToken || res.data?.access_token || res.data?.token;
-    const expiresIn = res.data?.expiresIn || res.data?.expires_in || 3540;
+    const tokenData = res.data?.data || res.data;
+    const token = tokenData?.accessToken || tokenData?.access_token || tokenData?.token;
+    const expiresAt = Number(tokenData?.expiresAt || tokenData?.expires_at || 0) * 1000;
 
     if (!token) {
       throw new Error('Transak access token not returned in response');
@@ -255,7 +312,7 @@ export async function generateAccessToken(forceRefresh = false): Promise<string>
 
     accessTokenCache = {
       token,
-      expiresAt: now + (expiresIn - 60) * 1000,
+      expiresAt: expiresAt > now ? expiresAt - 60000 : now + 6 * 24 * 60 * 60 * 1000,
     };
 
     return token;
@@ -266,17 +323,34 @@ export async function generateAccessToken(forceRefresh = false): Promise<string>
 
 export async function createWidgetSession(
   widgetParams: TransakWidgetParams,
-  opts?: { accessToken?: string }
+  opts?: { accessToken?: string; userIp?: string }
 ): Promise<CreateWidgetSessionResponse> {
   const cfg = getTransakConfig();
   const token = opts?.accessToken || (await generateAccessToken());
+  const userIp = opts?.userIp || '0.0.0.0';
 
-  const params: TransakWidgetParams & { apiKey: string; environment?: TransakMode } = {
+  const params: TransakWidgetParams & {
+    apiKey: string;
+    environment?: TransakMode;
+    cryptoCurrencyCode?: string;
+    network?: string;
+    fiatAmount?: number;
+    fiatCurrency?: string;
+  } = {
     apiKey: cfg.apiKey,
     referrerDomain: cfg.referrerDomain,
     environment: cfg.mode,
     ...widgetParams,
   };
+
+  if (!params.cryptoCurrencyCode && params.defaultCryptoCurrency) {
+    params.cryptoCurrencyCode = params.defaultCryptoCurrency;
+  }
+  if (!params.network && params.defaultNetwork) params.network = params.defaultNetwork;
+  if (params.fiatAmount === undefined && params.defaultFiatAmount !== undefined) {
+    params.fiatAmount = params.defaultFiatAmount;
+  }
+  if (!params.fiatCurrency && params.defaultFiatCurrency) params.fiatCurrency = params.defaultFiatCurrency;
 
   const axiosInst = (await import('axios')).default;
 
@@ -287,14 +361,19 @@ export async function createWidgetSession(
       {
         headers: {
           'Content-Type': 'application/json',
+          'x-api-key': cfg.apiKey,
+          'x-user-ip': userIp,
           'access-token': token,
         },
         timeout: 10000,
       }
     );
 
-    const sessionId = res.data?.sessionId || res.data?.session_id;
-    const widgetUrl = res.data?.widgetUrl || res.data?.widget_url;
+    const responseData = res.data?.data || res.data;
+    const widgetUrl = responseData?.widgetUrl || responseData?.widget_url;
+    const sessionId = responseData?.sessionId || responseData?.session_id || (() => {
+      try { return widgetUrl ? new URL(widgetUrl).searchParams.get('sessionId') || '' : ''; } catch { return ''; }
+    })();
     const expiresAt = res.data?.expiresAt || res.data?.expires_at
       || new Date(Date.now() + 5 * 60 * 1000).toISOString();
 
@@ -307,6 +386,191 @@ export async function createWidgetSession(
     const msg = e?.response?.data?.message || e?.message || String(e);
     throw new Error(`Transak widget session creation failed: ${msg}`);
   }
+}
+
+export async function sendUserOtp(email: string, userIp: string): Promise<TransakUserOtpResponse> {
+  const cfg = getTransakConfig();
+  const res = await axios.post(
+    `${cfg.baseUrl}/api/v2/auth/login`,
+    { apiKey: cfg.apiKey, email },
+    {
+      headers: {
+        'x-api-key': cfg.apiKey,
+        'x-user-ip': userIp,
+        'Content-Type': 'application/json',
+      },
+      timeout: 15000,
+    }
+  );
+  const data = res.data?.data || res.data;
+  if (!data?.stateToken) throw new Error('Transak OTP response did not contain stateToken');
+  return data as TransakUserOtpResponse;
+}
+
+export async function verifyUserOtp(
+  email: string,
+  otp: string,
+  stateToken: string,
+  userIp: string
+): Promise<TransakUserVerifyResponse> {
+  const cfg = getTransakConfig();
+  const res = await axios.post(
+    `${cfg.baseUrl}/api/v2/auth/verify`,
+    { apiKey: cfg.apiKey, email, otp, stateToken },
+    {
+      headers: {
+        'x-api-key': cfg.apiKey,
+        'x-user-ip': userIp,
+        'Content-Type': 'application/json',
+      },
+      timeout: 15000,
+    }
+  );
+  const data = res.data?.data || res.data;
+  const accessToken = data?.accessToken || data?.access_token || data?.token;
+  if (!accessToken) throw new Error('Transak OTP verification did not return accessToken');
+  const ttl = Number(data?.ttl || 0);
+  return {
+    accessToken,
+    expiresAt: data?.expiresAt || data?.expires_at || (ttl > 0 ? Date.now() + ttl * 1000 : undefined),
+  };
+}
+
+export async function refreshUserAccessToken(accessToken: string, userIp: string): Promise<TransakUserVerifyResponse> {
+  const cfg = getTransakConfig();
+  const res = await axios.get(`${cfg.baseUrl}/api/v2/auth/refresh`, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'x-api-key': cfg.apiKey,
+      'x-user-ip': userIp,
+    },
+    timeout: 15000,
+  });
+  const data = res.data?.data || res.data;
+  const refreshedToken = data?.accessToken || data?.access_token || data?.token;
+  if (!refreshedToken) throw new Error('Transak token refresh did not return accessToken');
+  return { accessToken: refreshedToken };
+}
+
+export async function logoutUser(accessToken: string, userIp: string): Promise<void> {
+  const cfg = getTransakConfig();
+  await axios.post(
+    `${cfg.baseUrl}/api/v1/auth/logout`,
+    {},
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'x-api-key': cfg.apiKey,
+        'x-user-ip': userIp,
+      },
+      timeout: 15000,
+    }
+  );
+}
+
+export async function onboardUserAuthReliance(email: string, userIp: string): Promise<TransakUserDetailsResponse> {
+  const cfg = getTransakConfig();
+  const partnerAccessToken = await generateAccessToken();
+  const res = await axios.post(
+    `${cfg.baseUrl}/api/v2/user/onboard`,
+    {},
+    {
+      headers: {
+        'x-access-token': partnerAccessToken,
+        'x-api-key': cfg.apiKey,
+        'x-user-identifier': email,
+        'x-user-ip': userIp,
+      },
+      timeout: 15000,
+    }
+  );
+  const data = res.data?.data || res.data;
+  if (!data?.email) throw new Error('Transak onboarding response did not contain email');
+  return data as TransakUserDetailsResponse;
+}
+
+export async function verifyWalletAddress(
+  cryptoCurrency: string,
+  network: string,
+  walletAddress: string,
+): Promise<TransakWalletAddressVerificationResponse> {
+  const cfg = getTransakConfig();
+  const res = await axios.get(`${cfg.publicApiUrl}/cryptocoverage/api/v1/public/verify-wallet-address`, {
+    params: { cryptoCurrency, network, walletAddress },
+    headers: { 'x-api-key': cfg.apiKey },
+    timeout: 15000,
+  });
+  const data = res.data?.data || res.data;
+  if (typeof data?.response !== 'boolean') throw new Error('Transak wallet-address verification response is invalid');
+  return { response: data.response };
+}
+
+export async function getWebhooks(query: TransakWebhookQuery = {}): Promise<TransakWebhooksResponse> {
+  const cfg = getTransakConfig();
+  const accessToken = await generateAccessToken();
+  const params: Record<string, string | number> = {};
+  if (query.eventID) params.eventID = query.eventID;
+  if (query.orderID) params.orderID = query.orderID;
+  if (query.limit !== undefined) params.limit = query.limit;
+  if (query.skip !== undefined) params.skip = query.skip;
+  if (query.startDate) params.startDate = query.startDate;
+  if (query.endDate) params.endDate = query.endDate;
+  if (query.status) params.status = query.status;
+
+  const res = await axios.get(`${cfg.publicApiUrl}/partners/api/v2/webhooks`, {
+    params,
+    headers: {
+      'x-api-key': cfg.apiKey,
+      'access-token': accessToken,
+    },
+    timeout: 15000,
+  });
+  const data = res.data?.data || res.data;
+  if (!data || !Array.isArray(data.data)) throw new Error('Transak webhooks response is invalid');
+  return { meta: data.meta, data: data.data };
+}
+
+export async function getUserLimits(params: {
+  fiatCurrency: string;
+  paymentCategory: string;
+  kycType: 'SIMPLE' | 'STANDARD';
+  accessToken: string;
+  userIp: string;
+}): Promise<TransakUserLimitsResponse> {
+  const cfg = getTransakConfig();
+  const res = await axios.get(`${cfg.baseUrl}/api/v2/orders/user-limit`, {
+    params: {
+      fiatCurrency: params.fiatCurrency,
+      isBuyOrSell: 'BUY',
+      kycType: params.kycType,
+      paymentCategory: params.paymentCategory,
+    },
+    headers: {
+      'x-api-key': cfg.apiKey,
+      'x-user-ip': params.userIp,
+      Authorization: `Bearer ${params.accessToken}`,
+    },
+    timeout: 15000,
+  });
+  const data = res.data?.data || res.data;
+  if (!data?.limits || !data?.remaining) throw new Error('Transak user-limit response is incomplete');
+  return data as TransakUserLimitsResponse;
+}
+
+export async function getUserDetails(accessToken: string, userIp: string): Promise<TransakUserDetailsResponse> {
+  const cfg = getTransakConfig();
+  const res = await axios.get(`${cfg.baseUrl}/api/v2/user/`, {
+    params: { apiKey: cfg.apiKey },
+    headers: {
+      'x-api-key': cfg.apiKey,
+      'x-user-ip': userIp,
+      Authorization: `Bearer ${accessToken}`,
+    },
+    timeout: 15000,
+  });
+  const data = res.data?.data || res.data;
+  if (!data?.email) throw new Error('Transak user-details response did not contain email');
+  return data as TransakUserDetailsResponse;
 }
 
 export async function getOrderStatus(orderId: string): Promise<TransakOrder> {
@@ -917,6 +1181,84 @@ export async function getTransactionRequestStatus(
       message: `Failed to get transaction request status: ${errorMsg}`,
     };
   }
+}
+
+// ── POST /api/v2/transaction-session (Headless Apple Pay) ─────────────────
+// Creates a Headless Apple Pay transaction session.
+// The quoteId MUST have been generated with paymentMethod=apple_pay.
+// Returns { sessionId } which the frontend passes to the Apple Pay JS API.
+//
+// Auth options (at least one required):
+//   - Standard: pass accessToken (from generateAccessToken)
+//   - Auth Reliance: pass partnerAccessToken + userIdentifier (email)
+export interface ApplePaySessionConfig {
+  colorMode?: 'LIGHT' | 'DARK';
+  borderRadius?: string;
+  height?: string;
+  [key: string]: string | undefined;
+}
+
+export interface ApplePayTransactionSessionParams {
+  quoteId: string;
+  walletAddress: string;
+  userIp: string;
+  config?: ApplePaySessionConfig;
+  // auth options
+  accessToken?: string;       // standard flow
+  partnerAccessToken?: string; // auth reliance flow
+  userIdentifier?: string;    // auth reliance flow — user email
+}
+
+export async function createApplePayTransactionSession(
+  params: ApplePayTransactionSessionParams
+): Promise<{ sessionId: string }> {
+  const cfg = getTransakConfig();
+  const key = cfg.apiKey || '';
+
+  // Build auth headers — at least one of the auth methods must be present
+  const authHeaders: Record<string, string> = {
+    'x-api-key': key,
+    'x-user-ip': params.userIp,
+    'Content-Type': 'application/json',
+  };
+
+  if (params.accessToken) {
+    authHeaders['authorization'] = `Bearer ${params.accessToken}`;
+  }
+  if (params.partnerAccessToken) {
+    authHeaders['x-access-token'] = params.partnerAccessToken;
+  }
+  if (params.userIdentifier) {
+    authHeaders['x-user-identifier'] = params.userIdentifier;
+  }
+
+  const body: Record<string, unknown> = {
+    quoteId: params.quoteId,
+    walletAddress: params.walletAddress,
+  };
+  if (params.config && Object.keys(params.config).length > 0) {
+    body.config = params.config;
+  }
+
+  const res = await axios.post(
+    `${cfg.baseUrl}/api/v2/transaction-session`,
+    body,
+    { headers: authHeaders, timeout: 15000 }
+  );
+
+  const sessionId: string =
+    res.data?.data?.sessionId ||
+    res.data?.sessionId ||
+    res.data?.session_id;
+
+  if (!sessionId) {
+    throw new Error(
+      'Transak Apple Pay: transaction session response missing sessionId. Raw: ' +
+      JSON.stringify(res.data).slice(0, 300)
+    );
+  }
+
+  return { sessionId };
 }
 
 export const id: ExchangeProviderId = 'transak';

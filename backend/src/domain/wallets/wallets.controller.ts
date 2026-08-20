@@ -560,25 +560,19 @@ export class WalletsController {
   // Merchant: buy crypto using merchant wallet funds
   async buyCryptoWithMerchant(req: Request, res: Response) {
     try {
-      const { merchantId, cryptoCoin, fiatAmount, network, allow_simulation } = req.body;
+      const { merchantId, cryptoCoin, fiatAmount, network } = req.body;
       if (!merchantId || !cryptoCoin || !fiatAmount || fiatAmount <= 0)
         return res.status(400).json({ error: 'Invalid payload' });
-      const result = await walletsService.buyCryptoWithMerchant(
-        merchantId, cryptoCoin, fiatAmount, network,
-        { allow_simulation: allow_simulation === true }
-      );
-      res.status(200).json({
-        ...result,
-        simulation_acknowledged: allow_simulation === true ? true : undefined,
-      });
+      const result = await walletsService.buyCryptoWithMerchant(merchantId, cryptoCoin, fiatAmount, network);
+      res.status(200).json(result);
     } catch (e: any) {
       const msg = String(e?.message || e);
       const badRequest =
-        /Insufficient|Invalid payload|NO_LIVE_CRYPTO_EXCHANGE_CONFIGURED|CRYPTO_PURCHASE_BLOCKED|Mock.simulation fallback rejected/.test(msg);
+        /Insufficient|Invalid payload|NO_LIVE_CRYPTO_EXCHANGE_CONFIGURED|CRYPTO_PURCHASE_BLOCKED|LIVE_PRICE_UNAVAILABLE|LIVE_CRYPTO_EXCHANGE_REQUIRED/.test(msg);
       res.status(badRequest ? 400 : 500).json({
         error: msg,
         hint: badRequest
-          ? 'Set real BINANCE_API_KEY + BINANCE_API_SECRET in backend/.env for LIVE execution. Or (operator testing only) pass allow_simulation=true in the request to confirm SIMULATION mode.'
+          ? 'Set real production exchange credentials in backend/.env. Simulation mode is disabled.'
           : undefined,
       });
     }
@@ -651,7 +645,11 @@ export class WalletsController {
       if (partnerCustomerId) params.partnerCustomerId = partnerCustomerId;
       if (params.walletCode) delete params.walletCode;
 
-      const session = await transak.createWidgetSession(params);
+      const userIp =
+        (req.headers['x-forwarded-for'] as string || '').split(',')[0].trim()
+        || req.socket.remoteAddress
+        || '0.0.0.0';
+      const session = await transak.createWidgetSession(params, { userIp });
       res.json({
         ok: true,
         sessionId: session.sessionId,
@@ -661,6 +659,146 @@ export class WalletsController {
       });
     } catch (e: any) {
       res.status(500).json({ error: e.message || 'Transak widget session failed' });
+    }
+  }
+
+  async sendTransakUserOtp(req: Request, res: Response) {
+    try {
+      const email = String(req.body?.email || '').trim();
+      if (!email) return res.status(400).json({ error: 'Merchant email is required' });
+      const transak = await import('../../exchange/transak.service');
+      const userIp = (req.headers['x-forwarded-for'] as string || '').split(',')[0].trim() || req.socket.remoteAddress || '0.0.0.0';
+      const result = await transak.sendUserOtp(email, userIp);
+      res.json({ ok: true, email: result.email, stateToken: result.stateToken, expiresIn: result.expiresIn });
+    } catch (e: any) {
+      res.status(Number(e?.response?.status) || 500).json({ error: e?.response?.data?.message || e.message || 'Transak OTP request failed' });
+    }
+  }
+
+  async verifyTransakUserOtp(req: Request, res: Response) {
+    try {
+      const email = String(req.body?.email || '').trim();
+      const otp = String(req.body?.otp || '').trim();
+      const stateToken = String(req.body?.stateToken || '').trim();
+      if (!email || !otp || !stateToken) return res.status(400).json({ error: 'email, otp and stateToken are required' });
+      const transak = await import('../../exchange/transak.service');
+      const userIp = (req.headers['x-forwarded-for'] as string || '').split(',')[0].trim() || req.socket.remoteAddress || '0.0.0.0';
+      const result = await transak.verifyUserOtp(email, otp, stateToken, userIp);
+      res.json({ ok: true, accessToken: result.accessToken, expiresAt: result.expiresAt });
+    } catch (e: any) {
+      res.status(Number(e?.response?.status) || 500).json({ error: e?.response?.data?.message || e.message || 'Transak OTP verification failed' });
+    }
+  }
+
+  async getTransakUserLimits(req: Request, res: Response) {
+    try {
+      const accessToken = String(req.body?.accessToken || req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+      const fiatCurrency = String(req.query.fiatCurrency || '').trim();
+      const paymentCategory = String(req.query.paymentCategory || '').trim();
+      const kycType = String(req.query.kycType || 'STANDARD').toUpperCase();
+      if (!accessToken || !fiatCurrency || !paymentCategory || !['SIMPLE', 'STANDARD'].includes(kycType)) {
+        return res.status(400).json({ error: 'accessToken, fiatCurrency, paymentCategory and kycType are required' });
+      }
+      const transak = await import('../../exchange/transak.service');
+      const userIp = (req.headers['x-forwarded-for'] as string || '').split(',')[0].trim() || req.socket.remoteAddress || '0.0.0.0';
+      const limits = await transak.getUserLimits({
+        accessToken,
+        fiatCurrency,
+        paymentCategory,
+        kycType: kycType as 'SIMPLE' | 'STANDARD',
+        userIp,
+      });
+      res.json({ ok: true, limits });
+    } catch (e: any) {
+      res.status(Number(e?.response?.status) || 500).json({ error: e?.response?.data?.message || e.message || 'Transak user limits lookup failed' });
+    }
+  }
+
+  async getTransakUserDetails(req: Request, res: Response) {
+    try {
+      const accessToken = String(req.body?.accessToken || req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+      if (!accessToken) return res.status(400).json({ error: 'accessToken is required' });
+      const transak = await import('../../exchange/transak.service');
+      const userIp = (req.headers['x-forwarded-for'] as string || '').split(',')[0].trim() || req.socket.remoteAddress || '0.0.0.0';
+      const user = await transak.getUserDetails(accessToken, userIp);
+      res.json({ ok: true, user });
+    } catch (e: any) {
+      res.status(Number(e?.response?.status) || 500).json({ error: e?.response?.data?.message || e.message || 'Transak user details lookup failed' });
+    }
+  }
+
+  async refreshTransakUserAccessToken(req: Request, res: Response) {
+    try {
+      const accessToken = String(req.body?.accessToken || req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+      if (!accessToken) return res.status(400).json({ error: 'accessToken is required' });
+      const transak = await import('../../exchange/transak.service');
+      const userIp = (req.headers['x-forwarded-for'] as string || '').split(',')[0].trim() || req.socket.remoteAddress || '0.0.0.0';
+      const result = await transak.refreshUserAccessToken(accessToken, userIp);
+      res.json({ ok: true, accessToken: result.accessToken });
+    } catch (e: any) {
+      res.status(Number(e?.response?.status) || 500).json({ error: e?.response?.data?.message || e.message || 'Transak user token refresh failed' });
+    }
+  }
+
+  async logoutTransakUser(req: Request, res: Response) {
+    try {
+      const accessToken = String(req.body?.accessToken || req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+      if (!accessToken) return res.status(400).json({ error: 'accessToken is required' });
+      const transak = await import('../../exchange/transak.service');
+      const userIp = (req.headers['x-forwarded-for'] as string || '').split(',')[0].trim() || req.socket.remoteAddress || '0.0.0.0';
+      await transak.logoutUser(accessToken, userIp);
+      res.json({ ok: true, message: 'Successfully logged out' });
+    } catch (e: any) {
+      res.status(Number(e?.response?.status) || 500).json({ error: e?.response?.data?.message || e.message || 'Transak logout failed' });
+    }
+  }
+
+  async onboardTransakUser(req: Request, res: Response) {
+    try {
+      const email = String(req.body?.email || '').trim();
+      if (!email) return res.status(400).json({ error: 'Merchant email is required' });
+      const transak = await import('../../exchange/transak.service');
+      const userIp = (req.headers['x-forwarded-for'] as string || '').split(',')[0].trim() || req.socket.remoteAddress || '0.0.0.0';
+      const user = await transak.onboardUserAuthReliance(email, userIp);
+      res.json({ ok: true, user });
+    } catch (e: any) {
+      res.status(Number(e?.response?.status) || 500).json({ error: e?.response?.data?.message || e.message || 'Transak Auth Reliance onboarding failed' });
+    }
+  }
+
+  async verifyTransakWalletAddress(req: Request, res: Response) {
+    try {
+      const cryptoCurrency = String(req.query.cryptoCurrency || req.body?.cryptoCurrency || '').trim();
+      const network = String(req.query.network || req.body?.network || '').trim();
+      const walletAddress = String(req.query.walletAddress || req.body?.walletAddress || '').trim();
+      if (!cryptoCurrency || !network || !walletAddress) {
+        return res.status(400).json({ error: 'cryptoCurrency, network and walletAddress are required' });
+      }
+      const transak = await import('../../exchange/transak.service');
+      const result = await transak.verifyWalletAddress(cryptoCurrency, network, walletAddress);
+      res.json({ ok: true, response: result.response });
+    } catch (e: any) {
+      res.status(Number(e?.response?.status) || 500).json({ error: e?.response?.data?.message || e.message || 'Transak wallet-address verification failed' });
+    }
+  }
+
+  async getTransakWebhooks(req: Request, res: Response) {
+    try {
+      const rawLimit = Number(req.query.limit);
+      const rawSkip = Number(req.query.skip);
+      const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(Math.trunc(rawLimit), 1), 100) : undefined;
+      const skip = Number.isFinite(rawSkip) ? Math.max(Math.trunc(rawSkip), 0) : undefined;
+      const eventID = String(req.query.eventID || '').trim() || undefined;
+      const orderID = String(req.query.orderID || '').trim() || undefined;
+      const startDate = String(req.query.startDate || '').trim() || undefined;
+      const endDate = String(req.query.endDate || '').trim() || undefined;
+      const rawStatus = String(req.query.status || '').trim().toLowerCase();
+      const status = rawStatus === 'success' || rawStatus === 'failed' ? rawStatus : undefined;
+      const transak = await import('../../exchange/transak.service');
+      const result = await transak.getWebhooks({ eventID, orderID, limit, skip, startDate, endDate, status });
+      res.json({ ok: true, ...result });
+    } catch (e: any) {
+      res.status(Number(e?.response?.status) || 500).json({ error: e?.response?.data?.message || e.message || 'Transak webhook lookup failed' });
     }
   }
 
@@ -789,7 +927,56 @@ export class WalletsController {
     }
   }
 
-  // POST /webhooks/transak  (public — verified via HMAC signature)
+  // POST /wallet/transak/apple-pay/session
+  // Creates a Headless Apple Pay transaction session via Transak Whitelabel API.
+  // Body: { quoteId, walletAddress, userIp?, config?, accessToken?, partnerAccessToken?, userIdentifier? }
+  // The quoteId must have been generated with paymentMethod=apple_pay.
+  async createTransakApplePaySession(req: Request, res: Response) {
+    try {
+      const transak = await import('../../exchange/transak.service');
+      if (!transak.createApplePayTransactionSession) {
+        return res.status(501).json({ error: 'createApplePayTransactionSession not available' });
+      }
+
+      const {
+        quoteId, walletAddress, config,
+        accessToken, partnerAccessToken, userIdentifier,
+      } = req.body || {};
+
+      if (!quoteId) {
+        return res.status(400).json({
+          error: 'quoteId is required (must be generated with paymentMethod=apple_pay)',
+        });
+      }
+      if (!walletAddress) {
+        return res.status(400).json({ error: 'walletAddress is required' });
+      }
+
+      // Resolve user IP: body → x-forwarded-for → req.ip
+      const userIp =
+        String(req.body?.userIp || '')
+        || (req.headers['x-forwarded-for'] as string || '').split(',')[0].trim()
+        || req.ip
+        || '127.0.0.1';
+
+      const result = await transak.createApplePayTransactionSession({
+        quoteId,
+        walletAddress,
+        userIp,
+        config: config || undefined,
+        accessToken:        accessToken        || undefined,
+        partnerAccessToken: partnerAccessToken || undefined,
+        userIdentifier:     userIdentifier     || undefined,
+      });
+
+      res.json({ ok: true, sessionId: result.sessionId });
+    } catch (e: any) {
+      const status = String(e?.response?.status || '').startsWith('4') ? Number(e.response.status) : 500;
+      res.status(status).json({
+        error: e?.response?.data?.message || e.message || 'Transak Apple Pay session creation failed',
+      });
+    }
+  }
   // Handles Transak order lifecycle events: PENDING, PROCESSING, COMPLETED, FAILED, etc.
   // The webhook body is signed with TRANSAK_WEBHOOK_SECRET using HMAC-SHA256.
   async handleTransakWebhook(req: Request, res: Response) {

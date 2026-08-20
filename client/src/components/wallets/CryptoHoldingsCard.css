@@ -1,0 +1,269 @@
+.crypto-holdings-card {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 12px;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+  margin-bottom: 20px;
+  transition: all 0.3s ease;
+}
+
+.crypto-holdings-card .card-header {
+  padding: 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+  transition: background 0.2s ease;
+}
+
+.crypto-holdings-card .card-header:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.crypto-holdings-card .header-left {
+  flex: 1;
+}
+
+.crypto-holdings-card .header-left h3 {
+  margin: 0 0 8px 0;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.crypto-holdings-card .total-value {
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.crypto-holdings-card .header-right {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.crypto-holdings-card .coin-count {
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 12px;
+  font-weight: 500;
+  background: rgba(255, 255, 255, 0.2);
+  padding: 4px 12px;
+  border-radius: 16px;
+}
+
+.crypto-holdings-card .expand-icon {
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 14px;
+  transition: transform 0.2s ease;
+}
+
+.crypto-holdings-card .card-content {
+  background: #fff;
+  padding: 0;
+  animation: slideDown 0.3s ease;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    max-height: 1000px;
+  }
+}
+
+.crypto-holdings-card .empty-state {
+  padding: 40px 20px;
+  text-align: center;
+  color: #999;
+}
+
+.crypto-holdings-card .empty-state p {
+  margin: 0 0 8px 0;
+  font-weight: 500;
+  color: #333;
+}
+
+.crypto-holdings-card .empty-state small {
+  color: #999;
+  font-size: 12px;
+}
+
+.crypto-holdings-card .holdings-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.crypto-holdings-card .holding-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid #f0f0f0;
+  transition: background 0.2s ease;
+}
+
+.crypto-holdings-card .holding-row:hover {
+  background: #fafafa;
+}
+
+.crypto-holdings-card .holding-row:last-child {
+  border-bottom: none;
+}
+
+.crypto-holdings-card .holding-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+}
+
+.crypto-holdings-card .coin-icon {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #fff;
+  font-size: 20px;
+  border-radius: 50%;
+  font-weight: bold;
+}
+
+.crypto-holdings-card .coin-details {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.crypto-holdings-card .coin-name {
+  font-weight: 600;
+  color: #333;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.crypto-holdings-card .network-badge {
+  background: #667eea;
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.crypto-holdings-card .quantity {
+  color: #666;
+  font-size: 12px;
+  font-family: 'Courier New', monospace;
+}
+
+.crypto-holdings-card .address-truncated {
+  color: #999;
+  font-size: 11px;
+  font-family: 'Courier New', monospace;
+}
+
+.crypto-holdings-card .holding-value {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  margin: 0 20px;
+}
+
+.crypto-holdings-card .usd-value {
+  font-weight: 700;
+  color: #333;
+  font-size: 14px;
+}
+
+.crypto-holdings-card .percentage {
+  color: #667eea;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.crypto-holdings-card .holding-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.crypto-holdings-card .action-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f0f0f0;
+  color: #333;
+}
+
+.crypto-holdings-card .action-btn:hover {
+  background: #667eea;
+  color: #fff;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.crypto-holdings-card .swap-btn {
+  background: #f0f0f0;
+  color: #667eea;
+}
+
+.crypto-holdings-card .swap-btn:hover {
+  background: #667eea;
+}
+
+.crypto-holdings-card .sell-btn {
+  background: #f0f0f0;
+  color: #d946ef;
+}
+
+.crypto-holdings-card .sell-btn:hover {
+  background: #d946ef;
+  color: #fff;
+}
+
+.crypto-holdings-card .withdraw-btn {
+  background: #f0f0f0;
+  color: #10b981;
+}
+
+.crypto-holdings-card .withdraw-btn:hover {
+  background: #10b981;
+  color: #fff;
+}
+
+@media (max-width: 768px) {
+  .crypto-holdings-card .holding-row {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .crypto-holdings-card .holding-actions {
+    order: 3;
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .crypto-holdings-card .header-right {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+  }
+}

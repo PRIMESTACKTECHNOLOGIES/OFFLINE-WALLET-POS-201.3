@@ -13,6 +13,7 @@ import { terminalsController } from "./domain/terminals/terminals.controller";
 import { paymentsRouter } from "./domain/payments/payments.router";
 import { receiptsRouter } from "./domain/receipts/receipts.router";
 import { walletsRouter } from "./domain/wallets/wallets.router";
+import cryptoWalletsRouter from "./routes/crypto-wallets.router";
 import apiRouter from "./domain/api/api.router";
 import payoutBankRouter from './domain/payouts/bank.router';
 import payoutCryptoRouter from './domain/payouts/crypto.router';
@@ -215,6 +216,7 @@ app.use(authenticateToken);
 
 // Wallet routes
 app.use("/wallet", walletsRouter);
+app.use('/api/crypto', cryptoWalletsRouter);
 
 // API routes (contract)
 app.use('/api', apiRouter);

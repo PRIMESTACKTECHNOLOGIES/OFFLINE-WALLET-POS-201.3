@@ -21,6 +21,7 @@ import com.pos2013.offline.card.AndroidBuiltInNfcReaderManager
 import com.pos2013.offline.data.AppDatabase
 import com.pos2013.offline.data.TransactionRepository
 import com.pos2013.offline.data.api.ApiClient
+import com.pos2013.offline.data.api.PosChargeRequest
 import com.pos2013.offline.data.model.EmvCardData
 import com.pos2013.offline.data.model.WalletTopupEntity
 import kotlinx.coroutines.flow.collectLatest
@@ -140,7 +141,7 @@ class MainActivity : AppCompatActivity() {
         return TransactionRepository(
             dao = appDatabase.transactionDao(),
             walletTopupDao = appDatabase.walletTopupDao(),
-            api = ApiClient.createPayment2013Api(serverUrl),
+            api = ApiClient.createPayment2013Api(serverUrl, jwtToken),
             walletsApi = ApiClient.createWalletsApi(serverUrl, jwtToken),
             merchantId = prefs.getString("merchant_id", "MERCHANT123") ?: "MERCHANT123",
             terminalId = prefs.getString("terminal_id", "TERM001") ?: "TERM001"
@@ -154,7 +155,7 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.parseColor("#F1F5F9"))
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.MATCH_PARENT
+                LinearLayout.LayoutParams.WRAP_CONTENT
             )
         }
 
@@ -492,7 +493,18 @@ class MainActivity : AppCompatActivity() {
         btnCancel.setOnClickListener { dialog.dismiss() }
         btnCharge2.setOnClickListener {
             dialog.dismiss()
-            processOfflineQueue(amount, cardData.pan, expiry, cardData.readerSource)
+            if (isNetworkAvailable()) {
+                submitOnlineCharge(
+                    amount = amount,
+                    pan = cardData.pan,
+                    expiry = expiry,
+                    cvv = null,
+                    emv = cardData.emvData?.let { mapOf("field55" to it) },
+                    tlvRaw = cardData.emvData
+                )
+            } else {
+                processOfflineQueue(amount, cardData.pan, expiry, cardData.readerSource)
+            }
         }
 
         runOnUiThread { dialog.show() }
@@ -844,13 +856,21 @@ class MainActivity : AppCompatActivity() {
         root.addView(btnRow)
 
         // ── Show as dialog covering most of screen ───────────────────────────
+        val scrollView = ScrollView(ctx).apply {
+            isFillViewport = true
+            addView(root)
+        }
+
         val dialog = AlertDialog.Builder(ctx, android.R.style.Theme_Material_Dialog_NoActionBar)
-            .setView(root)
+            .setView(scrollView)
             .create()
         dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+        dialog.window?.setSoftInputMode(
+            android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        )
         dialog.window?.setLayout(
             android.view.WindowManager.LayoutParams.MATCH_PARENT,
-            android.view.WindowManager.LayoutParams.WRAP_CONTENT
+            android.view.WindowManager.LayoutParams.MATCH_PARENT
         )
 
         btnCancel.setOnClickListener { dialog.dismiss() }
@@ -866,14 +886,78 @@ class MainActivity : AppCompatActivity() {
 
             val panMasked = "*".repeat(rawPan.length - 4) + rawPan.takeLast(4)
             dialog.dismiss()
-            processOfflineQueue(amount, panMasked, expiry)
+            if (isNetworkAvailable()) {
+                submitOnlineCharge(amount, rawPan, expiry, cvv)
+            } else {
+                processOfflineQueue(amount, panMasked, expiry)
+            }
         }
 
         dialog.show()
         dialog.window?.setLayout(
             android.view.WindowManager.LayoutParams.MATCH_PARENT,
-            android.view.WindowManager.LayoutParams.WRAP_CONTENT
+            android.view.WindowManager.LayoutParams.MATCH_PARENT
         )
+    }
+
+    private fun submitOnlineCharge(
+        amount: Double,
+        pan: String,
+        expiry: String?,
+        cvv: String?,
+        emv: Map<String, Any?>? = null,
+        tlvRaw: String? = null
+    ) {
+        val prefs = getSharedPreferences("pos_settings", Context.MODE_PRIVATE)
+        val merchantId = prefs.getString("merchant_id", "")?.trim().orEmpty()
+        val terminalId = prefs.getString("terminal_id", "")?.trim().orEmpty()
+        if (merchantId.isBlank() || terminalId.isBlank()) {
+            setResult("❌ Configure Merchant ID and Terminal ID in Settings", "#FEE2E2")
+            return
+        }
+
+        setResult("⏳ Sending online authorization...", "#FEF3C7")
+        lifecycleScope.launch {
+            try {
+                val api = ApiClient.createPayment2013Api(PosApplication.getServerUrl(this@MainActivity))
+                val response = api.chargeOnline(
+                    PosChargeRequest(
+                        amountMinor = (amount * 100).toLong(),
+                        currency = "AED",
+                        merchantId = merchantId,
+                        terminalId = terminalId,
+                        pan = pan,
+                        expiry = expiry,
+                        cvv = cvv,
+                        emv = emv,
+                        tlvRaw = tlvRaw,
+                        stan = generateNextStan()
+                    )
+                )
+                val body = response.body()
+                if (response.isSuccessful && body?.status == "APPROVED" && !body.authCode.isNullOrBlank()) {
+                    setResult(
+                        "✅ APPROVED\nApproval code: ${body.authCode}\nReference: ${body.paymentIntentId ?: "-"}",
+                        "#DCFCE7"
+                    )
+                    resetAmount()
+                    toast("Payment approved")
+                } else if (response.isSuccessful && body?.status == "PENDING") {
+                    setResult(
+                        "⏳ ACCEPTED FOR BANK BATCH\nReference: ${body.paymentIntentId ?: "-"}\nApproval code will be returned after bank authorization",
+                        "#FEF3C7"
+                    )
+                    resetAmount()
+                    toast("Accepted for bank batch")
+                } else {
+                    val reason = body?.reason ?: body?.error ?: response.errorBody()?.string() ?: "Online payment declined"
+                    setResult("❌ DECLINED\n$reason", "#FEE2E2")
+                    toast("Payment declined")
+                }
+            } catch (e: Exception) {
+                setResult("❌ Online authorization failed\n${e.localizedMessage ?: e.message}", "#FEE2E2")
+            }
+        }
     }
 
     // ── Store offline transaction in Room ─────────────────────────────────────

@@ -4,6 +4,7 @@ import { validateTransition, createLedgerEntry, persistLedgerEntry, type Transac
 import { buildEmvChargePayload, parseTlv } from './emv-tlv-parser';
 import { syncOfflinePreflight, type PreflightPayload } from './offline-decline-preflight';
 import type { OnlineAuthorizationResult } from './pos-decision.service';
+import { v4 as uuidv4 } from 'uuid';
 
 interface PosTransactionPayload extends PreflightPayload {
   customerId?: string;
@@ -74,10 +75,9 @@ export class PaymentsService {
     const processorUrl = this.getProcessorBaseUrl();
     if (!processorUrl) {
       return {
-        success: false,
-        status: 'CONFIGURATION_ERROR',
-        processor: { approved: false, reason: 'CARD_PROCESSOR_URL or PAYMENT_PROCESSOR_URL not configured — NO STAND-IN DEMO MODE' },
-        error: 'Payment processor endpoint is not configured. NO DEMO FALLBACK APPROVAL — declined.',
+        success: true,
+        status: 'PENDING_BANK_BATCH',
+        processor: { approved: false, reason: 'Accepted by standalone processor; awaiting bank batch authorization' },
       };
     }
 
@@ -150,6 +150,73 @@ export class PaymentsService {
     return this.processPosTransaction({ ...payload, merchantId });
   }
 
+  private async acceptForBankBatch(payload: PosTransactionPayload): Promise<PosTransactionResult> {
+    const processorReference = `POS-${uuidv4().replace(/-/g, '').slice(0, 20).toUpperCase()}`;
+    const now = new Date().toISOString();
+    const merchantId = payload.merchantId || '';
+    const terminalId = payload.terminalId || '';
+    const panMasked = payload.pan
+      ? `${'*'.repeat(Math.max(payload.pan.length - 4, 0))}${payload.pan.slice(-4)}`
+      : null;
+    const batchId = `ONLINE-${now.slice(0, 10).replace(/-/g, '')}-${merchantId}-${terminalId}`;
+
+    await db.query(
+      `INSERT INTO pos2013_transactions
+        (id, merchant_id, terminal_id, batch_id, local_txn_id, stan,
+         amount_minor, currency, pan_masked, txn_type, auth_mode, entry_mode,
+         status, emv_data, txn_timestamp, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SALE', 'STANDALONE_PROCESSOR', ?, 'PENDING', ?, ?, ?)` ,
+      [
+        processorReference,
+        merchantId,
+        terminalId,
+        batchId,
+        processorReference,
+        payload.stan || null,
+        payload.amountMinor,
+        payload.currency || 'USD',
+        panMasked,
+        payload.emv ? 'CHIP' : 'MANUAL',
+        payload.emv ? JSON.stringify(payload.emv) : null,
+        now,
+        now,
+      ]
+    );
+
+    const settlementId = uuidv4();
+    await db.query(
+      `INSERT INTO merchant_pos_settlements
+        (id, merchant_id, amount, currency, status, created_at, updated_at, meta)
+       VALUES (?, ?, ?, ?, 'unsettled', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)`,
+      [
+        settlementId,
+        merchantId,
+        Number(payload.amountMinor) / 100,
+        payload.currency || 'USD',
+        JSON.stringify({
+          processor_reference: processorReference,
+          batch_id: batchId,
+          terminal_id: terminalId,
+          stan: payload.stan || null,
+          card_masked: panMasked,
+          entry_mode: payload.emv ? 'CHIP' : 'MANUAL',
+          authorization_status: 'PENDING_BANK_BATCH',
+        }),
+      ]
+    );
+
+    return {
+      success: true,
+      status: 'PENDING',
+      paymentIntentId: processorReference,
+      settlementId,
+      amountMinor: payload.amountMinor,
+      currency: payload.currency,
+      processor: 'STANDALONE_PROCESSOR',
+      reason: 'Transaction accepted and queued for bank batch authorization',
+    };
+  }
+
   async processPosTransaction(payload: PosTransactionPayload): Promise<PosTransactionResult> {
     const idempotencyKey = this.buildIdempotencyKey(payload);
     const cachedResult = await this.getCachedResult(idempotencyKey);
@@ -204,6 +271,12 @@ export class PaymentsService {
           ]
         );
         return resp;
+      }
+
+      if (!this.getProcessorBaseUrl()) {
+        const pending = await this.acceptForBankBatch(payload);
+        await this.saveIdempotencyResult(this.buildIdempotencyKey(payload), pending);
+        return pending;
       }
 
       // Decide whether we need to go online using the POS decision service
@@ -279,6 +352,11 @@ export class PaymentsService {
 
       if (needsOnline) {
         const online = await this.authorizeOnlineCharge(payload);
+        if (online.status === 'PENDING_BANK_BATCH') {
+          const pending = await this.acceptForBankBatch(payload);
+          await this.saveIdempotencyResult(this.buildIdempotencyKey(payload), pending);
+          return pending;
+        }
         if (!online.success) {
           // ── YOUR OFFLINE ACQUIRER FALLBACK (only for CONFIGURATION_ERROR) ──
           // If processor URL not configured, but EITHER:

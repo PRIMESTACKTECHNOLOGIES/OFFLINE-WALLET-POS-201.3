@@ -223,7 +223,7 @@ router.post('/pos/offline-sale', async (req, res) => {
 router.post('/merchant/:merchantId/crypto/purchase', async (req, res) => {
   try {
     const { merchantId } = req.params as any;
-    const { amount_usd, asset, source_currency, allow_simulation } = req.body as any;
+    const { amount_usd, asset, source_currency } = req.body as any;
     const sourceCurrency = String(source_currency || 'USD').toUpperCase();
     if (!amount_usd || amount_usd <= 0 || !asset) return res.status(400).json({ error: 'Invalid payload: amount_usd (>0) and asset required' });
     const targetAsset = String(asset).toUpperCase();
@@ -232,42 +232,20 @@ router.post('/merchant/:merchantId/crypto/purchase', async (req, res) => {
     const { createLedgerEntry, validateTransition, persistLedgerEntry } = await import('../ledger/ledger.service');
     const binanceService: any = await import('../../exchange/binance.service');
 
-    // PRE-FLIGHT: Resolve exchange mode NOW (BEFORE debiting merchant wallet).
-    // If operator hasn't configured keys AND hasn't explicitly set BINANCE_USE_MOCK=1,
-    // binanceService.getBinanceConfig() throws CRYPTO_PURCHASE_BLOCKED.  We surface that
-    // here before touching any balances so the operator sees a clean HTTP 400 and the
-    // rule "no mock/demo by default" is enforced at the API boundary.
-    let mode: 'live' | 'mock';
+    // PRE-FLIGHT: Resolve exchange mode before touching any balances.
+    let mode: 'live';
     try {
       const cfg = binanceService.getBinanceConfig ? binanceService.getBinanceConfig() : null;
-      if (cfg) mode = cfg.mode as any;
-      else mode = process.env.BINANCE_USE_MOCK === '1' || (process.env.BINANCE_MODE||'').toLowerCase() === 'mock' ? 'mock' : 'live';
+      if (!cfg || cfg.mode !== 'live') throw new Error('LIVE_CRYPTO_EXCHANGE_REQUIRED: configure production exchange credentials.');
+      mode = 'live';
     } catch (cfgErr: any) {
       return res.status(400).json({
         ok: false,
         blocked: true,
         mode: 'blocked',
         error: String(cfgErr?.message || cfgErr).slice(0, 800),
-        hint: allow_simulation
-          ? 'Set allow_simulation=false (default) when running live, or ensure BINANCE_USE_MOCK=1 in env for explicit SIMULATION mode.'
-          : 'Either set real Binance keys in backend/.env, or set BINANCE_USE_MOCK=1 to run a known operator simulation.',
+        hint: 'Set real production exchange credentials in backend/.env. Simulation mode is disabled.',
         provider_used: String(process.env.CRYPTO_PROVIDER || 'binance').toLowerCase(),
-      });
-    }
-
-    // If keys are missing + BINANCE_USE_MOCK=1, we allow the simulation — BUT we demand
-    // explicit allow_simulation=true in the request body as well so the UI is NEVER
-    // silently running mock when the operator thinks it's live.
-    if (mode === 'mock' && allow_simulation !== true) {
-      return res.status(400).json({
-        ok: false,
-        blocked: true,
-        mode: 'mock',
-        error:
-          'CRYPTO_PURCHASE_SIMULATION_UNACKNOWLEDGED: exchange keys not configured and API ran in SIMULATION (mock) mode. ' +
-          'Confirm you understand this is a SIMULATION not real crypto by passing allow_simulation=true in the request. ' +
-          'Or set real BINANCE_API_KEY + BINANCE_API_SECRET for LIVE execution.',
-        hint: 'Only use allow_simulation=true for operator internal testing. NEVER leave this flag on in a production merchant terminal.',
       });
     }
 
@@ -330,7 +308,10 @@ router.post('/merchant/:merchantId/crypto/purchase', async (req, res) => {
       }
 
       // Step 4: Determine executed qty + is_mock flag from result
-      const isMock = Boolean(orderResult?.mock) || mode === 'mock';
+      if (orderResult?.mock === true || orderResult?.is_mock === true) {
+        throw new Error('LIVE_CRYPTO_EXCHANGE_REQUIRED: provider returned a simulated result.');
+      }
+      const isMock = false;
       const executedQtyRaw =
         (orderResult && (typeof orderResult.executedQty === 'string' || typeof orderResult.executedQty === 'number')) ? Number(orderResult.executedQty) :
         Array.isArray(orderResult?.fills) ? orderResult.fills.reduce((s: number, f: any) => s + Number(f?.qty || 0), 0) :
@@ -404,17 +385,6 @@ router.post('/merchant/:merchantId/crypto/purchase', async (req, res) => {
         amount_spent_usd: Number(amount_usd),
         asset_received: executedQty,
         avg_price_per_unit: avgPrice,
-        simulation: isMock
-          ? {
-              warning:
-                '⚠️ SIMULATION ONLY (mock mode). REAL crypto was NOT purchased from Binance. ' +
-                'The merchant USD wallet was debited internally AND the merchant crypto balance table was ' +
-                'updated for UI/UX testing purposes, but there is no real USDT/crypto anywhere on a blockchain or exchange. ' +
-                'Set BINANCE_API_KEY + BINANCE_API_SECRET in backend/.env for LIVE execution.',
-              requires_acknowledgement: 'This purchase was only permitted because allow_simulation=true was set in the request body. ' +
-                'Without this flag, the endpoint returns HTTP 400 blocked when keys are missing.',
-            }
-          : undefined,
         exchange_order: orderResult || null,
         merchant_fiat_balances: (allFiatQ.rows || []).map((r: any) => ({ currency: r.currency, balance: Number(r.balance) })),
         merchant_crypto_balances: (allCryptoQ.rows || []).map((r: any) => ({

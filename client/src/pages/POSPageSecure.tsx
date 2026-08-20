@@ -910,7 +910,7 @@ export const POSPageSecure = () => {
                   value={cardData.pan}
                   onChange={(e) => {
                     const formatted = formatCardDisplay(e.target.value);
-                    setCardData({...cardData, pan: formatted});
+                    setCardData(prev => ({...prev, pan: formatted}));
                   }}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-lg font-mono"
                   placeholder="0000 0000 0000 0000"
@@ -928,7 +928,7 @@ export const POSPageSecure = () => {
                     onChange={(e) => {
                       let val = e.target.value.replace(/\D/g, '').substring(0, 4);
                       if (val.length >= 2) val = val.substring(0, 2) + '/' + val.substring(2);
-                      setCardData({...cardData, expiry: val});
+                      setCardData(prev => ({...prev, expiry: val}));
                     }}
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-center"
                     placeholder="MM/YY"
@@ -941,7 +941,7 @@ export const POSPageSecure = () => {
                   <input 
                     type="password" 
                     value={cardData.cvv}
-                    onChange={(e) => setCardData({...cardData, cvv: e.target.value.replace(/\D/g, '').substring(0, 4)})}
+                    onChange={(e) => setCardData(prev => ({...prev, cvv: e.target.value.replace(/\D/g, '').substring(0, 4)}))}
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-center"
                     placeholder="123"
                   />

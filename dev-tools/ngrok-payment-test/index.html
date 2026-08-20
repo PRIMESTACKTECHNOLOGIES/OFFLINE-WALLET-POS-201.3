@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Ngrok Payment Test - Web Crypto Check</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; padding: 2rem; }
+    .ok { color: green }
+    .bad { color: darkred }
+    pre { background:#f6f8fa; padding:1rem }
+    button { padding: .5rem 1rem; font-size: 1rem }
+  </style>
+</head>
+<body>
+  <h1>Ngrok Payment Test — Web Crypto Availability</h1>
+  <p>This page checks whether the browser environment provides the Web Crypto API (window.crypto.subtle) and whether the page is a secure context (HTTPS or localhost).</p>
+
+  <div id="results">
+    <p>Checking...</p>
+  </div>
+
+  <p>
+    <button id="startPayment">Simulate Start Payment</button>
+  </p>
+
+  <h3>Debug console checks</h3>
+  <pre>
+// Run in console to re-check
+window.isSecureContext
+!!window.crypto
+!!(window.crypto && window.crypto.subtle)
+  </pre>
+
+  <script>
+    function render(status) {
+      const el = document.getElementById('results');
+      el.innerHTML = '';
+      const sc = document.createElement('p');
+      sc.innerHTML = 'isSecureContext: ' + (status.isSecureContext ? '<span class="ok">true</span>' : '<span class="bad">false</span>');
+      const cryptoExists = document.createElement('p');
+      cryptoExists.innerHTML = 'window.crypto available: ' + (status.crypto ? '<span class="ok">true</span>' : '<span class="bad">false</span>');
+      const subtle = document.createElement('p');
+      subtle.innerHTML = 'crypto.subtle available: ' + (status.subtle ? '<span class="ok">true</span>' : '<span class="bad">false</span>');
+      el.appendChild(sc);
+      el.appendChild(cryptoExists);
+      el.appendChild(subtle);
+
+      if (!status.isSecureContext || !status.subtle) {
+        const note = document.createElement('p');
+        note.innerHTML = '<strong>Notice:</strong> Web Crypto API unavailable. Use a modern browser over HTTPS or open via Chrome/Safari. If you see this inside an embedded WebView, consider opening this URL in Chrome Custom Tabs / SFSafariViewController.';
+        note.style.color = 'darkred';
+        el.appendChild(note);
+      } else {
+        const ok = document.createElement('p');
+        ok.innerHTML = '<strong>Good:</strong> Web Crypto API is available. You can proceed with crypto operations.';
+        ok.style.color = 'green';
+        el.appendChild(ok);
+      }
+    }
+
+    const status = {
+      isSecureContext: !!window.isSecureContext,
+      crypto: !!window.crypto,
+      subtle: !!(window.crypto && window.crypto.subtle)
+    };
+
+    render(status);
+
+    document.getElementById('startPayment').addEventListener('click', () => {
+      // In a real flow this would create a server session and redirect to hosted payment page
+      // For testing, redirect to /callback to simulate bank return
+      const confirmed = confirm('Simulate payment and return to app (calls /callback?status=success)');
+      if (confirmed) {
+        window.location.href = '/callback?status=success';
+      }
+    });
+  </script>
+</body>
+</html>

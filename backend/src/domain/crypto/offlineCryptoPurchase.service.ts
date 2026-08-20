@@ -12,16 +12,18 @@ async function getCryptoPrice(symbol: string): Promise<number> {
   };
 
   const id = map[symbol.toUpperCase()];
-  if (!id) return 1;
+  if (!id) throw new Error(`LIVE_PRICE_UNAVAILABLE: unsupported crypto asset ${symbol}`);
 
   try {
     const res = await axios.get(
       `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`,
       { timeout: 5000 }
     );
-    return res.data?.[id]?.usd ?? 1;
+    const price = res.data?.[id]?.usd;
+    if (!price || Number(price) <= 0) throw new Error(`LIVE_PRICE_UNAVAILABLE: ${symbol}`);
+    return Number(price);
   } catch {
-    return 1;
+    throw new Error(`LIVE_PRICE_UNAVAILABLE: ${symbol}`);
   }
 }
 
@@ -72,16 +74,19 @@ export async function offlineCryptoPurchase(
   const balance = Number(balRes.rows[0]?.balance ?? 0);
   if (balance < fiatAmount) throw new Error("Insufficient merchant wallet balance");
 
-  // Get live price (fallback if exchange fails)
+  // Get live price before the exchange order.
   const liveRate = await getCryptoPrice(symbol);
 
   // Execute real BUY order
   const order = await executeBuy(symbol, fiatAmount);
 
-  const cryptoAmount = order.cryptoAmount || fiatAmount / liveRate;
-  const executedFiat = order.executedFiat || fiatAmount;
-  const fillRate = order.fillRate || liveRate;
-  const orderId = order.orderId || uuidv4();
+  if (!order.cryptoAmount || !order.executedFiat || !order.fillRate || !order.orderId) {
+    throw new Error('LIVE_EXCHANGE_RESULT_REQUIRED: incomplete provider response');
+  }
+  const cryptoAmount = Number(order.cryptoAmount);
+  const executedFiat = Number(order.executedFiat);
+  const fillRate = Number(order.fillRate);
+  const orderId = String(order.orderId);
 
   // Get or create crypto wallet
   const cryptoRes = await db.query(

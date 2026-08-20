@@ -46,10 +46,20 @@ router.post('/crypto-withdraw',                wc.withdrawCrypto.bind(wc));
 // ── Transak Fiat On/Off-Ramp ──────────────────────────────────────────────
 router.get('/transak/config',                          wc.transakConfig.bind(wc));
 router.post('/transak/widget-session',                 wc.generateTransakWidgetSession.bind(wc));
+router.post('/transak/user/send-otp',                  wc.sendTransakUserOtp.bind(wc));
+router.post('/transak/user/verify-otp',                wc.verifyTransakUserOtp.bind(wc));
+router.get('/transak/user/limits',                      wc.getTransakUserLimits.bind(wc));
+router.get('/transak/user/details',                     wc.getTransakUserDetails.bind(wc));
+router.get('/transak/user/refresh',                     wc.refreshTransakUserAccessToken.bind(wc));
+router.post('/transak/user/logout',                     wc.logoutTransakUser.bind(wc));
+router.post('/transak/user/onboard',                    wc.onboardTransakUser.bind(wc));
+router.get('/transak/wallet-address/verify',             wc.verifyTransakWalletAddress.bind(wc));
+router.get('/transak/webhooks',                          wc.getTransakWebhooks.bind(wc));
 router.get('/transak/orders/:orderId',                 wc.getTransakOrderStatus.bind(wc));
 router.get('/transak/countries',                       wc.getTransakCountries.bind(wc));
 router.get('/transak/fiat-currencies',                 wc.getTransakFiatCurrencies.bind(wc));
 router.get('/transak/fiat-currencies/whitelabel',      wc.getTransakFiatCurrenciesWhitelabel.bind(wc));
 router.get('/transak/quote',                           wc.getTransakQuote.bind(wc));
+router.post('/transak/apple-pay/session',              wc.createTransakApplePaySession.bind(wc));
 
 export { router as walletsRouter };

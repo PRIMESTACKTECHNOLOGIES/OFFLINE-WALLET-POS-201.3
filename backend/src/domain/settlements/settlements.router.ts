@@ -2,8 +2,20 @@ import { Router } from 'express';
 import { db } from '../../config/db';
 import { settlementReconciliationService } from './settlementReconciliation.service';
 import { settlementsController } from './settlements.controller';
+import { generatePain001, type Pain001Request } from './paymentInitiation.service';
 
 const router = Router();
+
+router.post('/merchant/:merchantId/payment-files/pain001', async (req, res) => {
+  try {
+    const result = await generatePain001(req.params.merchantId, req.body as Pain001Request);
+    res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+    res.send(result.xml);
+  } catch (e: any) {
+    res.status(400).json({ error: e.message || 'Unable to generate payment initiation file' });
+  }
+});
 
 // GET /api/merchant/:merchantId/settlements/unsettled
 router.get('/merchant/:merchantId/settlements/unsettled', async (req, res) => {
