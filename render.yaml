@@ -1,5 +1,5 @@
 services:
-  # Backend API server
+  # Backend API server (Docker)
   - type: web
     name: pos-offline-api
     env: docker
@@ -8,8 +8,6 @@ services:
     region: frankfurt
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
-    buildCommand: npm run build
-    startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
@@ -32,6 +30,5 @@ services:
   - type: pserv
     name: pos-postgres
     plan: starter
-    ipAllowList: []
     postgresMajorVersion: 15
     region: frankfurt
