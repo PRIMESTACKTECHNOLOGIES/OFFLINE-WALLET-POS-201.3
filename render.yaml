@@ -26,9 +26,8 @@ services:
           name: pos-postgres
           property: connectionString
 
-  # Postgres database for Transak reconciliation
-  - type: pserv
-    name: pos-postgres
+databases:
+  - name: pos-postgres
+    databaseName: pos_offline
+    user: pos_offline_user
     plan: starter
-    postgresMajorVersion: 15
-    region: frankfurt
