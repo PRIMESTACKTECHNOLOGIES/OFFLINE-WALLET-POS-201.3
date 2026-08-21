@@ -22,6 +22,7 @@ import { conflictResolutionRouter } from './domain/conflicts/conflict-resolution
 import { auditTrailRouter } from './domain/audit/audit-trail.router';
 import { dashboardRouter } from './domain/dashboard/dashboard.router';
 import { bankTransferRouter } from './domain/banktransfer/bank-transfer.router';
+import { batchFileRouter } from './domain/batchfile/batchfile.router';
 import { wiseWebhookRouter } from './domain/payouts/wiseWebhook.router';
 import { cashoutsRouter } from "./domain/cashouts/cashouts.router";
 import { paymentReceiverRouter } from "./domain/paymentreceiver/paymentreceiver.router";
@@ -227,6 +228,7 @@ app.use('/api/conflicts', conflictResolutionRouter);
 app.use('/api/audit', auditTrailRouter);
 app.use('/api/dashboard', dashboardRouter);
 app.use('/api/bank-transfer', bankTransferRouter);
+app.use('/api/batch-file', batchFileRouter);
 
 // Merchant API routes
 app.use("/merchant/v1", terminalsRouter);

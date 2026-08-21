@@ -622,11 +622,38 @@ export const OverviewPage = () => {
                 )}
               </div>
             </div>
-            <div className="flex items-center gap-3 flex-shrink-0">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 flex-shrink-0">
+              {/* Download CSV */}
+              <a
+                href={`${BASE_URL}/api/batch-file/csv?merchantId=${getMerchantId()}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-white hover:bg-gray-50 text-gray-700 text-sm font-semibold border border-gray-200 shadow-sm hover:shadow-md transition-all duration-200"
+                title="Download CSV batch file for bank upload"
+              >
+                <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                </svg>
+                CSV File
+              </a>
+              {/* Download MT103 SWIFT */}
+              <a
+                href={`${BASE_URL}/api/batch-file/mt103?merchantId=${getMerchantId()}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-white hover:bg-gray-50 text-gray-700 text-sm font-semibold border border-gray-200 shadow-sm hover:shadow-md transition-all duration-200"
+                title="Download MT103 SWIFT wire instruction file"
+              >
+                <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                </svg>
+                MT103 SWIFT
+              </a>
+              {/* Process & Credit */}
               <button
                 onClick={handleProcessBatch}
                 disabled={processing}
-                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:bg-amber-300 text-white text-sm font-semibold shadow-sm hover:shadow-md transition-all duration-200 disabled:cursor-not-allowed"
+                className="flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:bg-amber-300 text-white text-sm font-semibold shadow-sm hover:shadow-md transition-all duration-200 disabled:cursor-not-allowed"
               >
                 {processing ? (
                   <>
