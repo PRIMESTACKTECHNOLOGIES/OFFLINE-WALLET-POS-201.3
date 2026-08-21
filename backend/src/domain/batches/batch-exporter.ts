@@ -170,8 +170,8 @@ export class BatchExporter {
     return r.length >= 8 ? r.slice(0, 8) : pad(r, 8, "0", "L");
   }
 
-  private signCanonical(batch: BatchRowShape, timestampStr: string, nonce: string, count: number, secretKey: string): { payload: string; signature: string } {
-    const payload = [
+  private signCanonical(batch: BatchRowShape, timestampStr: string, nonce: string, count: number, secretKey: string): { canonicalPayload: string; signature: string } {
+    const canonicalPayload = [
       batch.protocol_version || "201.3",
       batch.merchant_id,
       batch.terminal_id,
@@ -180,8 +180,8 @@ export class BatchExporter {
       nonce,
       String(count),
     ].join("|");
-    const signature = crypto.createHmac("sha256", secretKey).update(payload).digest("base64");
-    return { payload, signature };
+    const signature = crypto.createHmac("sha256", secretKey).update(canonicalPayload).digest("base64");
+    return { canonicalPayload, signature };
   }
 
   export(batch: BatchRowShape, rawTxns: TxnRowShape[], format: ExportFormat, opts: ExportOpts): ExportResult {
