@@ -3,7 +3,7 @@ services:
   - type: web
     name: pos-offline-api
     env: docker
-    plan: starter
+    plan: free
     branch: main
     region: frankfurt
     dockerfilePath: ./Dockerfile
@@ -30,4 +30,4 @@ databases:
   - name: pos-postgres
     databaseName: pos_offline
     user: pos_offline_user
-    plan: starter
+    plan: free
