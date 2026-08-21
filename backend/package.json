@@ -17,7 +17,6 @@
     "@noble/secp256k1": "^3.1.0",
     "@types/bcryptjs": "^2.4.6",
     "@types/jsonwebtoken": "^9.0.10",
-    "@types/sqlite3": "^3.1.11",
     "axios": "^1.6.0",
     "bcryptjs": "^3.0.3",
     "bs58": "^6.0.0",
@@ -33,13 +32,12 @@
     "open": "^11.0.0",
     "pg": "^8.11.3",
     "socket.io": "^4.8.3",
-    "sqlite": "^5.1.1",
-    "sqlite3": "^6.0.1",
+    "better-sqlite3": "^9.6.0",
     "tronweb": "^5.3.2",
     "uuid": "^14.0.1"
   },
   "devDependencies": {
-    "@types/cors": "^2.8.17",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^4.17.21",
     "@types/node": "^20.10.6",
     "@types/pg": "^8.10.9",
@@ -48,7 +46,6 @@
     "typescript": "^5.3.3"
   },
   "allowScripts": {
-    "@pokusew/pcsclite@0.6.0": true,
-    "sqlite3@6.0.1": true
+    "@pokusew/pcsclite@0.6.0": true
   }
 }

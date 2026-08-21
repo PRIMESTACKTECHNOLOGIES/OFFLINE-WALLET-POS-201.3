@@ -12,10 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/package*.json ./backend/
-# Use --ignore-scripts to skip native builds (nfc-pcsc) that require hardware,
-# then explicitly rebuild only sqlite3 so its native binding compiles for Linux.
+# Use --ignore-scripts to skip nfc-pcsc (requires hardware), then rebuild
+# better-sqlite3 so its native binding compiles for Linux.
 RUN npm --prefix backend install --no-audit --no-fund --ignore-scripts \
- && npm --prefix backend rebuild sqlite3
+ && npm --prefix backend rebuild better-sqlite3
 
 # Always destroy the build-time npmrc before COPYing source.
 RUN rm -f /root/.npmrc
@@ -40,7 +40,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN if [ -n "$NPM_TOKEN" ]; then echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > /root/.npmrc; fi
 COPY backend/package*.json ./backend/
 RUN npm --prefix backend install --omit=dev --no-audit --no-fund --ignore-scripts \
- && npm --prefix backend rebuild sqlite3
+ && npm --prefix backend rebuild better-sqlite3
 RUN rm -f /root/.npmrc
 
 # Copy compiled backend
