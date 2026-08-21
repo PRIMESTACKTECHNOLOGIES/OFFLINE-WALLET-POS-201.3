@@ -3,6 +3,7 @@ import { db } from '../../config/db';
 import { cryptoWalletsService } from './crypto-wallets.service';
 import { transakService } from './transak.service';
 import axios from 'axios';
+import { getOrDeriveCustomerWallet, toDerivationNetwork } from '../../utils/walletGen';
 
 export interface BuyCryptoRequest {
   customer_id: string;
@@ -107,7 +108,8 @@ export class CryptoOperationsService {
   private async buyCryptoWithTransak(req: BuyCryptoRequest, txnId: string): Promise<BuyCryptoResult> {
     try {
       // Generate customer wallet address if not provided
-      const walletAddress = req.wallet_address || await this.generateWalletAddress(req.crypto_currency, req.network);
+      const walletAddress = req.wallet_address ||
+        await this.getOrCreateWalletAddress(req.customer_id, req.crypto_currency, req.network);
 
       // Create Transak order
       const order = await transakService.createOrder(
@@ -205,7 +207,8 @@ export class CryptoOperationsService {
       const cryptoAmount = req.amount_usd / priceUsd;
 
       // Generate wallet address
-      const walletAddress = req.wallet_address || await this.generateWalletAddress(req.crypto_currency, req.network);
+      const walletAddress = req.wallet_address ||
+        await this.getOrCreateWalletAddress(req.customer_id, req.crypto_currency, req.network);
 
       // Credit crypto wallet
       await cryptoWalletsService.updateCryptoBalance(
@@ -422,12 +425,54 @@ export class CryptoOperationsService {
   }
 
   /**
-   * Generate a wallet address for customer (simplified - in production use proper key derivation)
+   * Generate (or retrieve) a real BIP-44 derived wallet address for a customer.
+   * Uses WALLET_MASTER_MNEMONIC from .env to deterministically derive addresses.
+   * Falls back to a placeholder if the mnemonic is not configured (dev/test mode).
    */
   private async generateWalletAddress(coin: string, network: string): Promise<string> {
-    // TODO: Generate or derive actual wallet addresses based on network
-    // For now, return placeholder
-    return `${coin.toLowerCase()}_${network}_${uuidv4().slice(0, 8)}`;
+    try {
+      const derivationNetwork = toDerivationNetwork(coin, network);
+      // We don't have a customerId here — generate a one-off address at index 0
+      // (callers that have a customerId should use getOrDeriveCustomerWallet directly)
+      const derived = await import('../../utils/walletGen');
+      const wallet = await derived.deriveWallet(derivationNetwork, 0, coin);
+      return wallet.address;
+    } catch (err: any) {
+      // Mnemonic not configured in dev — return a clearly-labelled placeholder
+      console.warn('[walletGen] Mnemonic not set, returning placeholder address:', err.message);
+      return `${coin.toLowerCase()}_${network}_placeholder_${uuidv4().slice(0, 8)}`;
+    }
+  }
+
+  /**
+   * Get or derive a real wallet address for a specific customer+coin+network.
+   * Stores the derivation index in customer_crypto_wallets_v2 for future lookups.
+   */
+  async getOrCreateWalletAddress(customerId: string, coin: string, network: string): Promise<string> {
+    try {
+      const derivationNetwork = toDerivationNetwork(coin, network);
+      const walletGen = await import('../../utils/walletGen');
+      const derived = await walletGen.getOrDeriveCustomerWallet(db, customerId, coin, derivationNetwork);
+
+      // Persist the derivation index so we can re-derive the same address later
+      const coin_upper = coin.toUpperCase();
+      const existing = await db.query(
+        `SELECT id FROM customer_crypto_wallets_v2
+         WHERE customer_id = ? AND coin = ? AND network = ?`,
+        [customerId, coin_upper, network.toLowerCase()]
+      );
+      if (existing.rows.length > 0) {
+        await db.query(
+          `UPDATE customer_crypto_wallets_v2 SET address = ?, derivation_index = ?
+           WHERE customer_id = ? AND coin = ? AND network = ?`,
+          [derived.address, derived.index, customerId, coin_upper, network.toLowerCase()]
+        );
+      }
+      return derived.address;
+    } catch (err: any) {
+      console.warn('[walletGen] Derivation failed, using placeholder:', err.message);
+      return `${coin.toLowerCase()}_${network}_placeholder_${uuidv4().slice(0, 8)}`;
+    }
   }
 
   /**

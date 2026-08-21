@@ -66,8 +66,8 @@ export const initTables = async () => {
       parseAddCol(`ALTER TABLE wallet_transactions ADD COLUMN currency TEXT DEFAULT 'USD'`),
       // merchant_wallet_transactions — native currency column
       parseAddCol(`ALTER TABLE merchant_wallet_transactions ADD COLUMN currency TEXT DEFAULT 'USD'`),
-      // customer_wallets — wallet_code (if not present from earlier schemas)
-      parseAddCol(`ALTER TABLE customer_wallets ADD COLUMN wallet_code TEXT`),
+      // customer_crypto_wallets_v2 — HD derivation index for BIP-44 wallet generation
+      parseAddCol(`ALTER TABLE customer_crypto_wallets_v2 ADD COLUMN derivation_index INTEGER`),
     ];
 
     for (const [table, col, sql] of migrations) {
@@ -934,6 +934,52 @@ export const initTables = async () => {
         processed_at TEXT DEFAULT CURRENT_TIMESTAMP
       );
     `);
+
+    // Customer Crypto Withdrawals — on-chain send records for customer self-serve withdrawals
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS customer_crypto_withdrawals (
+        id TEXT PRIMARY KEY,
+        customer_id TEXT NOT NULL,
+        coin TEXT NOT NULL,
+        network TEXT NOT NULL,
+        amount REAL NOT NULL,
+        destination_address TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending_manual',
+        provider TEXT,
+        ref TEXT,
+        tx_id TEXT,
+        tx_url TEXT,
+        meta TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    try {
+      await db.query(`CREATE INDEX IF NOT EXISTS idx_ccw_customer_status ON customer_crypto_withdrawals(customer_id, status)`);
+    } catch (_) {}
+
+    // Merchant Crypto Withdrawals — on-chain send records for merchant payout router
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS merchant_crypto_withdrawals (
+        id TEXT PRIMARY KEY,
+        merchant_id TEXT NOT NULL,
+        amount_usd REAL NOT NULL,
+        asset TEXT NOT NULL,
+        address TEXT NOT NULL,
+        network TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending_manual',
+        provider TEXT,
+        ref TEXT,
+        tx_id TEXT,
+        tx_url TEXT,
+        meta TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    try {
+      await db.query(`CREATE INDEX IF NOT EXISTS idx_mcw_merchant_status ON merchant_crypto_withdrawals(merchant_id, status)`);
+    } catch (_) {}
 
     // Crypto Transactions Log v2 - Comprehensive transaction history
     await db.query(`

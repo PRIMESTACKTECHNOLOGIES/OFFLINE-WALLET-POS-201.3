@@ -7,6 +7,7 @@ import http from "http";
 import { app } from "./app";
 import { initTables } from "./domain/setup/init_tables";
 import { initWsServer } from "./realtime/wsServer";
+import { startDeferredBroadcastWorker, stopDeferredBroadcastWorker } from "./workers/deferredBroadcast.worker";
 
 const PORT = parseInt(process.env.PORT || '7000');
 
@@ -24,6 +25,17 @@ const start = async () => {
   server.listen(PORT, '0.0.0.0', () => {
     console.log("Server running on port", PORT);
   });
+
+  // Start deferred broadcast retry daemon
+  startDeferredBroadcastWorker();
+
+  // Graceful shutdown
+  const shutdown = () => {
+    stopDeferredBroadcastWorker();
+    server.close(() => process.exit(0));
+  };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
 };
 
 start();
