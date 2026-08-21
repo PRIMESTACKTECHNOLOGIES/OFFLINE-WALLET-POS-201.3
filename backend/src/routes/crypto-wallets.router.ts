@@ -248,7 +248,7 @@ router.post('/wallets/:customerId/withdraw-crypto', authenticateToken, async (re
         } else if (result.ok && result.txId) {
           finalStatus = 'completed';
           txId = result.txId;
-          txUrl = result.txUrl;
+          txUrl = result.txUrl ?? undefined;
         } else {
           finalStatus = 'pending_manual';
         }
