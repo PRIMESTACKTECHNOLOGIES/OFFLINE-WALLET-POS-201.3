@@ -4,6 +4,8 @@ import {
   getPendingTransactions,
   getRecentSettlements,
   getDashboardSummary,
+  getUnprocessedSummary,
+  processUnprocessedTransactions,
 } from './dashboard.service';
 
 export class DashboardController {
@@ -136,6 +138,41 @@ export class DashboardController {
         success: false,
         error: e.message,
       });
+    }
+  }
+
+  /**
+   * GET /unprocessed
+   * Returns total unprocessed transactions + amount not yet credited to wallet
+   */
+  async getUnprocessed(req: Request, res: Response) {
+    try {
+      const merchantId = req.headers['x-merchant-id'] as string | undefined;
+      const summary = await getUnprocessedSummary(merchantId || undefined);
+      res.json({ success: true, ...summary });
+    } catch (e: any) {
+      console.error('[Dashboard Controller] Error fetching unprocessed:', e);
+      res.status(500).json({ success: false, error: e.message });
+    }
+  }
+
+  /**
+   * POST /process-batch
+   * Credit all unprocessed transactions to merchant wallet + USDT balance
+   */
+  async processBatch(req: Request, res: Response) {
+    try {
+      const merchantId =
+        (req.body?.merchantId as string) ||
+        (req.headers['x-merchant-id'] as string);
+      if (!merchantId) {
+        return res.status(400).json({ error: 'merchantId required' });
+      }
+      const result = await processUnprocessedTransactions(merchantId);
+      res.json(result);
+    } catch (e: any) {
+      console.error('[Dashboard Controller] Error processing batch:', e);
+      res.status(500).json({ success: false, error: e.message });
     }
   }
 }

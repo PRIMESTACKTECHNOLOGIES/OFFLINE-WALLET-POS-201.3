@@ -22,8 +22,14 @@ import {
   type MerchantWalletTransaction,
   exportTransactionsToCSV 
 } from "../lib/api";
+import { resolveApiBaseUrl } from "../lib/backendUrl";
 import { Link, useNavigate } from "react-router-dom";
 import { useNotifications } from "../contexts/NotificationContext";
+
+const BASE_URL = resolveApiBaseUrl({
+  envValue: import.meta.env.VITE_API_URL,
+  currentOrigin: window.location.origin,
+});
 
 // --- Types ---
 
@@ -242,8 +248,63 @@ export const OverviewPage = () => {
   const [timeFilter, setTimeFilter] = useState('Today');
   const [lastTransactionCount, setLastTransactionCount] = useState(0);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
+
+  // Unprocessed batch state
+  const [unprocessed, setUnprocessed] = useState<{ totalTransactions: number; totalAmountUSD: number; byCurrency: { currency: string; count: number; totalUSD: number }[] } | null>(null);
+  const [processing, setProcessing] = useState(false);
+  const [processResult, setProcessResult] = useState<{ success: boolean; message: string; totalAmountCredited: number } | null>(null);
+
   const { addNotification } = useNotifications();
   const navigate = useNavigate();
+
+  const getMerchantId = () => {
+    try { return JSON.parse(localStorage.getItem('settings') || '{}').merchant_id || 'MRC-1001'; } catch { return 'MRC-1001'; }
+  };
+
+  const loadUnprocessed = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${BASE_URL}/api/dashboard/unprocessed`, {
+        headers: { Authorization: `Bearer ${token}`, 'x-merchant-id': getMerchantId() },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setUnprocessed(data);
+      }
+    } catch { /* ignore */ }
+  };
+
+  const handleProcessBatch = async () => {
+    if (processing) return;
+    setProcessing(true);
+    setProcessResult(null);
+    try {
+      const token = localStorage.getItem('token');
+      const merchantId = getMerchantId();
+      const res = await fetch(`${BASE_URL}/api/dashboard/process-batch`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'x-merchant-id': merchantId,
+        },
+        body: JSON.stringify({ merchantId }),
+      });
+      const data = await res.json();
+      setProcessResult(data);
+      if (data.success) {
+        addNotification('Batch Processed', data.message, 'success', true);
+        await loadUnprocessed();
+        await loadData();
+      } else {
+        addNotification('Process Failed', data.message || 'No transactions to process', 'error', true);
+      }
+    } catch (err: any) {
+      addNotification('Error', err.message || 'Batch processing failed', 'error', true);
+    } finally {
+      setProcessing(false);
+    }
+  };
 
   const loadData = async () => {
     try {
@@ -327,6 +388,7 @@ export const OverviewPage = () => {
 
   useEffect(() => {
     loadData();
+    loadUnprocessed();
   }, [timeFilter]);
 
   useEffect(() => {
@@ -519,6 +581,84 @@ export const OverviewPage = () => {
           </div>
         </div>
       </div>
+
+      {/* ── Unprocessed Transactions Banner ─────────────────────────────── */}
+      {unprocessed && unprocessed.totalTransactions > 0 && (
+        <div className="relative overflow-hidden rounded-2xl border border-amber-200 bg-gradient-to-r from-amber-50 to-orange-50 shadow-sm">
+          <div className="absolute inset-0 bg-gradient-to-r from-amber-400/5 to-orange-400/5 pointer-events-none" />
+          <div className="relative flex flex-col md:flex-row md:items-center justify-between gap-4 p-5">
+            <div className="flex items-start gap-4">
+              <div className="w-12 h-12 rounded-xl bg-amber-100 border border-amber-200 flex items-center justify-center flex-shrink-0">
+                <svg width="24" height="24" fill="none" stroke="#d97706" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                </svg>
+              </div>
+              <div>
+                <h3 className="text-base font-semibold text-amber-900">
+                  Unprocessed Transactions Pending Settlement
+                </h3>
+                <p className="text-sm text-amber-700 mt-0.5">
+                  <span className="font-bold text-amber-900">{unprocessed.totalTransactions} transactions</span> totalling{' '}
+                  <span className="font-bold text-amber-900">
+                    ${unprocessed.totalAmountUSD.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
+                  </span>{' '}
+                  have not been credited to your merchant wallet yet.
+                </p>
+                {unprocessed.byCurrency.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {unprocessed.byCurrency.map((c) => (
+                      <span key={c.currency} className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800 border border-amber-200">
+                        {c.currency}: {c.count} txns · ${c.totalUSD.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {processResult && (
+                  <div className={`mt-2 text-sm font-medium ${processResult.success ? 'text-green-700' : 'text-red-600'}`}>
+                    {processResult.success
+                      ? `✅ ${processResult.message}`
+                      : `❌ ${processResult.message}`}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center gap-3 flex-shrink-0">
+              <button
+                onClick={handleProcessBatch}
+                disabled={processing}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:bg-amber-300 text-white text-sm font-semibold shadow-sm hover:shadow-md transition-all duration-200 disabled:cursor-not-allowed"
+              >
+                {processing ? (
+                  <>
+                    <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                    </svg>
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    Process & Credit Wallet
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── All-clear message after processing ──────────────────────────── */}
+      {unprocessed && unprocessed.totalTransactions === 0 && processResult?.success && (
+        <div className="flex items-center gap-3 p-4 rounded-xl bg-green-50 border border-green-200 text-green-800 text-sm font-medium">
+          <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+          </svg>
+          All transactions settled. ${processResult.totalAmountCredited.toLocaleString('en-US', { minimumFractionDigits: 2 })} credited to your wallet.
+        </div>
+      )}
 
       {/* Quick Actions Row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

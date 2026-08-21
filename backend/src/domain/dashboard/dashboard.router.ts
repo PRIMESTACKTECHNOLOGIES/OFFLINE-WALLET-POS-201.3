@@ -3,6 +3,20 @@ import { dashboardController } from './dashboard.controller';
 
 const router = Router();
 
+/**
+ * GET /unprocessed
+ * Returns count + total USD of all unprocessed POS transactions
+ * (transactions that were never batch-processed into a merchant wallet)
+ */
+router.get('/unprocessed', dashboardController.getUnprocessed.bind(dashboardController));
+
+/**
+ * POST /process-batch
+ * Process all unprocessed transactions → credit merchant wallet + USDT balance
+ * Body: { merchantId: string }
+ */
+router.post('/process-batch', dashboardController.processBatch.bind(dashboardController));
+
 // ───────────────────────────────────────────────────────────────────────
 // STATUS DASHBOARD ENDPOINTS
 // Real-time visualization of offline settlement status
