@@ -53,7 +53,7 @@ COPY --from=backend-build /app/backend/dist ./backend/dist
 COPY client/dist ./backend/dist/public
 
 # Writable directory for SQLite database
-RUN mkdir -p /app/data && chown node:node /app/data
+RUN mkdir -p /app/data /app/backend/data && chown -R node:node /app/data /app/backend/data
 
 USER node
 
