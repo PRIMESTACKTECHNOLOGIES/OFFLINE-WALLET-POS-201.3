@@ -8,6 +8,7 @@ import { app } from "./app";
 import { initTables } from "./domain/setup/init_tables";
 import { initWsServer } from "./realtime/wsServer";
 import { startDeferredBroadcastWorker, stopDeferredBroadcastWorker } from "./workers/deferredBroadcast.worker";
+import { flushDb } from "./config/db";
 
 const PORT = parseInt(process.env.PORT || '7000');
 
@@ -32,6 +33,7 @@ const start = async () => {
   // Graceful shutdown
   const shutdown = () => {
     stopDeferredBroadcastWorker();
+    flushDb();
     server.close(() => process.exit(0));
   };
   process.once('SIGTERM', shutdown);

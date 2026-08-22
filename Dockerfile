@@ -5,14 +5,15 @@ WORKDIR /app
 ARG NPM_TOKEN
 RUN echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > /root/.npmrc
 
-# Build tools needed for better-sqlite3 native compile
+# Build tools needed only for keccak native module in Stage 1
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 make g++ pkg-config sqlite3 libsqlite3-dev libpcsclite-dev \
+    python3 make g++ pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/package*.json ./backend/
+# Install all deps (skip nfc-pcsc hardware scripts), rebuild keccak native module
 RUN npm --prefix backend install --no-audit --no-fund --ignore-scripts \
- && npm --prefix backend rebuild better-sqlite3
+ && npm --prefix backend rebuild keccak
 
 RUN rm -f /root/.npmrc
 
@@ -27,21 +28,22 @@ ENV PORT=10000
 
 ARG NPM_TOKEN
 
-# Build tools required to compile better-sqlite3 for THIS runtime environment
+# sql.js is pure WebAssembly — NO build tools needed at all
+# Only runtime libs for nfc-pcsc (libpcsclite) kept for completeness
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 make g++ pkg-config libsqlite3-dev libpcsclite-dev \
+    libpcsclite1 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN if [ -n "$NPM_TOKEN" ]; then echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > /root/.npmrc; fi
 COPY backend/package*.json ./backend/
 
-# Install prod deps then compile better-sqlite3 natively for this exact runtime
+# Install prod deps — skip nfc-pcsc scripts, rebuild keccak only
 RUN npm --prefix backend install --omit=dev --no-audit --no-fund --ignore-scripts \
- && npm --prefix backend rebuild better-sqlite3
+ && npm --prefix backend rebuild keccak
 
 RUN rm -f /root/.npmrc
 
-# Copy compiled backend
+# Copy compiled backend from Stage 1
 COPY --from=backend-build /app/backend/dist ./backend/dist
 
 # Copy pre-built React client

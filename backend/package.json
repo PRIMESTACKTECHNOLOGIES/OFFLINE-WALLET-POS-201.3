@@ -6,8 +6,7 @@
   "scripts": {
     "start": "node dist/server.js",
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
-    "build": "tsc",
-    "check-binance": "ts-node -r dotenv/config src/scripts/check_binance_keys.ts"
+    "build": "tsc"
   },
   "keywords": [],
   "author": "",
@@ -21,7 +20,6 @@
     "@types/jsonwebtoken": "^9.0.10",
     "axios": "^1.6.0",
     "bcryptjs": "^3.0.3",
-    "better-sqlite3": "^13.0.3",
     "bs58": "^6.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
@@ -35,21 +33,21 @@
     "open": "^11.0.0",
     "pg": "^8.11.3",
     "socket.io": "^4.8.3",
+    "sql.js": "^1.12.0",
     "tronweb": "^5.3.2",
     "uuid": "^14.0.1"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^4.17.21",
     "@types/node": "^20.10.6",
     "@types/pg": "^8.10.9",
+    "@types/sql.js": "^1.4.9",
     "@types/uuid": "^9.0.7",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.3.3"
   },
   "allowScripts": {
     "@pokusew/pcsclite@0.6.0": true,
-    "better-sqlite3@13.0.3": true,
     "keccak@3.0.4": true
   }
 }
