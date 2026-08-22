@@ -130,18 +130,13 @@ router.get('/summary', async (req: Request, res: Response) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /csv  — CSV batch file download
+// GET /csv  — Wise Batch Payment CSV (exact Wise format)
+// Upload directly to: wise.com → Business → Batch Payments → Upload CSV
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/csv', async (req: Request, res: Response) => {
   try {
     const merchantId = (req.query.merchantId as string) ||
       (req.headers['x-merchant-id'] as string);
-
-    // Allow customer details override via query params
-    const customerName    = (req.query.customerName    as string) || DEFAULT_CUSTOMER.name;
-    const customerIban    = (req.query.customerIban    as string) || DEFAULT_CUSTOMER.iban;
-    const customerBank    = (req.query.customerBank    as string) || DEFAULT_CUSTOMER.bankName;
-    const customerSwift   = (req.query.customerSwift   as string) || DEFAULT_CUSTOMER.swiftBic;
 
     const txns = await getUnsettledTransactions(merchantId);
 
@@ -150,85 +145,103 @@ router.get('/csv', async (req: Request, res: Response) => {
     }
 
     const totalMinorUSD = txns
-      .filter(t => t.currency === 'USD')
+      .filter((t: any) => t.currency === 'USD')
       .reduce((s: number, t: any) => s + Number(t.amount_minor), 0);
 
-    const now = new Date().toISOString().slice(0, 10);
-    const refNo = `PSTK-${Date.now()}`;
+    const totalUSD = (totalMinorUSD / 100).toFixed(2);
+    const refNo    = `PSTK-${Date.now()}`;
+    const now      = new Date().toISOString().slice(0, 10);
 
-    // Build CSV
-    const lines: string[] = [];
+    // ── Wise Batch CSV exact column order ─────────────────────────────────
+    // Source: https://wise.com/help/articles/2976723
+    // Columns:
+    //   name, recipientEmail, paymentReference, receiverType,
+    //   amountCurrency, amount, sourceCurrency, targetCurrency,
+    //   accountHolderName (= name again), accountNumber, IBAN,
+    //   bankName, swiftCode, nationality, dateOfBirth,
+    //   addressCountry, addressCity, addressFirstLine,
+    //   addressState, transferPurpose
 
-    // Header block
-    lines.push(`SETTLEMENT BATCH FILE`);
-    lines.push(`Generated,${now}`);
-    lines.push(`Reference,${refNo}`);
-    lines.push(`Total Transactions,${txns.length}`);
-    lines.push(`Total Amount USD,${(totalMinorUSD / 100).toFixed(2)}`);
-    lines.push(``);
+    const WISE_HEADER = [
+      'name',
+      'recipientEmail',
+      'paymentReference',
+      'receiverType',
+      'amountCurrency',
+      'amount',
+      'sourceCurrency',
+      'targetCurrency',
+      'accountHolderName',
+      'accountNumber',
+      'IBAN',
+      'bankName',
+      'swiftCode',
+      'nationality',
+      'dateOfBirth',
+      'addressCountry',
+      'addressCity',
+      'addressFirstLine',
+      'addressState',
+      'transferPurpose',
+    ].join(',');
 
-    // Payer block
-    lines.push(`PAYER DETAILS (YOUR BANK DETAILS)`);
-    lines.push(`Name,${customerName}`);
-    lines.push(`Bank,${customerBank}`);
-    lines.push(`IBAN,${customerIban}`);
-    lines.push(`SWIFT/BIC,${customerSwift}`);
-    lines.push(``);
+    // One row per transaction
+    const rows: string[] = txns.map((t: any) => {
+      const amount   = (Number(t.amount_minor) / 100).toFixed(2);
+      const currency = t.currency || 'USD';
+      const txnRef   = `${refNo}-${t.stan || t.id?.slice(0, 8) || 'TXN'}`;
 
-    // Beneficiary block
-    lines.push(`BENEFICIARY DETAILS (MERCHANT RECEIVING PAYMENT)`);
-    lines.push(`Name,${MERCHANT.name}`);
-    lines.push(`Bank,${MERCHANT.bankName}`);
-    lines.push(`Account Number,${MERCHANT.accountNumber}`);
-    lines.push(`Routing Number,${MERCHANT.routingNumber}`);
-    lines.push(`SWIFT/BIC,${MERCHANT.swiftBic}`);
-    lines.push(`Bank Address,"${MERCHANT.bankAddress}"`);
-    lines.push(``);
-
-    // Transaction details header
-    lines.push(`TRANSACTION DETAILS`);
-    lines.push(`Txn#,Date,Terminal,STAN,Card (Masked),Card Brand,Entry Mode,Amount,Currency,Status`);
-
-    // Transaction rows
-    txns.forEach((t: any, i: number) => {
-      lines.push([
-        i + 1,
-        fmtDate(t.txn_timestamp || t.created_at),
-        t.terminal_id,
-        t.stan || '',
-        t.pan_masked || '****',
-        t.card_brand || 'UNKNOWN',
-        t.entry_mode || '',
-        (Number(t.amount_minor) / 100).toFixed(2),
-        t.currency,
-        t.status,
-      ].join(','));
+      return [
+        `"${MERCHANT.name}"`,           // name
+        `""`,                            // recipientEmail (not required for bank transfer)
+        `"${txnRef}"`,                   // paymentReference
+        `"BUSINESS"`,                    // receiverType
+        `"${currency}"`,                 // amountCurrency
+        `"${amount}"`,                   // amount
+        `"${currency}"`,                 // sourceCurrency
+        `"USD"`,                         // targetCurrency
+        `"${MERCHANT.name}"`,            // accountHolderName
+        `"${MERCHANT.accountNumber}"`,   // accountNumber
+        `""`,                            // IBAN (US accounts use routing+account, not IBAN)
+        `"${MERCHANT.bankName}"`,        // bankName
+        `"${MERCHANT.swiftBic}"`,        // swiftCode
+        `""`,                            // nationality
+        `""`,                            // dateOfBirth
+        `"US"`,                          // addressCountry
+        `"Wilmington"`,                  // addressCity
+        `"108 W 13th St"`,               // addressFirstLine
+        `"DE"`,                          // addressState
+        `"SERVICES"`,                    // transferPurpose
+      ].join(',');
     });
 
-    lines.push(``);
+    // Summary row (total)
+    const summaryRow = [
+      `"TOTAL SETTLEMENT"`,
+      `""`,
+      `"${refNo}"`,
+      `"BUSINESS"`,
+      `"USD"`,
+      `"${totalUSD}"`,
+      `"USD"`,
+      `"USD"`,
+      `"${MERCHANT.name}"`,
+      `"${MERCHANT.accountNumber}"`,
+      `""`,
+      `"${MERCHANT.bankName}"`,
+      `"${MERCHANT.swiftBic}"`,
+      `""`,
+      `""`,
+      `"US"`,
+      `"Wilmington"`,
+      `"108 W 13th St"`,
+      `"DE"`,
+      `"SERVICES"`,
+    ].join(',');
 
-    // Currency subtotals
-    const byCurrency: Record<string, number> = {};
-    for (const t of txns) {
-      byCurrency[t.currency] = (byCurrency[t.currency] || 0) + Number(t.amount_minor);
-    }
-    lines.push(`SUBTOTALS BY CURRENCY`);
-    lines.push(`Currency,Total Amount`);
-    for (const [cur, minor] of Object.entries(byCurrency)) {
-      lines.push(`${cur},${(minor / 100).toFixed(2)}`);
-    }
-
-    lines.push(``);
-    lines.push(`PAYMENT INSTRUCTION`);
-    lines.push(`Please initiate a wire/ACH transfer for the total amount above.`);
-    lines.push(`Use reference: ${refNo}`);
-    lines.push(`Beneficiary bank: ${MERCHANT.bankName}`);
-    lines.push(`SWIFT: ${MERCHANT.swiftBic}`);
-    lines.push(`Account: ${MERCHANT.accountNumber}`);
-    lines.push(`Routing: ${MERCHANT.routingNumber}`);
-
-    const csvContent = lines.join('\r\n');
-    const filename = `settlement_${now}_${refNo}.csv`;
+    const csvLines = [WISE_HEADER, ...rows];
+    const csvContent = csvLines.join('\r\n');
+    const filename = `wise_batch_${now}_${refNo}.csv`;
 
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
